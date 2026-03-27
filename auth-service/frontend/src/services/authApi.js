@@ -8,8 +8,17 @@ export const loginUser = async (email, password) => {
   return res.data;
 };
 
-export const registerUser = async (name, email, password, role = "family") => {
-  const res = await axios.post(`${AUTH_BASE}/register`, { name, email, password, role });
+export const loginWithFace = async (email, password, liveFaceSample) => {
+  const res = await axios.post(`${AUTH_BASE}/caregiver/verify-face-login`, {
+    email,
+    password,
+    live_face_sample: liveFaceSample,
+  });
+  return res.data;
+};
+
+export const registerUser = async (payload) => {
+  const res = await axios.post(`${AUTH_BASE}/register`, payload);
   return res.data;
 };
 

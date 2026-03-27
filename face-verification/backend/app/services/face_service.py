@@ -1,43 +1,67 @@
 """
 face-verification/backend/app/services/face_service.py
-Orchestrates MTCNN detection + FaceNet embedding + cosine similarity verification.
+Service layer connecting Face endpoints to the ML embedder model.
 """
-from datetime import datetime
-from shared.backend.config.database import get_db
+from fastapi import HTTPException, status
+import numpy as np
 
+from app.schemas.face_schema import EnrollFaceRequest, VerifyFaceRequest
+from app.ml_services.inference.face_embedder import get_embedding, calculate_similarity
 
-def _logs_col():
-    return get_db()["face_logs"]
-
-
-def _persons_col():
-    return get_db()["authorized_persons"]
+# Cosine similarity threshold for InceptionResnetV1 on vggface2
+# Typically a high threshold prevents false positives. Range [-1.0, 1.0]
+SIMILARITY_THRESHOLD = 0.65 
 
 
 class FaceService:
-    async def run_verification(self, user_id: str) -> dict:
-        """
-        TODO: Accept frame bytes, run detection + embedding, compare with known embeddings.
-        1. Preprocess frame (face_preprocess.py)
-        2. Detect face (detect_face.py via MTCNN)
-        3. Extract embedding (extract_embedding.py via FaceNet)
-        4. Compare with stored embeddings (verify_identity.py)
-        5. Log result to MongoDB
-        """
-        log = {
-            "user_id": user_id,
-            "status": "pending",   # TODO: replace with actual result
-            "match": None,
-            "confidence": 0.0,
-            "timestamp": datetime.utcnow(),
+    @staticmethod
+    def enroll_face(payload: EnrollFaceRequest) -> dict:
+        embeddings = []
+        # Process each sample
+        for base64_img in payload.samples:
+            emb = get_embedding(base64_img)
+            if emb is not None:
+                embeddings.append(emb)
+        
+        if not embeddings:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No completely visible faces detected across any of the provided samples. Please re-enroll in better lighting."
+            )
+
+        # Average the embeddings to create a single robust profile vector
+        arr = np.array(embeddings)
+        mean_embedding = np.mean(arr, axis=0)
+
+        # Normalize the averaged embedding
+        norm = np.linalg.norm(mean_embedding)
+        if norm > 0:
+            mean_embedding = mean_embedding / norm
+
+        return {
+            "message": "Face profiles successfully aggregated.",
+            "embedding": mean_embedding.tolist(),
+            "processed_samples": len(embeddings)
         }
-        _logs_col().insert_one(log)
-        return {"message": "Verification pipeline stub — implement ML inference.", "log_id": str(log.get("_id", ""))}
 
-    async def fetch_logs(self) -> list:
-        logs = list(_logs_col().find({}, {"_id": 0}).sort("timestamp", -1).limit(50))
-        return logs
+    @staticmethod
+    def verify_face(payload: VerifyFaceRequest) -> dict:
+        live_emb = get_embedding(payload.live_sample)
+        if live_emb is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No face detected in the live camera feed."
+            )
 
-    async def fetch_authorized_persons(self) -> list:
-        persons = list(_persons_col().find({}, {"_id": 0}))
-        return persons
+        similarity = calculate_similarity(live_emb, payload.stored_embedding)
+        
+        matched = similarity >= SIMILARITY_THRESHOLD
+        
+        # Determine confidence percent strictly for display analytics based on empirical standard deviations
+        confidence = max(0.0, min(100.0, ((similarity + 1.0) / 2.0) * 100))
+
+        return {
+            "matched": matched,
+            "similarity": round(similarity, 4),
+            "confidence": round(confidence, 2)
+        }

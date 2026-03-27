@@ -5,17 +5,16 @@ Handles HTTP layer: request validation, calling services, shaping responses.
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.schemas.auth_schema import RegisterRequest, LoginRequest, TokenResponse, UserResponse
+from app.schemas.auth_schema import RegisterRequest, LoginRequest, FaceLoginRequest, TokenResponse, UserResponse
 from app.services.auth_service import AuthService
+
 
 _bearer = HTTPBearer()
 _auth_service = AuthService()
 
-
 async def register_user(payload: RegisterRequest):
     result = await _auth_service.register(payload)
     return result
-
 
 async def login_user(payload: LoginRequest):
     result = await _auth_service.login(payload)
@@ -26,14 +25,28 @@ async def login_user(payload: LoginRequest):
         )
     return result
 
+async def login_with_face(payload: FaceLoginRequest):
+    result = await _auth_service.login_with_face(payload)
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials or face verification failed.",
+        )
+    return result
 
-async def get_profile(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
-):
+async def get_profile(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     from app.services.user_service import UserService
     from shared.backend.auth.jwt_handler import decode_access_token
     payload = decode_access_token(credentials.credentials)
     user = await UserService().get_by_id(payload.get("sub"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
-    return UserResponse(**user)
+    
+    # Safe fallback values based on the expanded schema
+    return UserResponse(
+        id=str(user["_id"]),
+        name=user.get("name", "Unknown"),
+        email=user.get("email", ""),
+        role=user.get("role", "family_member"),
+        face_verification_status=user.get("face_verification_status")
+    )

@@ -8,15 +8,19 @@ from app.routes.face_routes import router as face_router
 app = FastAPI(
     title="Secure Elder Care — Face Verification Service",
     version="1.0.0",
+    description="Handles MTCNN and FaceNet embedding processing.",
 )
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-app.include_router(face_router, prefix="/api/face", tags=["Face Verification"])
+app.include_router(face_router, prefix="/api/face", tags=["Face ML"])
 
 
 @app.get("/health")

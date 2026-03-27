@@ -1,23 +1,14 @@
 """
 face-verification/backend/app/routes/face_routes.py
+API Routing for the Face Verification microservice
 """
-from fastapi import APIRouter, Depends
-from app.controllers.face_controller import verify_face, get_logs, get_authorized_persons
-from app.middleware.verify_token import get_current_user
+from fastapi import APIRouter
+from app.controllers.face_controller import (
+    enroll_caregiver_face,
+    verify_caregiver_face
+)
 
 router = APIRouter()
 
-
-@router.post("/verify", summary="Run face verification on a frame")
-async def _verify(user=Depends(get_current_user)):
-    return await verify_face(user)
-
-
-@router.get("/logs", summary="Get face verification logs")
-async def _logs(user=Depends(get_current_user)):
-    return await get_logs(user)
-
-
-@router.get("/authorized", summary="List authorized persons")
-async def _authorized(user=Depends(get_current_user)):
-    return await get_authorized_persons(user)
+router.post("/enroll", summary="Extract and average face embeddings for enrollment")(enroll_caregiver_face)
+router.post("/verify", summary="Compare a live face embedding to a stored ML embedding")(verify_caregiver_face)

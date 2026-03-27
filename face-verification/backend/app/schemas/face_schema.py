@@ -1,25 +1,28 @@
 """
 face-verification/backend/app/schemas/face_schema.py
+Pydantic schemas for face enrollment and verification endpoints.
 """
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
+from pydantic import BaseModel, Field
+from typing import List
 
 
-class VerificationRequest(BaseModel):
-    frame_b64: str  # base64-encoded JPEG/PNG frame
+class EnrollFaceRequest(BaseModel):
+    # Expects 5-10 base64 images
+    samples: List[str] = Field(..., min_length=1, description="List of base64 encoded face images")
 
 
-class VerificationResponse(BaseModel):
-    match: bool
-    person_id: Optional[str] = None
+class EnrollFaceResponse(BaseModel):
+    message: str
+    embedding: List[float]
+    processed_samples: int
+
+
+class VerifyFaceRequest(BaseModel):
+    live_sample: str
+    stored_embedding: List[float]
+
+
+class VerifyFaceResponse(BaseModel):
+    matched: bool
+    similarity: float
     confidence: float
-    timestamp: datetime = None
-
-
-class FaceLogEntry(BaseModel):
-    user_id: str
-    status: str
-    match: Optional[bool] = None
-    confidence: float = 0.0
-    timestamp: datetime

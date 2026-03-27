@@ -1,19 +1,18 @@
 """
 face-verification/backend/app/controllers/face_controller.py
+HTTP layer connecting routes to the Face ML service.
 """
+from fastapi import APIRouter
+
+from app.schemas.face_schema import EnrollFaceRequest, EnrollFaceResponse, VerifyFaceRequest, VerifyFaceResponse
 from app.services.face_service import FaceService
 
-_svc = FaceService()
+_face_service = FaceService()
 
+def enroll_caregiver_face(payload: EnrollFaceRequest) -> EnrollFaceResponse:
+    result = _face_service.enroll_face(payload)
+    return EnrollFaceResponse(**result)
 
-async def verify_face(user: dict):
-    # TODO: Accept image frame from request body and pass to service
-    return await _svc.run_verification(user_id=user.get("sub"))
-
-
-async def get_logs(user: dict):
-    return await _svc.fetch_logs()
-
-
-async def get_authorized_persons(user: dict):
-    return await _svc.fetch_authorized_persons()
+def verify_caregiver_face(payload: VerifyFaceRequest) -> VerifyFaceResponse:
+    result = _face_service.verify_face(payload)
+    return VerifyFaceResponse(**result)
