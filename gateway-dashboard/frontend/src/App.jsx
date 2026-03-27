@@ -1,8 +1,11 @@
 // gateway-dashboard/frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import Home from "./pages/Home";
 import AdminDashboard from "./pages/AdminDashboard";
 import CaregiverDashboard from "./pages/CaregiverDashboard";
 import FamilyDashboard from "./pages/FamilyDashboard";
+import SystemOverview from "./pages/SystemOverview";
+import AlertsCenter from "./pages/AlertsCenter";
 import { parseJwt } from "../../../shared/frontend/utils/helpers";
 
 const ProtectedRoute = ({ children }) => {
@@ -50,6 +53,12 @@ function App() {
       <Routes>
         <Route path="/auth-callback" element={<AuthCallback />} />
         <Route path="/" element={<ProtectedRoute><RoleBasedRouter /></ProtectedRoute>} />
+        <Route path="/home" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+        <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+        <Route path="/caregiver" element={<ProtectedRoute><CaregiverDashboard /></ProtectedRoute>} />
+        <Route path="/family" element={<ProtectedRoute><FamilyDashboard /></ProtectedRoute>} />
+        <Route path="/system-overview" element={<ProtectedRoute><SystemOverview /></ProtectedRoute>} />
+        <Route path="/alerts" element={<ProtectedRoute><AlertsCenter /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

@@ -6,7 +6,10 @@ import ModelStatus from "./pages/ModelStatus";
 
 const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem("access_token");
-  if (!token) return <Navigate to="http://localhost:5173/login" />;
+  if (!token) {
+    window.location.href = "http://localhost:5173/login";
+    return null;
+  }
   return children;
 };
 

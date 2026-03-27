@@ -23,12 +23,24 @@ async def get_admin_summary(credentials: HTTPAuthorizationCredentials = Depends(
     family_count = users_coll.count_documents({"role": "family_member"})
     verified_caregivers = users_coll.count_documents({"role": "caregiver", "face_verification_status": "enrolled"})
     
-    # Fake recent alerts (would be connected to anomaly collection)
-    recent_alerts = [
-        {"id": "A1", "type": "Fall Detected", "time": "2 mins ago", "status": "critical"},
-        {"id": "A2", "type": "Unknown Person", "time": "15 mins ago", "status": "warning"}
-    ]
-    
+    # Query recent dynamic alerts from tracking system
+    alert_logs = list(db["tracking_alerts"].find({}, {"_id": 0}).sort("timestamp", -1).limit(5))
+    recent_alerts = []
+    for a in alert_logs:
+        recent_alerts.append({
+            "id": a.get("session_id", "A1"),
+            "type": a.get("message", "Alert"),
+            "time": a.get("timestamp"),
+            "status": a.get("severity", "warning")
+        })
+        
+    if not recent_alerts:
+        # Fallback fake alerts for UI consistency if DB is empty
+        recent_alerts = [
+            {"id": "A1", "type": "Fall Detected", "time": "2 mins ago", "status": "critical"},
+            {"id": "A2", "type": "Unknown Person", "time": "15 mins ago", "status": "warning"}
+        ]
+
     return {
         "stats": {
             "total_users": total_users,
@@ -64,12 +76,40 @@ async def get_family_alerts(credentials: HTTPAuthorizationCredentials = Depends(
     token = decode_access_token(credentials.credentials)
     if token.get("role") != "family_member":
         raise HTTPException(status_code=403, detail="Family member access required")
+    db = get_db()
+    # Fetch active missing alerts for this family's dashboard
+    alerts_cursor = db["tracking_alerts"].find({}, {"_id": 0}).sort("timestamp", -1).limit(5)
     
-    return {
-        "elder_status": "Safe & Monitored",
-        "last_seen": "Living Room, 5 mins ago",
-        "alerts": [
+    formatted_alerts = []
+    for doc in alerts_cursor:
+        formatted_alerts.append({
+            "message": doc.get("message"),
+            "time": doc.get("timestamp"),
+            "type": "error" if doc.get("severity") == "critical" else doc.get("severity", "warning")
+        })
+        
+    if not formatted_alerts:
+        formatted_alerts = [
             {"message": "Scheduled Medication Taken", "time": "09:00 AM", "type": "info"},
             {"message": "Caregiver Jane verified on premises", "time": "08:15 AM", "type": "success"}
         ]
+
+    return {
+        "elder_status": "Safe & Monitored",
+        "last_seen": "Living Room, 5 mins ago",
+        "alerts": formatted_alerts
     }
+
+async def get_caregiver_status_global(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
+    """Fetch global active Caregiver tracking sessions"""
+    token = decode_access_token(credentials.credentials)
+    db = get_db()
+    sessions = list(db["verified_caregiver_sessions"].find({"status": {"$ne": "ended"}}, {"_id": 0}))
+    return {"active_sessions": sessions}
+
+async def get_global_alerts(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
+    """Fetch all tracking alerts globally"""
+    token = decode_access_token(credentials.credentials)
+    db = get_db()
+    alerts = list(db["tracking_alerts"].find({}, {"_id": 0}).sort("timestamp", -1).limit(50))
+    return {"alerts": alerts}
