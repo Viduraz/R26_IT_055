@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  # ─── Auth Service ───────────────────────────────────────
+  auth-backend:
+    build: ./auth-service/backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    restart: unless-stopped
+
+  auth-frontend:
+    build: ./auth-service/frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - auth-backend
+    restart: unless-stopped
+
+  # ─── Face Verification ──────────────────────────────────
+  face-backend:
+    build: ./face-verification/backend
+    ports:
+      - "8001:8001"
+    env_file: .env
+    restart: unless-stopped
+
+  face-frontend:
+    build: ./face-verification/frontend
+    ports:
+      - "5174:5174"
+    depends_on:
+      - face-backend
+    restart: unless-stopped
+
+  # ─── Tracking & Geofencing ──────────────────────────────
+  tracking-backend:
+    build: ./tracking-geofencing/backend
+    ports:
+      - "8002:8002"
+    env_file: .env
+    restart: unless-stopped
+
+  tracking-frontend:
+    build: ./tracking-geofencing/frontend
+    ports:
+      - "5175:5175"
+    depends_on:
+      - tracking-backend
+    restart: unless-stopped
+
+  # ─── Anomaly Detection ──────────────────────────────────
+  anomaly-backend:
+    build: ./anomaly-detection/backend
+    ports:
+      - "8003:8003"
+    env_file: .env
+    restart: unless-stopped
+
+  anomaly-frontend:
+    build: ./anomaly-detection/frontend
+    ports:
+      - "5176:5176"
+    depends_on:
+      - anomaly-backend
+    restart: unless-stopped
+
+  # ─── Schedule Monitoring ────────────────────────────────
+  schedule-backend:
+    build: ./schedule-monitoring/backend
+    ports:
+      - "8004:8004"
+    env_file: .env
+    restart: unless-stopped
+
+  schedule-frontend:
+    build: ./schedule-monitoring/frontend
+    ports:
+      - "5177:5177"
+    depends_on:
+      - schedule-backend
+    restart: unless-stopped
+
+  # ─── Gateway Dashboard ──────────────────────────────────
+  gateway-backend:
+    build: ./gateway-dashboard/backend
+    ports:
+      - "8005:8005"
+    env_file: .env
+    depends_on:
+      - auth-backend
+      - face-backend
+      - tracking-backend
+      - anomaly-backend
+      - schedule-backend
+    restart: unless-stopped
+
+  gateway-frontend:
+    build: ./gateway-dashboard/frontend
+    ports:
+      - "5178:5178"
+    depends_on:
+      - gateway-backend
+    restart: unless-stopped
