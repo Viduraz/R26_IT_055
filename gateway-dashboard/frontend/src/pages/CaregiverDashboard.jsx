@@ -1,7 +1,7 @@
 // gateway-dashboard/frontend/src/pages/CaregiverDashboard.jsx
 import { useEffect, useState } from "react";
 import { getCaregiverProfile } from "../services/dashboardApi";
-import { useAuth } from "../../../../shared/frontend/hooks/useAuth";
+import { useAuth } from "@shared/hooks/useAuth";
 
 export default function CaregiverDashboard() {
   const { token, logout } = useAuth();

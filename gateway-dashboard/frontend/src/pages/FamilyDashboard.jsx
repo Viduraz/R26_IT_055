@@ -1,7 +1,7 @@
 // gateway-dashboard/frontend/src/pages/FamilyDashboard.jsx
 import { useEffect, useState } from "react";
 import { getFamilyAlerts } from "../services/dashboardApi";
-import { useAuth } from "../../../../shared/frontend/hooks/useAuth";
+import { useAuth } from "@shared/hooks/useAuth";
 import ScanCaregiverModal from "../components/ScanCaregiverModal";
 
 export default function FamilyDashboard() {
