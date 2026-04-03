@@ -1,128 +1,61 @@
-// gateway-dashboard/frontend/src/pages/Home.jsx
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import gatewayApi from "../services/gatewayApi";
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { PATHS } from '../routes/paths';
+import FeatureCard from '../components/FeatureCard';
 
 const MODULE_CARDS = [
-  { title: "Face Verification", desc: "Real-time identity recognition", icon: "🧑‍💼", port: 5174 },
-  { title: "Tracking & Geofencing", desc: "Person tracking and zone alerts", icon: "📍", port: 5175 },
-  { title: "Anomaly Detection", desc: "Pose-based fall and anomaly alerts", icon: "⚠️", port: 5176 },
-  { title: "Schedule Monitoring", desc: "Routine tracking and deviations", icon: "📅", port: 5177 },
+  { title: "Face Verification", description: "Real-time identity recognition and secure admission control.", icon: "🧑‍💼" },
+  { title: "Tracking & Geofencing", description: "Person tracking and designated safe-zone boundary alerts.", icon: "📍" },
+  { title: "Anomaly Detection", description: "Pose-based fall and distress anomaly alerts.", icon: "⚠️" },
+  { title: "Schedule Monitoring", description: "Daily routine tracking and medication deviations.", icon: "📅" },
+  { title: "Gateway Dashboard", description: "Centralized analytical command center for administrators.", icon: "📊" },
 ];
 
-export default function Home() {
-  const navigate = useNavigate();
-  const [overview, setOverview] = useState(null);
-  const [alerts, setAlerts] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [ovRes, alRes] = await Promise.all([
-          gatewayApi.get("/overview"),
-          gatewayApi.get("/alerts"),
-        ]);
-        setOverview(ovRes.data);
-        setAlerts(alRes.data.slice(0, 5));
-      } catch (err) {
-        console.error("Gateway fetch error:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, []);
-
-  const handleLogout = () => {
-    localStorage.removeItem("access_token");
-    navigate("/login");
-  };
-
+const Home = () => {
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-800 px-8 py-4 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">🛡️</span>
-          <h1 className="text-xl font-bold">Secure Elder Care</h1>
-        </div>
-        <button
-          onClick={handleLogout}
-          className="text-sm text-gray-400 hover:text-white transition"
-        >
-          Sign Out →
-        </button>
-      </header>
-
-      <main className="max-w-6xl mx-auto px-8 py-10">
-        {/* System Overview */}
-        <div className="mb-10">
-          <h2 className="text-2xl font-semibold mb-4">System Overview</h2>
-          {loading ? (
-            <p className="text-gray-500">Loading service status…</p>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              {overview?.services &&
-                Object.entries(overview.services).map(([name, status]) => (
-                  <div key={name} className="bg-gray-900 border border-gray-700 rounded-xl p-4 text-center">
-                    <div className={`text-2xl mb-2 ${status === "ok" ? "text-green-400" : "text-red-400"}`}>
-                      {status === "ok" ? "✓" : "✗"}
-                    </div>
-                    <p className="text-sm font-medium capitalize">{name}</p>
-                    <p className={`text-xs mt-1 ${status === "ok" ? "text-green-400" : "text-red-400"}`}>
-                      {status}
-                    </p>
-                  </div>
-                ))}
-            </div>
-          )}
-        </div>
-
-        {/* Module Cards */}
-        <div className="mb-10">
-          <h2 className="text-2xl font-semibold mb-4">Modules</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {MODULE_CARDS.map((mod) => (
-              <a
-                key={mod.title}
-                href={`http://localhost:${mod.port}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="bg-gray-900 border border-gray-700 hover:border-blue-500 rounded-2xl p-6 transition group"
-              >
-                <div className="text-4xl mb-3">{mod.icon}</div>
-                <h3 className="font-semibold text-white group-hover:text-blue-400 transition">{mod.title}</h3>
-                <p className="text-sm text-gray-400 mt-1">{mod.desc}</p>
-              </a>
-            ))}
+    <div className="flex flex-col items-center">
+      {/* Hero Section embedded cleanly */}
+      <section className="w-full text-center py-20 md:py-32 px-4 relative overflow-hidden">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-gradient-to-b from-indigo-900/30 to-transparent blur-[80px] rounded-full pointer-events-none" />
+        
+        <div className="relative z-10 max-w-4xl mx-auto">
+          <h1 className="text-5xl md:text-6xl font-extrabold text-white tracking-tight mb-6">
+            AI-Powered <br className="hidden md:block" />
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400">
+              Elder Care Monitoring Platform
+            </span>
+          </h1>
+          <p className="text-lg md:text-xl text-gray-400 mb-10 max-w-2xl mx-auto leading-relaxed">
+            Real-time face verification, seamless tracking, anomaly detection, and caregiver safety monitoring.
+          </p>
+          
+          <div className="flex flex-col sm:flex-row justify-center gap-4">
+            <Link to={PATHS.LIVE_STREAM} className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-semibold transition-all shadow-[0_0_20px_rgba(79,70,229,0.3)]">
+              Open Live Stream
+            </Link>
+            <Link to={PATHS.SIGNUP} className="px-8 py-3.5 bg-gray-800 hover:bg-gray-700 text-white border border-gray-700 rounded-full font-semibold transition-colors">
+              Sign Up First
+            </Link>
+            <Link to={PATHS.LOGIN} className="px-8 py-3.5 text-gray-300 hover:text-white transition-colors flex items-center justify-center font-medium">
+              Login →
+            </Link>
           </div>
         </div>
+      </section>
 
-        {/* Recent Alerts */}
-        <div>
-          <h2 className="text-2xl font-semibold mb-4">Recent Alerts</h2>
-          {alerts.length === 0 ? (
-            <p className="text-gray-500">No alerts found.</p>
-          ) : (
-            <div className="space-y-3">
-              {alerts.map((alert, i) => (
-                <div key={i} className="bg-gray-900 border border-gray-700 rounded-xl p-4 flex justify-between items-center">
-                  <div>
-                    <p className="font-medium text-sm text-red-400">{alert.source || "Unknown"}</p>
-                    <p className="text-gray-300 text-sm mt-1">
-                      {alert.event_type || alert.type || "Alert"}
-                    </p>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    {alert.timestamp ? new Date(alert.timestamp).toLocaleString() : ""}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
+      {/* Features Section */}
+      <section className="w-full max-w-7xl mx-auto py-16 px-4">
+        <div className="text-center mb-12">
+          <h2 className="text-3xl font-bold text-white mb-4">Core Platform Services</h2>
         </div>
-      </main>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {MODULE_CARDS.map((mod, idx) => (
+            <FeatureCard key={idx} {...mod} />
+          ))}
+        </div>
+      </section>
     </div>
   );
-}
+};
+
+export default Home;

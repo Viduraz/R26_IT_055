@@ -1,7 +1,7 @@
 // gateway-dashboard/frontend/src/pages/AdminDashboard.jsx
 import { useEffect, useState } from "react";
 import { getAdminSummary } from "../services/dashboardApi";
-import { useAuth } from "../../../../shared/frontend/hooks/useAuth";
+import { useAuth } from "@shared/hooks/useAuth";
 
 export default function AdminDashboard() {
   const { token, logout } = useAuth();

@@ -1,23 +1,28 @@
 """
 anomaly-detection/backend/app/routes/anomaly_routes.py
 """
-from fastapi import APIRouter, Depends
-from app.controllers.anomaly_controller import run_detection, get_history, get_model_status
-from app.middleware.verify_token import get_current_user
+from fastapi import APIRouter
+from app.controllers.anomaly_controller import process_frame, get_history, get_model_status
+from app.schemas.anomaly_schema import AnomalyProcessRequest
 
 router = APIRouter()
 
 
-@router.post("/detect", summary="Run pose-based anomaly detection on a frame")
-async def _detect(user=Depends(get_current_user)):
-    return await run_detection(user)
+@router.post("/process", summary="Run full anomaly detection pipeline on a live frame")
+async def _process(payload: AnomalyProcessRequest):
+    return await process_frame(payload)
 
 
-@router.get("/history", summary="Anomaly detection history")
-async def _history(user=Depends(get_current_user)):
-    return await get_history(user)
+@router.get("/history", summary="Anomaly detection event history (last 100)")
+async def _history():
+    return await get_history()
 
 
-@router.get("/model-status", summary="ML model status")
-async def _model_status(user=Depends(get_current_user)):
-    return await get_model_status(user)
+@router.get("/model-status", summary="ML model weights + pipeline status")
+async def _model_status():
+    return await get_model_status()
+
+
+@router.get("/health", summary="Service health check")
+def _health():
+    return {"status": "ok", "service": "anomaly-detection"}
