@@ -8,3 +8,5 @@ opencv-python==4.10.0.82
 numpy==1.26.4
 mediapipe==0.10.14
 torch==2.3.0
+scikit-learn==1.5.0
+scipy==1.13.1

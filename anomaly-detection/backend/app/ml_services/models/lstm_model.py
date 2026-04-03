@@ -1,19 +1,106 @@
 """
 anomaly-detection/backend/app/ml_services/models/lstm_model.py
-LSTM model loader for sequential pose anomaly classification.
+
+PyTorch LSTM Classifier for pose-based anomaly classification.
+Architecture is fully defined. Weights load automatically if file exists.
+Falls back gracefully if no weights are present.
+
+Classes:
+    0 = normal_activity
+    1 = fall_detected
+    2 = aggression_detected
+    3 = prolonged_inactivity
 """
-# import torch
+import os
+import numpy as np
+
+LSTM_WEIGHTS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "trained_models", "lstm_weights.pt"
+)
+CLASS_NAMES = ["normal_activity", "fall_detected", "aggression_detected", "prolonged_inactivity"]
 
 _lstm = None
-LSTM_WEIGHTS_PATH = "app/ml_services/trained_models/lstm_weights.pt"
+_lstm_loaded = False
+
+
+def _build_model():
+    import torch
+    import torch.nn as nn
+
+    class LSTMClassifier(nn.Module):
+        def __init__(self, input_size=40, hidden_size=128, num_layers=2, num_classes=4, dropout=0.3):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0,
+            )
+            self.dropout = nn.Dropout(dropout)
+            self.fc1   = nn.Linear(hidden_size, 64)
+            self.relu  = nn.ReLU()
+            self.fc2   = nn.Linear(64, num_classes)
+
+        def forward(self, x):
+            # x: (batch, seq_len, input_size)
+            out, _ = self.lstm(x)
+            out    = self.dropout(out[:, -1, :])   # take last timestep
+            out    = self.relu(self.fc1(out))
+            return self.fc2(out)                    # logits
+
+    return LSTMClassifier()
 
 
 def get_lstm():
-    global _lstm
-    if _lstm is None:
-        # from app.ml_services.models.architectures import LSTMClassifier
-        # _lstm = LSTMClassifier(input_size=33*4, hidden_size=128, num_layers=2, num_classes=2)
-        # _lstm.load_state_dict(torch.load(LSTM_WEIGHTS_PATH, map_location="cpu"))
-        # _lstm.eval()
-        pass  # TODO: define LSTMClassifier architecture and load weights
+    global _lstm, _lstm_loaded
+    if _lstm_loaded:
+        return _lstm
+
+    _lstm_loaded = True
+    if not os.path.exists(LSTM_WEIGHTS_PATH):
+        _lstm = None   # weights not yet trained
+        return None
+
+    try:
+        import torch
+        model = _build_model()
+        model.load_state_dict(torch.load(LSTM_WEIGHTS_PATH, map_location="cpu"))
+        model.eval()
+        _lstm = model
+        print("[INFO] LSTM weights loaded from", LSTM_WEIGHTS_PATH)
+    except Exception as e:
+        print(f"[WARN] Could not load LSTM weights: {e}")
+        _lstm = None
+
     return _lstm
+
+
+def predict(sequence: list) -> dict | None:
+    """
+    Args:
+        sequence: list of N np.ndarray feature vectors (each shape 40,)
+    Returns:
+        { "class": str, "prob": float, "probs": list[float] }
+        or None if model not available
+    """
+    model = get_lstm()
+    if model is None or len(sequence) < 2:
+        return None
+
+    try:
+        import torch
+        arr = np.stack(sequence, axis=0)           # (T, 40)
+        x   = torch.tensor(arr, dtype=torch.float32).unsqueeze(0)  # (1, T, 40)
+        with torch.no_grad():
+            logits = model(x)
+            probs  = torch.softmax(logits, dim=-1).squeeze(0).tolist()
+        best_cls = int(np.argmax(probs))
+        return {
+            "class": CLASS_NAMES[best_cls],
+            "prob":  round(probs[best_cls], 4),
+            "probs": [round(p, 4) for p in probs],
+        }
+    except Exception as e:
+        print(f"[ERROR] LSTM predict: {e}")
+        return None
