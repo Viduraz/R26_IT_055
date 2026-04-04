@@ -4,14 +4,16 @@ import ScheduleDashboard from "./pages/ScheduleDashboard";
 import RoutineSetup from "./pages/RoutineSetup";
 import Reports from "./pages/Reports";
 
-const ProtectedRoute = ({ children }) => {
-  const token = localStorage.getItem("access_token");
-  if (!token) {
-    window.location.href = "http://localhost:5173/login";
-    return null;
-  }
-  return children;
-};
+// TODO: Re-enable auth guard once login integration is ready
+// const ProtectedRoute = ({ children }) => {
+//   const token = localStorage.getItem("access_token");
+//   if (!token) {
+//     window.location.href = "http://localhost:5173/login";
+//     return null;
+//   }
+//   return children;
+// };
+const ProtectedRoute = ({ children }) => children;
 
 function App() {
   return (
