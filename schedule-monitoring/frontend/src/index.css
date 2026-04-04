@@ -1,5 +1,74 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-* { box-sizing: border-box; }
-body { margin: 0; font-family: 'Inter', sans-serif; background: #030712; color: #f9fafb; }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --indigo: #6366f1;
+  --done:   #10b981;
+  --late:   #f59e0b;
+  --missed: #f43f5e;
+  --cg:     #f97316;
+  --pending:#38bdf8;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: #030712; }
+::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+/* ── Animations ────────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.fade-in { animation: fadeIn 0.3s ease both; }
+
+/* ── Spinner ───────────────────────────────────────────────────────────── */
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(255,255,255,0.1);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+/* ── Status badges ─────────────────────────────────────────────────────── */
+@layer components {
+  .badge {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide border;
+  }
+  .badge-done {
+    @apply bg-emerald-500/10 text-emerald-400 border-emerald-500/20;
+  }
+  .badge-late {
+    @apply bg-amber-500/10 text-amber-400 border-amber-500/20;
+  }
+  .badge-missed {
+    @apply bg-rose-500/10 text-rose-400 border-rose-500/20;
+  }
+  .badge-caregiver_missing {
+    @apply bg-orange-500/10 text-orange-400 border-orange-500/20;
+  }
+  .badge-pending {
+    @apply bg-sky-500/10 text-sky-400 border-sky-500/20;
+  }
+  .badge-requires_review {
+    @apply bg-purple-500/10 text-purple-400 border-purple-500/20;
+  }
+}
