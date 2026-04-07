@@ -4,7 +4,7 @@ import ScheduleDashboard from "./pages/ScheduleDashboard";
 import RoutineSetup from "./pages/RoutineSetup";
 import Reports from "./pages/Reports";
 
-const ProtectedRoute = ({ children }) => {
+ const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem("access_token");
   if (!token) {
     window.location.href = "http://localhost:5173/login";
@@ -17,9 +17,9 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<ProtectedRoute><ScheduleDashboard /></ProtectedRoute>} />
-        <Route path="/routine-setup" element={<ProtectedRoute><RoutineSetup /></ProtectedRoute>} />
-        <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+        <Route path="/" element={<ScheduleDashboard />} />
+        <Route path="/routine-setup" element={<RoutineSetup />} />
+        <Route path="/reports" element={<Reports />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
