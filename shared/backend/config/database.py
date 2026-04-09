@@ -37,6 +37,12 @@ class MockCollection:
     def __init__(self, data):
         self.data = data
         self._id_counter = 0
+        self._query = {}
+        self._projection = None
+        self._sort_key = None
+        self._sort_order = 1
+        self._limit_value = None
+        self._results = None
     
     def insert_one(self, doc):
         """Mock insert_one"""
@@ -49,29 +55,86 @@ class MockCollection:
         return Result(self._id_counter)
     
     def find(self, query=None, projection=None):
-        """Mock find"""
-        results = [d for d in self.data if self._matches(d, query or {})]
-        if projection and "_id" not in projection:
+        """Mock find - returns self for chaining"""
+        self._query = query or {}
+        self._projection = projection
+        self._results = None  # Reset results
+        return self
+    
+    def sort(self, key_or_list, direction=1):
+        """Mock sort - supports chaining like PyMongo"""
+        if isinstance(key_or_list, list):
+            self._sort_key = key_or_list[0][0]
+            self._sort_order = key_or_list[0][1]
+        else:
+            self._sort_key = key_or_list
+            self._sort_order = direction
+        return self
+    
+    def limit(self, count):
+        """Mock limit - supports chaining like PyMongo"""
+        self._limit_value = count
+        return self
+    
+    def _compute_results(self):
+        """Compute filtered, sorted, and limited results"""
+        if self._results is not None:
+            return self._results
+        
+        # Filter
+        results = [d.copy() for d in self.data if self._matches(d, self._query or {})]
+        
+        # Sort
+        if self._sort_key:
+            results.sort(
+                key=lambda x: x.get(self._sort_key, ""),
+                reverse=(self._sort_order == -1)
+            )
+        
+        # Limit
+        if self._limit_value:
+            results = results[:self._limit_value]
+        
+        # Projection (remove _id if needed)
+        if self._projection and "_id" not in self._projection:
             results = [{k: v for k, v in d.items() if k != "_id"} for d in results]
+        
+        self._results = results
         return results
+    
+    def __iter__(self):
+        """Make collection iterable for list() conversion"""
+        return iter(self._compute_results())
+    
+    def __len__(self):
+        """Support len()"""
+        return len(self._compute_results())
     
     def find_one(self, query=None):
         """Mock find_one"""
-        results = self.find(query, None)
+        results = [d for d in self.data if self._matches(d, query or {})]
+        if results and self._projection and "_id" not in self._projection:
+            return {k: v for k, v in results[0].items() if k != "_id"}
         return results[0] if results else None
     
     def find_one_and_update(self, query, update, return_document=False):
         """Mock find_one_and_update"""
-        doc = self.find_one(query)
+        doc = None
+        for d in self.data:
+            if self._matches(d, query):
+                doc = d
+                break
         if doc and "$set" in update:
             doc.update(update["$set"])
         return doc if return_document else None
     
     def update_one(self, query, update):
         """Mock update_one"""
-        doc = self.find_one(query)
-        if doc and "$set" in update:
-            doc.update(update["$set"])
+        for d in self.data:
+            if self._matches(d, query):
+                if "$set" in update:
+                    d.update(update["$set"])
+                return
     
     def aggregate(self, pipeline):
         """Mock aggregation"""

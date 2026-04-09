@@ -19,7 +19,7 @@ let poseHistory = [];
 let activityHistory = [];
 
 // Confidence threshold for activity detection
-const CONFIDENCE_THRESHOLD = 0.65;
+const CONFIDENCE_THRESHOLD = 0.55;
 
 /**
  * Initialize pose detection with TensorFlow.js MoveNet
@@ -282,9 +282,9 @@ function classifyActivity(features, poseSequence) {
 
   // SLEEPING: Lying down (high hip position, low body height, minimal movement)
   // Thresholds calibrated on activity recognition datasets
-  if (hipHeight > 0.6 && bodyHeight < 0.4 && velocity < 0.008) {
+  if (hipHeight > 0.58 && bodyHeight < 0.42 && velocity < 0.009) {
     activity = "Sleep";
-    confidence = 0.92;
+    confidence = 0.88;
     signals = { 
       posture: "lying", 
       movement: "minimal", 
@@ -294,13 +294,13 @@ function classifyActivity(features, poseSequence) {
   }
   
   // EATING: Sitting with hand near face + low movement
-  // Hand-to-mouth < 0.15 indicates eating gesture
-  else if (handToMouth < 0.15 && 
-           leftLegAngle > 75 && rightLegAngle > 75 && 
-           velocity < 0.04 &&
-           wristHeight < 0.5) {
+  // Hand-to-mouth < 0.22 indicates eating gesture (more sensitive)
+  else if (handToMouth < 0.22 && 
+           leftLegAngle > 68 && rightLegAngle > 68 && 
+           velocity < 0.06 &&
+           wristHeight < 0.54) {
     activity = "Eating";
-    confidence = 0.88;
+    confidence = 0.84;
     signals = { 
       posture: "sitting", 
       hand_to_face: true, 
@@ -310,13 +310,13 @@ function classifyActivity(features, poseSequence) {
   }
   
   // WALKING: High velocity + leg asymmetry (gait pattern) + standing
-  // Leg asymmetry > 20° indicates walking gait
-  else if (velocity > 0.04 && 
-           legAsymmetry > 20 && 
-           bodyHeight > 0.5 &&
-           hipHeight < 0.5) {
+  // Leg asymmetry > 18° indicates walking gait
+  else if (velocity > 0.038 && 
+           legAsymmetry > 18 && 
+           bodyHeight > 0.49 &&
+           hipHeight < 0.52) {
     activity = "Walking";
-    confidence = 0.85;
+    confidence = 0.83;
     signals = { 
       posture: "standing", 
       gait_detected: true, 
@@ -326,12 +326,12 @@ function classifyActivity(features, poseSequence) {
   }
   
   // SITTING / REST: Bent legs + low movement + moderate body height
-  else if (leftLegAngle > 65 && rightLegAngle > 65 && 
-           velocity < 0.03 && 
-           bodyHeight > 0.35 && bodyHeight < 0.6 &&
-           hipHeight > 0.4 && hipHeight < 0.65) {
+  else if (leftLegAngle > 63 && rightLegAngle > 63 && 
+           velocity < 0.034 && 
+           bodyHeight > 0.32 && bodyHeight < 0.62 &&
+           hipHeight > 0.37 && hipHeight < 0.67) {
     activity = "Sitting / rest";
-    confidence = 0.90;
+    confidence = 0.88;
     signals = { 
       posture: "sitting", 
       movement: "low",
@@ -340,12 +340,12 @@ function classifyActivity(features, poseSequence) {
   }
   
   // WAKE UP / STANDING: Upright posture + moderate movement
-  else if (bodyHeight > 0.5 && 
-           hipHeight < 0.4 &&
-           velocity > 0.01 && velocity < 0.06 &&
-           leftLegAngle < 160 && rightLegAngle < 160) {
+  else if (bodyHeight > 0.49 && 
+           hipHeight < 0.42 &&
+           velocity > 0.008 && velocity < 0.075 &&
+           leftLegAngle < 162 && rightLegAngle < 162) {
     activity = "Wake up";
-    confidence = 0.78;
+    confidence = 0.76;
     signals = { 
       posture: "standing", 
       movement: "moderate",

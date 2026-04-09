@@ -133,12 +133,13 @@ export default function ActivityDetectorMonitor() {
 
     try {
       setDebugInfo("🔄 Initializing MoveNet ML pose detection...");
+      console.log("Starting pose detection with schedule:", schedule);
       await initializePoseDetection(videoRef.current, handleActivityDetected);
       setIsDetecting(true);
-      setDebugInfo("✓ ML Activity detection active - MoveNet pose detection running");
+      setDebugInfo("✓ ML Activity detection active - MoveNet pose detection running\n📷 Position yourself in front of the camera");
     } catch (error) {
       console.error("Error:", error);
-      setDebugInfo(`✗ Error: ${error.message}`);
+      setDebugInfo(`✗ Error initializing detection: ${error.message}\n\nMake sure to allow camera permission!`);
     }
   };
 
