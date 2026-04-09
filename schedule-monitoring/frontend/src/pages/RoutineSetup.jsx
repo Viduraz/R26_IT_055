@@ -1,20 +1,60 @@
 // schedule-monitoring/frontend/src/pages/RoutineSetup.jsx
 import { useState } from "react";
 import { createSchedule } from "../services/scheduleApi";
+import { useNavigate } from "react-router-dom";
 
 const ACTIVITY_TYPES = [
   "Wake up",
-  "Morning walk",
-  "Breakfast",
-  "Medication",
+  "Eating",
+  "Walking",
   "Sitting / rest",
-  "Lunch",
-  "Evening walk",
-  "Dinner",
   "Sleep"
 ];
 
+// Sample schedule templates for quick testing
+const SAMPLE_SCHEDULES = {
+  morning: {
+    name: "📅 Morning Routine (6:00 AM - 8:00 AM)",
+    description: "Quick morning activities for testing",
+    activities: [
+      { activity_name: "Wake up", start_time: "06:00", end_time: "06:15" },
+      { activity_name: "Eating", start_time: "06:15", end_time: "06:30" },
+      { activity_name: "Walking", start_time: "06:30", end_time: "06:45" },
+      { activity_name: "Sitting / rest", start_time: "06:45", end_time: "07:00" }
+    ]
+  },
+  fullday: {
+    name: "🌅 Full Day Schedule (7:00 AM - 9:00 PM)",
+    description: "Complete daily routine",
+    activities: [
+      { activity_name: "Wake up", start_time: "07:00", end_time: "07:30" },
+      { activity_name: "Eating", start_time: "07:30", end_time: "08:00" },
+      { activity_name: "Walking", start_time: "08:00", end_time: "09:00" },
+      { activity_name: "Sitting / rest", start_time: "09:00", end_time: "12:00" },
+      { activity_name: "Eating", start_time: "12:00", end_time: "12:30" },
+      { activity_name: "Walking", start_time: "12:30", end_time: "13:00" },
+      { activity_name: "Sitting / rest", start_time: "13:00", end_time: "17:00" },
+      { activity_name: "Eating", start_time: "17:00", end_time: "17:30" },
+      { activity_name: "Walking", start_time: "17:30", end_time: "18:00" },
+      { activity_name: "Sitting / rest", start_time: "18:00", end_time: "21:00" },
+      { activity_name: "Sleep", start_time: "21:00", end_time: "07:00" }
+    ]
+  },
+  testing: {
+    name: "🧪 Quick Test Schedule (All 5 Activities)",
+    description: "15-minute activities for quick testing",
+    activities: [
+      { activity_name: "Wake up", start_time: "08:00", end_time: "08:15" },
+      { activity_name: "Eating", start_time: "08:15", end_time: "08:30" },
+      { activity_name: "Walking", start_time: "08:30", end_time: "08:45" },
+      { activity_name: "Sitting / rest", start_time: "08:45", end_time: "09:00" },
+      { activity_name: "Sleep", start_time: "09:00", end_time: "09:15" }
+    ]
+  }
+};
+
 export default function RoutineSetup() {
+  const navigate = useNavigate();
   const [activities, setActivities] = useState([]);
   const [description, setDescription] = useState("");
   const [currentActivity, setCurrentActivity] = useState("");
@@ -23,6 +63,26 @@ export default function RoutineSetup() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [showTemplates, setShowTemplates] = useState(true);
+
+  const loadTemplate = (templateKey) => {
+    const template = SAMPLE_SCHEDULES[templateKey];
+    setActivities(template.activities);
+    setDescription(template.description);
+    setShowTemplates(false);
+    setMessage(`✓ Loaded: ${template.name}`);
+    setTimeout(() => setMessage(""), 3000);
+  };
+
+  const clearAll = () => {
+    setActivities([]);
+    setDescription("");
+    setCurrentActivity("");
+    setStartTime("06:00");
+    setEndTime("06:30");
+    setMessage("✓ Cleared all activities");
+    setTimeout(() => setMessage(""), 3000);
+  };
 
   const addActivity = () => {
     if (!currentActivity || !startTime || !endTime) {
@@ -81,13 +141,22 @@ export default function RoutineSetup() {
 
     try {
       const response = await createSchedule(activities, description);
-      setMessage("✓ Schedule created successfully!");
+      setMessage("✓ Schedule created successfully! Redirecting...");
       setActivities([]);
       setDescription("");
       setStartTime("06:00");
       setEndTime("06:30");
+      
+      // Redirect to dashboard after 1.5 seconds
+      setTimeout(() => {
+        navigate("/", { state: { message: "Schedule created! Ready to test activity detection." } });
+      }, 1500);
     } catch (err) {
-      setError(err.response?.data?.detail || "Failed to create schedule");
+      console.error("=== CREATE SCHEDULE ERROR ===");
+      console.error("Response data:", err.response?.data);
+      console.error("Error message:", err.message);
+      console.error("Full error:", err);
+      setError(err.response?.data?.detail || "Unknown error - check console");
     } finally {
       setLoading(false);
     }
@@ -96,9 +165,39 @@ export default function RoutineSetup() {
   return (
     <div className="min-h-screen bg-gray-950 text-white p-8">
       <h1 className="text-3xl font-bold mb-2">Routine Setup</h1>
-      <p className="text-gray-400 mb-8">Create a daily schedule with activities and time ranges for the elder.</p>
+      <p className="text-gray-400 mb-8">Create a daily schedule with activities and time ranges for the elder. Use templates for quick testing!</p>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      {/* Sample Templates Section */}
+      {showTemplates && (
+        <div className="mb-8 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-700/50 rounded-xl p-6">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className="text-xl font-semibold text-blue-300 mb-2">⚡ Quick Start Templates</h2>
+              <p className="text-gray-400">Load a pre-built schedule in seconds for testing</p>
+            </div>
+            <button
+              onClick={() => setShowTemplates(false)}
+              className="text-gray-400 hover:text-white text-xl"
+            >
+              ✕
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {Object.entries(SAMPLE_SCHEDULES).map(([key, template]) => (
+              <button
+                key={key}
+                onClick={() => loadTemplate(key)}
+                className="bg-gray-900 hover:bg-gray-800 border border-gray-700 hover:border-blue-500 rounded-lg p-4 text-left transition"
+              >
+                <p className="font-semibold text-white mb-2">{template.name}</p>
+                <p className="text-sm text-gray-400">{template.activities.length} activities</p>
+                <p className="text-xs text-gray-500 mt-2">{template.description}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
         {/* Form Section */}
         <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
           <h2 className="text-xl font-semibold mb-6 text-blue-400">Activity Input</h2>
@@ -205,21 +304,40 @@ export default function RoutineSetup() {
               <strong className="text-white">{activities.length}</strong> activities scheduled
             </p>
 
-            {/* Submit Button */}
-            <button
-              onClick={handleSubmit}
-              disabled={loading || activities.length === 0}
-              className={`w-full font-semibold rounded py-3 transition ${
-                loading || activities.length === 0
-                  ? "bg-gray-700 text-gray-400 cursor-not-allowed"
-                  : "bg-green-600 hover:bg-green-700 text-white"
-              }`}
-            >
-              {loading ? "Creating schedule..." : "✓ Create Schedule"}
-            </button>
+            <div className="grid grid-cols-2 gap-3">
+              {/* Submit Button */}
+              <button
+                onClick={handleSubmit}
+                disabled={loading || activities.length === 0}
+                className={`font-semibold rounded py-3 transition ${
+                  loading || activities.length === 0
+                    ? "bg-gray-700 text-gray-400 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-700 text-white"
+                }`}
+              >
+                {loading ? "Creating..." : "✓ Create Schedule"}
+              </button>
+
+              {/* Clear Button */}
+              <button
+                onClick={clearAll}
+                disabled={activities.length === 0}
+                className={`font-semibold rounded py-3 transition ${
+                  activities.length === 0
+                    ? "bg-gray-700 text-gray-400 cursor-not-allowed"
+                    : "bg-gray-700 hover:bg-gray-600 text-white"
+                }`}
+              >
+                ✕ Clear All
+              </button>
+            </div>
+
+            {/* Info Note */}
+            <div className="mt-4 p-3 bg-blue-900/20 border border-blue-700/30 rounded text-xs text-blue-300">
+              💡 After creating a schedule, go to the Dashboard and click "📷 Show Detector" to test activity detection!
+            </div>
           </div>
         </div>
-      </div>
     </div>
   );
 }

@@ -21,51 +21,51 @@ _user = {"user_id": "dev-user"}
 
 
 @router.get("/", summary="Get current schedule")
-async def _get():
+def _get():
     """Retrieve the current schedule with all activities."""
-    return await get_schedule(_user)
+    return get_schedule(_user)
 
 
 @router.post("/", summary="Create/update schedule")
-async def _create(payload: CreateScheduleSchema = Body(...)):
+def _create(payload: CreateScheduleSchema = Body(...)):
     """Create a new schedule with activities and time ranges."""
-    return await create_schedule(_user, payload)
+    return create_schedule(_user, payload)
 
 
 @router.get("/logs", summary="Get activity logs")
-async def _logs():
+def _logs():
     """Retrieve all activity detection logs with status (Done/Late/Missed)."""
-    return await get_activity_logs(_user)
+    return get_activity_logs(_user)
 
 
 @router.post("/logs/{schedule_id}/detect", summary="Log detected activity")
-async def _log_activity(schedule_id: str, payload: ActivityDetectionSchema = Body(...)):
+def _log_activity(schedule_id: str, payload: ActivityDetectionSchema = Body(...)):
     """
     Called by vision module when an activity is detected.
     Validates against 20-minute rule automatically.
     """
-    return await log_detected_activity(_user, schedule_id, payload)
+    return log_detected_activity(_user, schedule_id, payload)
 
 
 @router.get("/notifications", summary="Get notifications")
-async def _notifications(unread_only: bool = False):
+def _notifications(unread_only: bool = False):
     """Retrieve all Late/Missed notifications for the owner."""
-    return await get_notifications(_user, unread_only)
+    return get_notifications(_user, unread_only)
 
 
 @router.post("/notifications/{notification_id}/read", summary="Mark notification as read")
-async def _mark_read(notification_id: str):
+def _mark_read(notification_id: str):
     """Mark a specific notification as read."""
-    return await mark_notification_read(_user, notification_id)
+    return mark_notification_read(_user, notification_id)
 
 
 @router.get("/reports", summary="Get activity reports")
-async def _reports():
+def _reports():
     """Get statistics of all activities (Done/Late/Missed counts)."""
-    return await get_reports(_user)
+    return get_reports(_user)
 
 
 @router.get("/deviations", summary="Get detected deviations")
-async def _deviations():
+def _deviations():
     """Get all activity mismatches (unexpected activities detected)."""
-    return await get_deviations(_user)
+    return get_deviations(_user)

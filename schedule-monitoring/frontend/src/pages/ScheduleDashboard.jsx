@@ -1,9 +1,11 @@
 // schedule-monitoring/frontend/src/pages/ScheduleDashboard.jsx
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getDeviations, getSchedule, getNotifications, getActivityLogs } from "../services/scheduleApi";
 import ActivityDetectorMonitor from "../components/ActivityDetectorMonitor";
 
 export default function ScheduleDashboard() {
+  const navigate = useNavigate();
   const [schedule, setSchedule] = useState([]);
   const [deviations, setDeviations] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -46,6 +48,12 @@ export default function ScheduleDashboard() {
           <p className="text-gray-400 mt-1">Real-time activity tracking and alerts</p>
         </div>
         <div className="flex gap-3">
+          <button
+            onClick={() => navigate("/routine-setup")}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold text-sm transition"
+          >
+            ➕ Create Schedule
+          </button>
           <button
             onClick={() => setShowDetector(!showDetector)}
             className={`px-4 py-2 rounded font-semibold text-sm transition ${

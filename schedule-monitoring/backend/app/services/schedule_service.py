@@ -31,7 +31,7 @@ class ScheduleService:
 
     # ==================== SCHEDULE CRUD ====================
 
-    async def create_schedule(self, user_id: str, activities: list, description: str = None) -> dict:
+    def create_schedule(self, user_id: str, activities: list, description: str = None) -> dict:
         """
         Create a new schedule with activities and time ranges.
         activities: [{"activity_name": "Wake up", "start_time": "06:00", "end_time": "06:30"}, ...]
@@ -49,7 +49,7 @@ class ScheduleService:
         _schedules().insert_one(schedule)
         return {**schedule, "_id": None}
 
-    async def get_schedule(self, user_id: str = None) -> list:
+    def get_schedule(self, user_id: str = None) -> list:
         """Get all active schedules for a user or all schedules if user_id is None."""
         query = {"active": True}
         if user_id:
@@ -57,7 +57,7 @@ class ScheduleService:
         schedules = list(_schedules().find(query, {"_id": 0}))
         return schedules
 
-    async def update_schedule(self, schedule_id: str, activities: list, description: str = None) -> dict:
+    def update_schedule(self, schedule_id: str, activities: list, description: str = None) -> dict:
         """Update an existing schedule."""
         updated_schedule = _schedules().find_one_and_update(
             {"schedule_id": schedule_id},
@@ -72,7 +72,7 @@ class ScheduleService:
             updated_schedule.pop("_id", None)
         return updated_schedule
 
-    async def delete_schedule(self, schedule_id: str):
+    def delete_schedule(self, schedule_id: str):
         """Soft delete a schedule."""
         _schedules().update_one(
             {"schedule_id": schedule_id},
@@ -81,7 +81,7 @@ class ScheduleService:
 
     # ==================== ACTIVITY LOGGING ====================
 
-    async def log_activity_detection(self, schedule_id: str, activity_name: str, 
+    def log_activity_detection(self, schedule_id: str, activity_name: str, 
                                     detected_at: datetime, confidence: float, signals: dict) -> dict:
         """
         Log detected activity and validate against 20-minute rule.
@@ -132,7 +132,7 @@ class ScheduleService:
 
         # Send notification if Late
         if status == "Late":
-            await self.create_notification(
+            self.create_notification(
                 schedule["user_id"],
                 activity_name,
                 "Late",
@@ -141,7 +141,7 @@ class ScheduleService:
 
         return log_entry
 
-    async def log_missed_activity(self, schedule_id: str, activity_name: str, 
+    def log_missed_activity(self, schedule_id: str, activity_name: str, 
                                  expected_end_time: str) -> dict:
         """
         Log a missed activity (not detected during full time range).
@@ -163,7 +163,7 @@ class ScheduleService:
         log_entry["_id"] = str(result.inserted_id)
 
         # Send notification for missed activity
-        await self.create_notification(
+        self.create_notification(
             schedule["user_id"],
             activity_name,
             "Missed",
@@ -172,7 +172,7 @@ class ScheduleService:
 
         return log_entry
 
-    async def get_activity_logs(self, user_id: str = None, limit: int = 100) -> list:
+    def get_activity_logs(self, user_id: str = None, limit: int = 100) -> list:
         """Get activity logs for a user."""
         query = {}
         if user_id:
@@ -195,7 +195,7 @@ class ScheduleService:
 
     # ==================== NOTIFICATION SYSTEM ====================
 
-    async def create_notification(self, user_id: str, activity_name: str, 
+    def create_notification(self, user_id: str, activity_name: str, 
                                  status: str, message: str) -> dict:
         """Create a notification (Late or Missed)."""
         notification = {
@@ -210,14 +210,14 @@ class ScheduleService:
         _notifications().insert_one(notification)
         return {k: v for k, v in notification.items() if k != "_id"}
 
-    async def get_notifications(self, user_id: str, unread_only: bool = False) -> list:
+    def get_notifications(self, user_id: str, unread_only: bool = False) -> list:
         """Get notifications for a user."""
         query = {"user_id": user_id}
         if unread_only:
             query["read"] = False
         return list(_notifications().find(query, {"_id": 0}).sort("created_at", -1).limit(50))
 
-    async def mark_notification_as_read(self, notification_id: str):
+    def mark_notification_as_read(self, notification_id: str):
         """Mark a notification as read."""
         _notifications().update_one(
             {"notification_id": notification_id},
@@ -226,7 +226,7 @@ class ScheduleService:
 
     # ==================== DEVIATION DETECTION ====================
 
-    async def log_deviation(self, schedule_id: str, expected_activity: str, 
+    def log_deviation(self, schedule_id: str, expected_activity: str, 
                            observed_activity: str, severity: str = "medium") -> dict:
         """Log a deviation (activity mismatch)."""
         deviation = {
@@ -239,7 +239,7 @@ class ScheduleService:
         _deviations().insert_one(deviation)
         return {k: v for k, v in deviation.items() if k != "_id"}
 
-    async def get_deviations(self, user_id: str = None, limit: int = 50) -> list:
+    def get_deviations(self, user_id: str = None, limit: int = 50) -> list:
         """Get all deviations, optionally filtered by user."""
         query = {}
         if user_id:
@@ -262,7 +262,7 @@ class ScheduleService:
 
     # ==================== REPORTING ====================
 
-    async def get_reports(self) -> list:
+    def get_reports(self) -> list:
         """Generate activity reports from logs."""
         pipeline = [
             {"$group": {
