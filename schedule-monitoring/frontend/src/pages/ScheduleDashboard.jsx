@@ -158,38 +158,57 @@ export default function ScheduleDashboard() {
                 )}
               </div>
 
-              {/* Recent Activity Logs */}
+              {/* Recent Activity Logs with Adaptive Info */}
               <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-                <h2 className="text-xl font-semibold mb-4">Recent Activity Logs</h2>
+                <h2 className="text-xl font-semibold mb-4">Recent Activity Logs (Phase 1: Adaptive)</h2>
                 {recentLogs.length === 0 ? (
                   <p className="text-gray-400 text-sm">No activities detected yet</p>
                 ) : (
                   <div className="space-y-2">
-                    {recentLogs.map((log, idx) => (
-                      <div
-                        key={idx}
-                        className={`py-3 px-4 rounded-lg border flex items-center gap-3 ${
-                          log.status === "Done"
-                            ? "bg-green-900/20 border-green-700 text-green-300"
-                            : log.status === "Late"
-                            ? "bg-yellow-900/20 border-yellow-700 text-yellow-300"
-                            : "bg-red-900/20 border-red-700 text-red-300"
-                        }`}
-                      >
-                        <span className="text-lg">
-                          {log.status === "Done" ? "✓" : log.status === "Late" ? "⚠" : "✕"}
-                        </span>
-                        <div className="flex-1">
-                          <p className="font-medium">{log.activity_name}</p>
-                          <p className="text-xs opacity-75">
-                            {log.detected_at
-                              ? new Date(log.detected_at).toLocaleTimeString()
-                              : "Not detected"}
-                          </p>
+                    {recentLogs.map((log, idx) => {
+                      // Map old and new status types
+                      const statusType = log.status || "Unknown";
+                      let statusColor = "bg-gray-900/20 border-gray-700 text-gray-300";
+                      let statusIcon = "?";
+                      
+                      if (statusType === "On Time" || statusType === "Done") {
+                        statusColor = "bg-green-900/20 border-green-700 text-green-300";
+                        statusIcon = "✓";
+                      } else if (statusType === "Slightly Late") {
+                        statusColor = "bg-yellow-900/20 border-yellow-700 text-yellow-300";
+                        statusIcon = "⚠";
+                      } else if (statusType === "Late" || statusType === "Missed") {
+                        statusColor = "bg-red-900/20 border-red-700 text-red-300";
+                        statusIcon = "✕";
+                      }
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`py-3 px-4 rounded-lg border flex items-start gap-3 ${statusColor}`}
+                        >
+                          <span className="text-lg pt-0.5">{statusIcon}</span>
+                          <div className="flex-1">
+                            <div className="flex justify-between">
+                              <p className="font-medium">{log.activity_name}</p>
+                              <span className="text-xs px-2 py-1 rounded bg-black/30">{statusType}</span>
+                            </div>
+                            <p className="text-xs opacity-75 mt-1">
+                              {log.detected_at
+                                ? new Date(log.detected_at).toLocaleTimeString()
+                                : "Not detected"}
+                            </p>
+                            {/* Show adaptive threshold details if available */}
+                            {log.adaptive_grace_minutes !== undefined && (
+                              <div className="flex gap-4 text-xs opacity-70 mt-2">
+                                <span>Grace: {log.adaptive_grace_minutes}min</span>
+                                <span>Delay: {log.delay_minutes}min</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                        <span className="text-xs px-2 py-1 rounded bg-black/30">{log.status}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

@@ -281,14 +281,15 @@ function classifyActivity(features, poseSequence) {
   let signals = {};
 
   // SLEEPING: Lying down (high hip position, low body height, minimal movement)
-  // Thresholds calibrated on activity recognition datasets
-  if (hipHeight > 0.58 && bodyHeight < 0.42 && velocity < 0.009) {
+  // RELAXED THRESHOLDS FOR TESTING - will be tightened after calibration
+  if (hipHeight > 0.50 && bodyHeight < 0.50 && velocity < 0.012) {
     activity = "Sleep";
-    confidence = 0.88;
+    confidence = 0.85;
     signals = { 
       posture: "lying", 
       movement: "minimal", 
       hipHeight: hipHeight.toFixed(2),
+      bodyHeight: bodyHeight.toFixed(2),
       velocity: velocity.toFixed(4)
     };
   }

@@ -22,6 +22,11 @@ export const getActivityLogs = () => scheduleApi.get("/logs");
 export const logDetectedActivity = (scheduleId, activity) =>
   scheduleApi.post(`/logs/${scheduleId}/detect`, activity);
 
+// ========== Activity Validation (NEW - Phase 1) ==========
+// Validates activity with adaptive thresholds and returns status info
+export const validateActivityWithAdaptive = (scheduleId, activity) =>
+  scheduleApi.post(`/logs/${scheduleId}/validate`, activity);
+
 // ========== Notifications ==========
 export const getNotifications = (unreadOnly = false) =>
   scheduleApi.get(`/notifications?unread_only=${unreadOnly}`);
