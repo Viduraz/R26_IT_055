@@ -21,68 +21,29 @@ class ScheduleService:
     Schedule Service with Adaptive Thresholds (Phase 1 ML)
     """
 
-    # ====================== ADAPTIVE ML LOGIC ======================
+    # ====================== 20-MINUTE RULE LOGIC ======================
 
-    def get_adaptive_grace_period(self, user_id: str, activity_name: str) -> int:
-        """Learn personalized grace period from past behavior"""
-        logs = list(_activity_logs().find({
-            "user_id": user_id,
-            "activity_name": {"$regex": f"^{activity_name}$", "$options": "i"}
-        }).sort("detected_at", -1).limit(50))
-
-        if len(logs) < 8:
-            return 20
-
-        delays = []
-        for log in logs:
-            if not log.get("expected_start") or not log.get("detected_at"):
-                continue
-
-            detected = log["detected_at"]
-            if isinstance(detected, str):
-                detected = datetime.fromisoformat(detected.replace('Z', '+00:00'))
-
-            if isinstance(log["expected_start"], str):
-                expected_time = datetime.strptime(log["expected_start"], "%H:%M").time()
-                expected = datetime.combine(detected.date(), expected_time)
-            else:
-                expected = log["expected_start"]
-
-            delay_min = (detected - expected).total_seconds() / 60
-
-            if -20 < delay_min < 120:
-                delays.append(delay_min)
-
-        if len(delays) < 6:
-            return 20
-
-        delays_arr = np.array(delays)
-        mean_delay = float(np.mean(delays_arr))
-        std_delay = float(np.std(delays_arr))
-
-        grace = mean_delay + (1.8 * std_delay)
-        grace = max(12, min(45, round(grace)))
-        return grace
-
-    def check_activity_status(self, user_id: str, activity_name: str,
-                              expected_start: datetime, detected_at: datetime) -> dict:
-        grace_minutes = self.get_adaptive_grace_period(user_id, activity_name)
+    def check_activity_status(self, expected_start: datetime, detected_at: datetime) -> dict:
+        grace_minutes = 20
         deadline = expected_start + timedelta(minutes=grace_minutes)
-        delay_minutes = round((detected_at - expected_start).total_seconds() / 60, 1)
+        
+        # Calculate time difference in minutes
+        diff_seconds = (detected_at - expected_start).total_seconds()
+        delay_minutes = round(diff_seconds / 60, 1)
 
-        if detected_at <= deadline:
-            status = "On Time"
-            confidence = 0.92
-        elif delay_minutes <= grace_minutes + 18:
-            status = "Slightly Late"
-            confidence = 0.65
+        if detected_at < expected_start:
+            status = "Early"
+            confidence = 1.0
+        elif detected_at <= deadline:
+            status = "Done"
+            confidence = 1.0
         else:
             status = "Late"
-            confidence = 0.52
+            confidence = 1.0
 
         return {
             "status": status,
-            "adaptive_grace_minutes": grace_minutes,
+            "grace_minutes": grace_minutes,
             "delay_minutes": delay_minutes,
             "confidence": confidence,
             "deadline": deadline.isoformat()
@@ -98,8 +59,11 @@ class ScheduleService:
             return {"error": "Schedule not found"}
 
         target_activity = None
-        for act in schedule.get("activities", []):
-            if act.get("activity_name", "").lower() == activity_name.lower():
+        activities = schedule.get("activities", []) if isinstance(schedule, dict) else getattr(schedule, "activities", [])
+        
+        for act in activities:
+            act_name = act.get("activity_name", "") if isinstance(act, dict) else getattr(act, "activity_name", "")
+            if act_name.lower() == activity_name.lower():
                 target_activity = act
                 break
 
@@ -107,12 +71,11 @@ class ScheduleService:
             return {"error": f"Activity '{activity_name}' not found in schedule"}
 
         # Expected time today
-        start_time = datetime.strptime(target_activity["start_time"], "%H:%M").time()
+        target_start = target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time
+        start_time = datetime.strptime(target_start, "%H:%M").time()
         expected_start = datetime.combine(datetime.now().date(), start_time)
 
         status_info = self.check_activity_status(
-            user_id=schedule["user_id"],
-            activity_name=activity_name,
             expected_start=expected_start,
             detected_at=detected_at
         )
@@ -121,11 +84,11 @@ class ScheduleService:
             "schedule_id": schedule_id,
             "user_id": schedule["user_id"],
             "activity_name": activity_name,
-            "expected_start": target_activity["start_time"],
-            "expected_end": target_activity["end_time"],
+            "expected_start": target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time,
+            "expected_end": target_activity.get("end_time") if isinstance(target_activity, dict) else target_activity.end_time,
             "detected_at": detected_at,
             "status": status_info["status"],
-            "adaptive_grace_minutes": status_info["adaptive_grace_minutes"],
+            "adaptive_grace_minutes": status_info["grace_minutes"],
             "delay_minutes": status_info["delay_minutes"],
             "detection_confidence": confidence,
             "signals": signals,
@@ -134,17 +97,78 @@ class ScheduleService:
 
         result = _activity_logs().insert_one(log_entry)
 
-        if status_info["status"] in ["Late", "Slightly Late"]:
+        if status_info["status"] == "Late":
             self.create_notification(
                 schedule["user_id"],
                 activity_name,
                 status_info["status"],
-                f"{activity_name} detected {status_info['status'].lower()} "
-                f"(Delay: {status_info['delay_minutes']} min | Grace: {status_info['adaptive_grace_minutes']} min)"
+                f"{activity_name} was detected late "
+                f"(Delay: {status_info['delay_minutes']} min. Over 20-minute limit)."
             )
 
         log_entry["_id"] = str(result.inserted_id)
         return log_entry
+
+    # ====================== BACKGROUND TASKS ======================
+
+    def check_missed_activities(self):
+        """Background task to check for missed activities."""
+        schedules = list(_schedules().find({}))
+        local_now = datetime.now()
+        
+        for schedule in schedules:
+            user_id = schedule.get("user_id")
+            schedule_id = schedule.get("schedule_id")
+            activities = schedule.get("activities", []) if isinstance(schedule, dict) else getattr(schedule, "activities", [])
+            for activity in activities:
+                activity_name = activity.get("activity_name") if isinstance(activity, dict) else getattr(activity, "activity_name", None)
+                end_time_str = activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None)
+                if not end_time_str:
+                    continue
+                
+                try:
+                    end_time_obj = datetime.strptime(end_time_str, "%H:%M").time()
+                    expected_end = datetime.combine(local_now.date(), end_time_obj)
+                except ValueError:
+                    continue
+                
+                # Check if current time is past the end_time
+                if local_now > expected_end:
+                    # Check if there is any log for this activity today
+                    start_of_day = datetime.combine(local_now.date(), datetime.min.time())
+                    end_of_day = datetime.combine(local_now.date(), datetime.max.time())
+                    
+                    # We look for a log that matches activity_name exactly and is for today
+                    log = _activity_logs().find_one({
+                        "schedule_id": schedule_id,
+                        "activity_name": activity_name,
+                        "created_at": {"$gte": start_of_day, "$lte": end_of_day}
+                    })
+                    
+                    if not log:
+                        # Mark as Missed
+                        log_entry = {
+                            "schedule_id": schedule_id,
+                            "user_id": user_id,
+                            "activity_name": activity_name,
+                            "expected_start": activity.get("start_time") if isinstance(activity, dict) else getattr(activity, "start_time", None),
+                            "expected_end": activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None),
+                            "detected_at": None,
+                            "status": "Missed",
+                            "adaptive_grace_minutes": 20,
+                            "delay_minutes": None,
+                            "detection_confidence": 1.0,
+                            "signals": {},
+                            "created_at": datetime.utcnow()
+                        }
+                        _activity_logs().insert_one(log_entry)
+                        
+                        self.create_notification(
+                            user_id,
+                            activity_name,
+                            "Missed",
+                            f"{activity_name} was entirely missed within its scheduled time."
+                        )
 
     # ====================== YOUR OTHER EXISTING METHODS ======================
     # Add all your other methods here (create_schedule, get_schedule, etc.)
@@ -163,6 +187,16 @@ class ScheduleService:
         result = _schedules().insert_one(schedule)
         schedule["_id"] = str(result.inserted_id)
         return schedule
+
+    def delete_schedule(self, user_id: str, schedule_id: str):
+        """Delete a schedule and all associated logs/notifications"""
+        # Delete the schedule
+        result = _schedules().delete_one({"schedule_id": schedule_id, "user_id": user_id})
+        if result.deleted_count > 0:
+            # Delete associated logs
+            _activity_logs().delete_many({"schedule_id": schedule_id})
+            return {"message": "Schedule deleted successfully", "deleted": True}
+        return {"error": "Schedule not found or you don't have permission to delete it", "deleted": False}
 
     def get_schedule(self, user_id: str = None):
         """Get all schedules for a user"""

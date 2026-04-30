@@ -18,7 +18,7 @@ def test_schedule_monitoring():
         "user_id": "dev-user",
         "activities": [
             {
-                "activity_name": "Wake up",
+                "activity_name": "Standing up",
                 "start_time": "06:00",
                 "end_time": "06:30"
             },
@@ -113,7 +113,7 @@ def test_schedule_monitoring():
     print("-" * 60)
     
     detections = {
-        "Wake up": {"signals": ["posture: lying→standing", "movement: high"], "confidence": 0.75},
+        "Standing up": {"signals": ["posture: lying→standing", "movement: high"], "confidence": 0.75},
         "Eating": {"signals": ["posture: sitting", "hand_movement: true", "mouth_movement: true"], "confidence": 0.85},
         "Walking": {"signals": ["posture: standing", "leg_movement: detected", "body_movement: high"], "confidence": 0.80},
         "Sitting / rest": {"signals": ["posture: sitting", "movement: low", "stability: high"], "confidence": 0.90},
@@ -158,7 +158,7 @@ def test_schedule_monitoring():
     
     logs = [
         {
-            "activity_name": "Wake up",
+            "activity_name": "Standing up",
             "expected_time": "06:00-06:30",
             "detected_at": "06:08",
             "status": "Done"

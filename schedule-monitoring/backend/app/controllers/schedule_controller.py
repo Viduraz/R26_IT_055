@@ -19,6 +19,11 @@ def create_schedule(user: dict, payload):
     )
 
 
+def delete_schedule(user: dict, schedule_id: str):
+    """Delete a schedule."""
+    return _svc.delete_schedule(user.get("user_id", "dev-user"), schedule_id)
+
+
 def log_detected_activity(user: dict, schedule_id: str, payload):
     """Log detected activity - Now uses Adaptive Thresholds automatically"""
     detected_at = payload.detected_at
@@ -43,9 +48,7 @@ def validate_activity(user: dict, payload: dict):
         # the correct one internally based on the schedule. 
         # You can improve this later by sending expected_start from frontend.
         return _svc.check_activity_status(
-            user_id=user.get("user_id"),
-            activity_name=payload["activity_name"],
-            expected_start=datetime.now(),           # Will be overridden inside service
+            expected_start=datetime.now(),
             detected_at=detected_at
         )
     except Exception as e:

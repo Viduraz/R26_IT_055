@@ -11,7 +11,8 @@ from app.controllers.schedule_controller import (
     log_detected_activity,
     get_notifications,
     mark_notification_read,
-    validate_activity,          # ← ADD THIS
+    validate_activity,
+    delete_schedule
 )
 from app.schemas.schedule_schema import CreateScheduleSchema, ActivityDetectionSchema
 
@@ -31,6 +32,12 @@ def _get():
 def _create(payload: CreateScheduleSchema = Body(...)):
     """Create a new schedule with activities and time ranges."""
     return create_schedule(_user, payload)
+
+
+@router.delete("/{schedule_id}", summary="Delete schedule")
+def _delete(schedule_id: str):
+    """Delete a specific schedule."""
+    return delete_schedule(_user, schedule_id)
 
 
 @router.get("/logs", summary="Get activity logs")

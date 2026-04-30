@@ -15,7 +15,7 @@ curl -X POST "$BASE_URL$ENDPOINT" \
   -d '{
     "activities": [
       {
-        "activity_name": "Wake up",
+        "activity_name": "Standing up",
         "start_time": "06:00",
         "end_time": "06:30"
       },
@@ -46,7 +46,7 @@ curl -X POST "$BASE_URL$ENDPOINT" \
   -d '{
     "activities": [
       {
-        "activity_name": "Wake up",
+        "activity_name": "Standing up",
         "start_time": "07:00",
         "end_time": "07:30"
       },
@@ -112,7 +112,7 @@ curl -X POST "$BASE_URL$ENDPOINT" \
   -d '{
     "activities": [
       {
-        "activity_name": "Wake up",
+        "activity_name": "Standing up",
         "start_time": "08:00",
         "end_time": "08:15"
       },

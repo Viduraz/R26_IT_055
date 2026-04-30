@@ -36,7 +36,7 @@ class ActivityLogSchema(BaseModel):
     expected_start: str
     expected_end: Optional[str] = None
     detected_at: Optional[datetime] = None
-    status: str                    # "On Time", "Slightly Late", "Late", "Unexpected", "Missed"
+    status: str                    # "Done", "Late", "Missed"
     
     # === New Adaptive Fields ===
     adaptive_grace_minutes: Optional[int] = None
@@ -54,7 +54,7 @@ class NotificationSchema(BaseModel):
     notification_id: str
     user_id: str
     activity_name: str
-    status: str                    # "Late", "Slightly Late", "Missed"
+    status: str                    # "Late", "Missed"
     message: str
     created_at: datetime
     read: bool = False

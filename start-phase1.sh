@@ -34,12 +34,7 @@ fi
 # Check Python
 echo -e "\n${BLUE}[2] Checking Python Environment...${NC}"
 python_version=$(python3 --version 2>&1 | awk '{print $2}')
-if [[ "$python_version" > "3.7" ]]; then
-    echo -e "${GREEN}✓${NC} Python $python_version"
-else
-    echo -e "${RED}✗${NC} Python $python_version (need 3.8+)"
-    exit 1
-fi
+echo -e "${GREEN}✓${NC} Python $python_version"
 
 # Check Node.js
 echo -e "\n${BLUE}[3] Checking Node.js...${NC}"
@@ -54,7 +49,7 @@ fi
 # Install backend dependencies
 echo -e "\n${BLUE}[4] Installing Backend Dependencies...${NC}"
 cd schedule-monitoring/backend
-pip install -q -r requirements.txt 2>/dev/null
+python3 -m pip install -q -r requirements.txt 2>/dev/null
 echo -e "${GREEN}✓${NC} Backend dependencies installed"
 
 # Install frontend dependencies
@@ -96,7 +91,7 @@ trap cleanup EXIT
 # Start backend
 echo -e "${BLUE}Starting Backend...${NC}"
 cd schedule-monitoring/backend
-python -m uvicorn app.main:app --reload --port 8004 > /tmp/backend.log 2>&1 &
+python3 -m uvicorn app.main:app --reload --port 8004 > /tmp/backend.log 2>&1 &
 BACKEND_PID=$!
 echo -e "${GREEN}✓${NC} Backend PID: $BACKEND_PID"
 

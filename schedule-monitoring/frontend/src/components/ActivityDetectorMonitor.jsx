@@ -8,19 +8,118 @@ import { initializePoseDetection, stopPoseDetection } from "../services/activity
 import { getSchedule, logDetectedActivity } from "../services/scheduleApi";
 
 const DETECTION_DEBOUNCE = 2000;
-const CONFIDENCE_THRESHOLD = 0.55;
+const CONFIDENCE_THRESHOLD = 0.50;
 
 // Status colors and icons based on adaptive threshold logic
 const STATUS_DISPLAY = {
-  "On Time": { color: "bg-green-900/20 border-green-700 text-green-300", icon: "✓", label: "On Time" },
+  "Done": { color: "bg-green-900/20 border-green-700 text-green-300", icon: "✓", label: "Done" },
+  "Early": { color: "bg-cyan-900/20 border-cyan-700 text-cyan-300", icon: "🕒", label: "Early" },
   "Slightly Late": { color: "bg-yellow-900/20 border-yellow-700 text-yellow-300", icon: "⚠", label: "Slightly Late" },
   "Late": { color: "bg-red-900/20 border-red-700 text-red-300", icon: "✕", label: "Late" },
   "Unexpected": { color: "bg-gray-900/20 border-gray-700 text-gray-300", icon: "?", label: "Not Scheduled" }
 };
 
+const GhostOutline = ({ expectedActivity, isAligned }) => {
+  const color = "#4ade80"; // Ghost outline is always green, live skeleton changes color
+  const dropShadow = isAligned ? "drop-shadow-[0_0_15px_rgba(74,222,128,0.8)]" : "drop-shadow-[0_0_10px_rgba(74,222,128,0.5)]";
+
+  if (expectedActivity?.toLowerCase() === "sleep") {
+    // Horizontal skeleton
+    return (
+      <svg width="450" height="250" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg" className={`animate-pulse-slow ${dropShadow}`}>
+        {/* Head */}
+        <circle cx="170" cy="50" r="12" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Torso */}
+        <rect x="90" y="40" width="65" height="20" rx="8" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Arms */}
+        <path d="M150 40 C140 25, 120 25, 110 40" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Legs */}
+        <path d="M90 50 C60 50, 40 50, 20 50" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        <path d="M90 60 C60 60, 40 60, 20 60" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+      </svg>
+    );
+  } else if (expectedActivity?.toLowerCase().includes("sit") || expectedActivity?.toLowerCase().includes("eat")) {
+    // Seated skeleton
+    return (
+      <svg width="250" height="350" viewBox="0 0 100 150" fill="none" xmlns="http://www.w3.org/2000/svg" className={`animate-pulse-slow ${dropShadow}`}>
+        {/* Head */}
+        <circle cx="50" cy="30" r="12" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Torso */}
+        <rect x="40" y="45" width="20" height="50" rx="8" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Arm */}
+        <path d="M45 55 C30 60, 20 75, 40 80" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Leg bent */}
+        <path d="M50 95 C65 95, 80 95, 85 130" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+      </svg>
+    );
+  } else if (expectedActivity?.toLowerCase().includes("drink")) {
+    // Seated skeleton — arm raised high (cup-to-lips gesture)
+    return (
+      <svg width="250" height="350" viewBox="0 0 100 150" fill="none" xmlns="http://www.w3.org/2000/svg" className={`animate-pulse-slow ${dropShadow}`}>
+        {/* Head */}
+        <circle cx="50" cy="30" r="12" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Torso */}
+        <rect x="40" y="45" width="20" height="50" rx="8" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Right arm raised high — elbow above shoulder, wrist near mouth */}
+        <path d="M58 50 C72 38, 72 28, 56 24" stroke={color} strokeWidth="2.5" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Left arm resting */}
+        <path d="M42 55 C32 65, 28 78, 32 90" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Legs bent — seated */}
+        <path d="M47 95 C42 110, 35 115, 28 115" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        <path d="M53 95 C58 110, 65 115, 72 115" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Cup icon hint */}
+        <rect x="52" y="18" width="8" height="10" rx="2" stroke={color} strokeWidth="1.5" strokeDasharray="2 2" opacity="0.6" />
+      </svg>
+    );
+  } else if (expectedActivity?.toLowerCase().includes("talk")) {
+    // Standing/seated skeleton — hand gesturing near chin/face
+    return (
+      <svg width="250" height="420" viewBox="0 0 100 180" fill="none" xmlns="http://www.w3.org/2000/svg" className={`animate-pulse-slow ${dropShadow}`}>
+        {/* Head */}
+        <circle cx="50" cy="22" r="13" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Torso */}
+        <rect x="36" y="38" width="28" height="55" rx="10" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Right arm — bent at elbow, hand near chin (talking gesture) */}
+        <path d="M62 45 C74 48, 76 56, 60 60" stroke={color} strokeWidth="2.5" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Left arm relaxed */}
+        <path d="M38 45 C26 52, 20 70, 24 85" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Legs */}
+        <path d="M42 93 C38 120, 35 148, 38 165" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        <path d="M58 93 C62 120, 65 148, 62 165" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Speech indicator */}
+        <path d="M62 30 Q72 25 72 32 Q72 39 62 36" stroke={color} strokeWidth="1.5" strokeDasharray="2 2" fill="none" opacity="0.6" />
+        <circle cx="66" cy="36" r="1.5" fill={color} opacity="0.5" />
+      </svg>
+    );
+  } else {
+    // Standing skeleton (Walking, Standing up)
+    return (
+      <svg width="250" height="450" viewBox="0 0 100 200" fill="none" xmlns="http://www.w3.org/2000/svg" className={`animate-pulse-slow ${dropShadow}`}>
+        {/* Head */}
+        <circle cx="50" cy="25" r="15" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Torso */}
+        <rect x="35" y="45" width="30" height="65" rx="10" stroke={color} strokeWidth="2" strokeDasharray="4 4" />
+        {/* Left Arm */}
+        <path d="M30 55 C20 60, 10 90, 15 110" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Right Arm */}
+        <path d="M70 55 C80 60, 90 90, 85 110" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Left Leg */}
+        <path d="M40 110 C35 140, 30 170, 35 190" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+        {/* Right Leg */}
+        <path d="M60 110 C65 140, 70 170, 65 190" stroke={color} strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" />
+      </svg>
+    );
+  }
+};
+
 export default function ActivityDetectorMonitor() {
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const expectedActivityRef = useRef(null);
   const [isDetecting, setIsDetecting] = useState(false);
+  const [currentExpected, setCurrentExpected] = useState("Walking");
+  const [demoOverride, setDemoOverride] = useState(null);
+  const [isAligned, setIsAligned] = useState(false);
   const [currentActivity, setCurrentActivity] = useState(null);
   const [schedule, setSchedule] = useState(null);
   const [detectionLogs, setDetectionLogs] = useState([]);
@@ -29,9 +128,38 @@ export default function ActivityDetectorMonitor() {
   const [liveFeatures, setLiveFeatures] = useState(null);
   const lastLogTimeRef = useRef({});
 
+  const activeExpected = demoOverride || currentExpected;
+
+  useEffect(() => {
+    expectedActivityRef.current = activeExpected;
+  }, [activeExpected]);
+
   useEffect(() => {
     fetchSchedule();
   }, []);
+
+  useEffect(() => {
+    if (!schedule) return;
+    const updateExpected = () => {
+      const now = new Date();
+      const currentTime = now.getHours() * 60 + now.getMinutes();
+      let active = schedule.activities[0]?.activity_name || "Walking";
+      for (const act of schedule.activities) {
+        const [startH, startM] = act.start_time.split(':').map(Number);
+        const [endH, endM] = act.end_time.split(':').map(Number);
+        const start = startH * 60 + startM;
+        const end = endH * 60 + endM;
+        if (currentTime >= start && currentTime <= end) {
+          active = act.activity_name;
+          break;
+        }
+      }
+      setCurrentExpected(active);
+    };
+    updateExpected();
+    const interval = setInterval(updateExpected, 60000);
+    return () => clearInterval(interval);
+  }, [schedule]);
 
   const fetchSchedule = async () => {
     try {
@@ -52,24 +180,31 @@ export default function ActivityDetectorMonitor() {
 
   const findScheduledActivity = (activityName) => {
     if (!schedule) return null;
-    
+
     return schedule.activities.find(
       (act) => act.activity_name.toLowerCase() === activityName.toLowerCase()
     );
   };
 
   const handleActivityDetected = async (detectionData) => {
-    setCurrentActivity(detectionData);
+    if (detectionData.activity_name === "Movement") {
+      setCurrentActivity(null); // Hide the purple popup entirely for generic movement
+    } else {
+      setCurrentActivity(detectionData);
+    }
     setStats((prev) => ({ ...prev, detected: prev.detected + 1 }));
 
     // Display live features for debugging
     if (detectionData.features) {
       setLiveFeatures({
-        hipHeight: detectionData.features[8]?.toFixed(3),
+        hipHeight: detectionData.features[10]?.toFixed(3),
         bodyHeight: detectionData.features[5]?.toFixed(3),
-        velocity: detectionData.features[6]?.toFixed(5),
+        velocity: detectionData.features[8]?.toFixed(5),
+        h2m: detectionData.features[7]?.toFixed(3),
+        torsoAlignment: detectionData.features[14]?.toFixed(2),
         activity: detectionData.activity_name,
-        confidence: (detectionData.confidence * 100).toFixed(0)
+        confidence: (detectionData.confidence * 100).toFixed(0),
+        source: detectionData.signals?.source || 'unknown'
       });
     }
 
@@ -80,13 +215,14 @@ export default function ActivityDetectorMonitor() {
     // Debounce detection
     if (now - lastTime < DETECTION_DEBOUNCE) return;
     if (detectionData.confidence < CONFIDENCE_THRESHOLD) return;
-    if (!schedule) {
-      setDebugInfo("⚠️ No schedule available");
-      return;
+    
+    // Ignore generic "Movement" to prevent flooding the logs and backend
+    if (detectionData.activity_name === "Movement") return;
+    let activityStatus = "Unexpected";
+    if (schedule) {
+      const scheduledActivity = findScheduledActivity(detectionData.activity_name);
+      activityStatus = scheduledActivity ? "Scheduled" : "Unexpected";
     }
-
-    const scheduledActivity = findScheduledActivity(detectionData.activity_name);
-    const activityStatus = scheduledActivity ? "Scheduled" : "Unexpected";
 
     // Prepare log entry (backend will add adaptive details)
     const logEntry = {
@@ -101,29 +237,38 @@ export default function ActivityDetectorMonitor() {
     };
 
     try {
-      // Send to backend for ML-based validation
-      const response = await logDetectedActivity(schedule.schedule_id, {
-        activity_name: detectionData.activity_name,
-        confidence: detectionData.confidence,
-        detected_at: detectionData.detected_at.toISOString(),
-        signals: detectionData.signals
-      });
+      if (schedule) {
+        // Send to backend for ML-based validation
+        const response = await logDetectedActivity(schedule.schedule_id, {
+          activity_name: detectionData.activity_name,
+          confidence: detectionData.confidence,
+          detected_at: detectionData.detected_at.toISOString(),
+          signals: detectionData.signals
+        });
 
-      // Update log entry with adaptive response data
-      const adaptiveData = response.data;
-      logEntry.status = adaptiveData.status || activityStatus;
-      logEntry.adaptive_grace_minutes = adaptiveData.adaptive_grace_minutes || "?";
-      logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
-      logEntry.deadline = adaptiveData.deadline ? new Date(adaptiveData.deadline).toLocaleTimeString() : "?";
-      logEntry.statusConfidence = adaptiveData.confidence || "--";
+        // Update log entry with adaptive response data
+        const adaptiveData = response.data;
+        logEntry.status = adaptiveData.status || activityStatus;
+        logEntry.adaptive_grace_minutes = adaptiveData.adaptive_grace_minutes || "?";
+        logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
+        logEntry.deadline = adaptiveData.deadline ? new Date(adaptiveData.deadline).toLocaleTimeString() : "?";
+        logEntry.statusConfidence = adaptiveData.confidence || "--";
 
-      // Update stats based on adaptive status
-      setStats((prev) => {
-        const updated = { ...prev, logged: prev.logged + 1 };
-        if (adaptiveData.status === "On Time") updated.onTime++;
-        else if (["Late", "Slightly Late"].includes(adaptiveData.status)) updated.late++;
-        return updated;
-      });
+        // Update stats based on adaptive status
+        setStats((prev) => {
+          const updated = { ...prev, logged: prev.logged + 1 };
+          if (adaptiveData.status === "On Time") updated.onTime++;
+          else if (["Late", "Slightly Late"].includes(adaptiveData.status)) updated.late++;
+          return updated;
+        });
+      } else {
+        logEntry.status = "Unexpected (No Schedule)";
+        logEntry.adaptive_grace_minutes = "N/A";
+        logEntry.delay_minutes = "N/A";
+        logEntry.deadline = "N/A";
+
+        setStats((prev) => ({ ...prev, logged: prev.logged + 1 }));
+      }
 
       setDetectionLogs((prev) => [logEntry, ...prev.slice(0, 9)]);
       lastLogTimeRef.current[key] = now;
@@ -139,16 +284,21 @@ export default function ActivityDetectorMonitor() {
   };
 
   const startDetection = async () => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || !canvasRef.current) return;
     if (!schedule) {
-      setDebugInfo("⚠️ Please create a schedule first!");
-      return;
+      setDebugInfo("⚠️ No schedule available, but detection will run in test mode!");
     }
 
     try {
       setDebugInfo("🔄 Initializing MoveNet ML pose detection...");
       console.log("Starting pose detection with ML-based schedule validation:", schedule);
-      await initializePoseDetection(videoRef.current, handleActivityDetected);
+      await initializePoseDetection(
+        videoRef.current,
+        canvasRef.current,
+        expectedActivityRef,
+        handleActivityDetected,
+        (aligned) => setIsAligned(aligned)
+      );
       setIsDetecting(true);
       setDebugInfo("✓ ML Activity detection active | Using adaptive thresholds per elder\n📷 Position yourself in front of the camera");
     } catch (error) {
@@ -162,6 +312,7 @@ export default function ActivityDetectorMonitor() {
       await stopPoseDetection();
       setIsDetecting(false);
       setCurrentActivity(null);
+      setIsAligned(false);
       setDebugInfo("⏹ Detection stopped");
     } catch (error) {
       console.error("Error:", error);
@@ -175,27 +326,62 @@ export default function ActivityDetectorMonitor() {
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold">📷 ML Activity Detection (Phase 1: Adaptive Thresholds)</h2>
           <span
-            className={`inline-block w-3 h-3 rounded-full ${
-              isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
-            }`}
+            className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
+              }`}
           />
         </div>
 
         {/* Webcam */}
-        <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: "16/9" }}>
+        <div className="relative bg-black rounded-lg overflow-hidden border border-gray-800 shadow-2xl" style={{ aspectRatio: "16/9" }}>
           <video
             ref={videoRef}
             autoPlay
             playsInline
-            style={{ width: "100%", height: "100%", display: "block" }}
+            style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
           />
-          <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded font-mono text-xs text-green-400">
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0 pointer-events-none w-full h-full object-cover"
+          />
+          <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded font-mono text-xs text-green-400 backdrop-blur-sm border border-green-500/20">
             {isDetecting ? "🟢 DETECTING" : "⚫ INACTIVE"}
           </div>
+
+
+
+          {/* Visual Signals Overlay (Left Side) */}
+          {isDetecting && liveFeatures && (
+            <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.h2m < 0.65 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
+                <span className="text-xs">🍽️</span> HAND NEAR FACE
+              </div>
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.velocity < 0.03 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
+                <span className="text-xs">🛑</span> BODY STILL
+              </div>
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.torsoAlignment > 1.1 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
+                <span className="text-xs">🛏️</span> LYING DOWN
+              </div>
+            </div>
+          )}
+
+
+
+          {/* Detected Activity (Right Side) */}
           {currentActivity && (
-            <div className="absolute bottom-4 right-4 bg-black/70 px-4 py-3 rounded">
-              <p className="text-green-300 font-semibold">{currentActivity.activity_name}</p>
-              <p className="text-xs text-gray-400">Confidence: {(currentActivity.confidence * 100).toFixed(0)}%</p>
+            <div className="absolute top-20 right-4 bg-black/80 px-4 py-3 rounded-lg border border-purple-500/30 backdrop-blur-md w-48 shadow-xl">
+              <p className="text-gray-400 text-[10px] uppercase tracking-widest mb-1">Detected Activity</p>
+              <p className="text-purple-400 font-bold text-base leading-none tracking-tight">
+                {currentActivity.activity_name}
+              </p>
+              <div className="w-full bg-gray-800 h-1 mt-3 rounded-full overflow-hidden">
+                <div
+                  className="bg-purple-500 h-full transition-all duration-300 shadow-[0_0_8px_rgba(168,85,247,0.5)]"
+                  style={{ width: `${(currentActivity.confidence * 100).toFixed(0)}%` }}
+                ></div>
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1 text-right font-mono">
+                {(currentActivity.confidence * 100).toFixed(0)}% CONFIDENCE
+              </p>
             </div>
           )}
         </div>
@@ -230,45 +416,17 @@ export default function ActivityDetectorMonitor() {
           {debugInfo || "Status: Ready"}
         </div>
 
-        {/* Live Feature Debug Panel */}
-        {isDetecting && liveFeatures && (
-          <div className="mt-3 p-3 bg-gray-950 border border-purple-700/50 rounded text-xs text-purple-300">
-            <p className="font-bold mb-2">🔍 ML Feature Values (Sleep Detection Thresholds - TEST MODE):</p>
-            <div className="space-y-1 font-mono text-purple-200">
-              <p>📍 Activity: <span className="text-cyan-300">{liveFeatures.activity}</span> | Conf: <span className="text-cyan-300">{liveFeatures.confidence}%</span></p>
-              <p>📏 Hip Height: <span className={liveFeatures.hipHeight > 0.50 ? "text-green-400 font-bold" : "text-gray-400"}>{liveFeatures.hipHeight}</span> <span className="text-gray-500">(need &gt;0.50 for sleep)</span></p>
-              <p>📐 Body Height: <span className={liveFeatures.bodyHeight < 0.50 ? "text-green-400 font-bold" : "text-gray-400"}>{liveFeatures.bodyHeight}</span> <span className="text-gray-500">(need &lt;0.50 for sleep)</span></p>
-              <p>🏃 Velocity: <span className={liveFeatures.velocity < 0.012 ? "text-green-400 font-bold" : "text-gray-400"}>{liveFeatures.velocity}</span> <span className="text-gray-500">(need &lt;0.012 for sleep)</span></p>
-              <p className="text-yellow-300 mt-2">⚠️ TEST MODE: Thresholds are relaxed for debugging. Will be tightened after calibration.</p>
-              <p className="text-purple-400">✓ = Green means threshold is MET | Gray means NOT met</p>
-            </div>
-          </div>
-        )}
+
       </div>
 
       {/* Schedule and Logs */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Current Schedule */}
-        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          <h3 className="text-lg font-semibold mb-4 text-blue-300">📅 Today's Schedule</h3>
-          {schedule ? (
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {schedule.activities.map((activity, idx) => (
-                <div key={idx} className="bg-gray-800 rounded p-3 border border-gray-700 text-sm">
-                  <p className="font-semibold text-white">{activity.activity_name}</p>
-                  <p className="text-gray-400 text-xs">{activity.start_time} - {activity.end_time}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-gray-400 py-8">No schedule loaded</p>
-          )}
-        </div>
+      <div className="grid grid-cols-1 gap-6">
+
 
         {/* Detection Results with Adaptive Info */}
         <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
           <h3 className="text-lg font-semibold mb-4 text-green-300">✓ Detection Log (Adaptive)</h3>
-          
+
           {/* Stats */}
           <div className="grid grid-cols-4 gap-2 mb-4">
             <div className="bg-blue-900/30 rounded p-2 text-center">
@@ -329,8 +487,8 @@ export default function ActivityDetectorMonitor() {
       {/* Info Box */}
       <div className="bg-blue-900/20 border border-blue-700/50 rounded-xl p-4 text-sm">
         <p className="text-blue-200">
-          💡 <strong>Phase 1 Adaptive Thresholds:</strong> Each activity now has a personalized grace period learned from your past behavior. 
-          You might get a 12-minute grace for breakfast if you're usually early, or 35 minutes if you're typically slower. 
+          💡 <strong>Phase 1 Adaptive Thresholds:</strong> Each activity now has a personalized grace period learned from your past behavior.
+          You might get a 12-minute grace for breakfast if you're usually early, or 35 minutes if you're typically slower.
           The system learns and adapts automatically!
         </p>
       </div>

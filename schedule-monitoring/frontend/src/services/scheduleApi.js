@@ -16,6 +16,7 @@ scheduleApi.interceptors.request.use((config) => {
 export const getSchedule = () => scheduleApi.get("/");
 export const createSchedule = (activities, description = "") => 
   scheduleApi.post("/", { activities, description });
+export const deleteSchedule = (scheduleId) => scheduleApi.delete(`/${scheduleId}`);
 
 // ========== Activity Logs ==========
 export const getActivityLogs = () => scheduleApi.get("/logs");

@@ -34,7 +34,7 @@ def generate_sample_schedules():
         "user_id": "dev-user",
         "activities": [
             {
-                "activity_name": "Wake up",
+                "activity_name": "Standing up",
                 "start_time": "06:00",
                 "end_time": "06:30"
             },
@@ -66,7 +66,7 @@ def generate_sample_schedules():
         "user_id": "dev-user",
         "activities": [
             {
-                "activity_name": "Wake up",
+                "activity_name": "Standing up",
                 "start_time": "07:00",
                 "end_time": "07:30"
             },
@@ -133,7 +133,7 @@ def generate_sample_schedules():
         "user_id": "dev-user",
         "activities": [
             {
-                "activity_name": "Wake up",
+                "activity_name": "Standing up",
                 "start_time": "08:00",
                 "end_time": "08:15"
             },
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         print("   1. Go to http://localhost:5178/")
         print("   2. Click 'Start Activity Monitoring'")
         print("   3. Perform activities in front of the camera:")
-        print("      - Wake up (stand and move)")
+        print("      - Standing up (stand from seated/lying position)")
         print("      - Eating (sit and bring hand to mouth)")
         print("      - Walking (walk around)")
         print("      - Sitting (stay seated)")

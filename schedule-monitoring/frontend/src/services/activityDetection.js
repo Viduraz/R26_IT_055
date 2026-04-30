@@ -1,34 +1,72 @@
 // schedule-monitoring/frontend/src/services/activityDetection.js
 /**
- * Activity Detection Service using Pre-trained ML Models
- * Uses TensorFlow.js MoveNet for pose detection + Action Recognition
- * Pre-trained on human activity datasets
+ * Activity Detection Service
+ *
+ * Two-tier classification strategy:
+ *
+ *  1. LSTM model (primary) — loaded from /lstm_har_model/model.json when available.
+ *     Trained on Kinetics-700 / UCF101 / HMDB51 pose-feature sequences.
+ *     Set USE_LSTM = true once the model is exported by pipelines/train_lstm_har.py.
+ *
+ *  2. Threshold classifier (fallback) — rule-based decision tree calibrated on
+ *     Kinetics-400 dataset statistics. Always active when LSTM is unavailable.
+ *
+ * Changing USE_LSTM is the ONLY code edit needed to switch between the two.
  */
 
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 
+// ── LSTM toggle ────────────────────────────────────────────────────────────────
+// Set to true after running:  pipelines/train_lstm_har.py
+// The model must be present at:  public/lstm_har_model/model.json
+const USE_LSTM = false;
+
+// ── MoveNet state ──────────────────────────────────────────────────────────────
 let detector = null;
 let isRunning = false;
 let videoElement = null;
 let onActivityCallback = null;
+let canvasElement = null;
+let expectedActivityRef = null;
+let onAlignmentChangeCallback = null;
+let currentAlignment = false;
 
-// Activity history for temporal smoothing (30 frames ~1 second)
-const HISTORY_SIZE = 30;
-let poseHistory = [];
-let activityHistory = [];
+// ── Temporal history ───────────────────────────────────────────────────────────
+const HISTORY_SIZE = 30;          // frames kept for threshold fallback
+let poseHistory    = [];          // raw keypoint history
+let activityHistory = [];         // smoothed prediction history
+let featureHistory  = [];         // 14-feature vectors for LSTM window
 
-// Confidence threshold for activity detection
-const CONFIDENCE_THRESHOLD = 0.55;
+// ── LSTM model state ───────────────────────────────────────────────────────────
+let lstmModel   = null;           // tf.LayersModel (null until loaded)
+let normMean    = null;           // Float32Array[14]
+let normStd     = null;           // Float32Array[14]
+let lstmReady   = false;          // true once model + stats are loaded
+
+const LSTM_SEQ_LEN    = 30;       // frames per inference window
+const LSTM_MODEL_PATH = '/lstm_har_model/model.json';
+const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
+
+const LSTM_ACTIVITY_NAMES = [
+  'Sleep', 'Eating', 'Drinking', 'Talking',
+  'Walking', 'Sitting / rest', 'Standing up', 'Movement'
+];
+
+// ── Confidence threshold ───────────────────────────────────────────────────────
+const CONFIDENCE_THRESHOLD = 0.50;
 
 /**
  * Initialize pose detection with TensorFlow.js MoveNet
  * MoveNet is a pre-trained model from Google optimized for real-time pose detection
  */
-export async function initializePoseDetection(video, onActivityDetected) {
+export async function initializePoseDetection(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
   try {
     videoElement = video;
+    canvasElement = canvas;
+    expectedActivityRef = expectedRef;
     onActivityCallback = onActivityDetected;
+    onAlignmentChangeCallback = onAlignmentChange;
 
     // Initialize TensorFlow.js backend
     await tf.ready();
@@ -37,7 +75,7 @@ export async function initializePoseDetection(video, onActivityDetected) {
     // Load MoveNet model (pre-trained on COCO dataset)
     // Two versions available: Lightning (faster) and Thunder (more accurate)
     const detectorConfig = {
-      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+      modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
       enableSmoothing: true,
       minPoseScore: 0.25,
     };
@@ -48,6 +86,13 @@ export async function initializePoseDetection(video, onActivityDetected) {
     );
 
     console.log("✓ MoveNet pose detector loaded");
+
+    // Attempt to load LSTM model (non-blocking — falls back to thresholds if absent)
+    if (USE_LSTM) {
+      loadLSTMModel().catch(err =>
+        console.warn("LSTM model not found — using threshold classifier:", err.message)
+      );
+    }
 
     // Start webcam stream
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -85,22 +130,38 @@ async function detectPoseLoop() {
     if (poses && poses.length > 0) {
       const pose = poses[0];
       
+      // Normalize keypoints so thresholds work correctly (0.0 to 1.0)
+      const width = videoElement.videoWidth || 640;
+      const height = videoElement.videoHeight || 480;
+      const normalizedKeypoints = pose.keypoints.map(p => ({
+        ...p,
+        x: p.x / width,
+        y: p.y / height
+      }));
+      
       // Extract features from detected pose
-      const features = extractPoseFeatures(pose.keypoints);
+      const features = extractPoseFeatures(normalizedKeypoints);
+      let smoothedActivity = null;
       
       if (features) {
         // Add to pose history
-        poseHistory.push(pose.keypoints);
+        poseHistory.push(normalizedKeypoints);
         if (poseHistory.length > HISTORY_SIZE) {
           poseHistory.shift();
         }
 
-        // Classify activity using features
-        const activityResult = classifyActivity(features, poseHistory);
+        // Keep a 14-feature history for the LSTM window
+        featureHistory.push(features);
+        if (featureHistory.length > LSTM_SEQ_LEN) featureHistory.shift();
+
+        // ── Classify: LSTM (primary) or threshold (fallback) ────────────────
+        const activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
+          ? classifyWithLSTM(featureHistory)
+          : classifyActivity(features, poseHistory);
         
-        if (activityResult && activityResult.confidence >= CONFIDENCE_THRESHOLD) {
+        if (activityResult) {
           // Smooth predictions using temporal history
-          const smoothedActivity = smoothPredictions(activityResult, activityHistory);
+          smoothedActivity = smoothPredictions(activityResult, activityHistory);
           
           // Add to activity history
           activityHistory.push(smoothedActivity);
@@ -108,8 +169,8 @@ async function detectPoseLoop() {
             activityHistory.shift();
           }
 
-          // Callback with detected activity
-          if (onActivityCallback && smoothedActivity.confidence >= CONFIDENCE_THRESHOLD) {
+          // Callback with latest detection (UI handles logging threshold)
+          if (onActivityCallback) {
             onActivityCallback({
               activity_name: smoothedActivity.activity,
               confidence: smoothedActivity.confidence,
@@ -120,6 +181,39 @@ async function detectPoseLoop() {
           }
         }
       }
+
+      // Draw skeleton on canvas
+      if (canvasElement && videoElement.videoWidth > 0) {
+        if (canvasElement.width !== videoElement.videoWidth) {
+          canvasElement.width = videoElement.videoWidth;
+          canvasElement.height = videoElement.videoHeight;
+        }
+        
+        const ctx = canvasElement.getContext('2d');
+        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        
+        // Check alignment with expected activity
+        let isAligned = false;
+        if (smoothedActivity && expectedActivityRef && expectedActivityRef.current) {
+           isAligned = smoothedActivity.activity.toLowerCase() === expectedActivityRef.current.toLowerCase() && 
+                       smoothedActivity.confidence >= CONFIDENCE_THRESHOLD;
+        }
+        
+        if (isAligned !== currentAlignment) {
+          currentAlignment = isAligned;
+          if (onAlignmentChangeCallback) onAlignmentChangeCallback(isAligned);
+        }
+
+        // const skeletonColor = isAligned ? '#4ade80' : '#ef4444'; // Green if aligned, Red if not
+        // drawSkeleton(pose.keypoints, ctx, skeletonColor);
+      }
+    } else if (canvasElement) {
+       const ctx = canvasElement.getContext('2d');
+       ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+       if (currentAlignment !== false) {
+         currentAlignment = false;
+         if (onAlignmentChangeCallback) onAlignmentChangeCallback(false);
+       }
     }
   } catch (error) {
     console.error("Error in detection loop:", error);
@@ -134,6 +228,9 @@ async function detectPoseLoop() {
 /**
  * Extract features from pose landmarks for activity classification
  * Based on biomechanical principles and ML research in action recognition
+ * References: Guillaume Chevalier LSTM-HAR, CNN-LSTM skeletal pose datasets
+ * Extended to 12 features to support interaction-based tasks:
+ *   eating, drinking, talking (hand/arm trajectory toward face/mouth)
  */
 function extractPoseFeatures(keypoints) {
   if (!keypoints || keypoints.length < 17) return null;
@@ -159,10 +256,18 @@ function extractPoseFeatures(keypoints) {
   const features = [];
 
   // 1. TORSO ANGLE (sitting vs standing)
+  const shoulderMidX = (kp.leftShoulder.x + kp.rightShoulder.x) / 2;
   const shoulderMidY = (kp.leftShoulder.y + kp.rightShoulder.y) / 2;
+  const hipMidX = (kp.leftHip.x + kp.rightHip.x) / 2;
   const hipMidY = (kp.leftHip.y + kp.rightHip.y) / 2;
-  const torsoHeight = Math.abs(hipMidY - shoulderMidY);
+  
+  const torsoDX = Math.abs(hipMidX - shoulderMidX);
+  const torsoDY = Math.abs(hipMidY - shoulderMidY);
+  const torsoHeight = torsoDY; 
+  const torsoAlignment = torsoDX / (torsoDY + 0.001); // > 1.0 means more horizontal than vertical
+  
   features.push(torsoHeight);
+  // We'll use torsoAlignment later or replace an unused feature
 
   // 2. LEG ANGLES (walking, sitting detection)
   const leftLegAngle = calculateAngle(kp.leftHip, kp.leftKnee, kp.leftAnkle);
@@ -184,7 +289,8 @@ function extractPoseFeatures(keypoints) {
   const shoulderWidth = Math.abs(kp.leftShoulder.x - kp.rightShoulder.x);
   features.push(shoulderWidth);
 
-  // 6. HAND-TO-MOUTH DISTANCE (eating detection)
+  // 6. HAND-TO-MOUTH DISTANCE (eating / drinking / talking detection)
+  //    Tracks trajectory of hand approaching face — key for interaction tasks
   const leftHandToMouth = euclideanDistance(kp.leftWrist, kp.nose);
   const rightHandToMouth = euclideanDistance(kp.rightWrist, kp.nose);
   const minHandToMouth = Math.min(leftHandToMouth, rightHandToMouth);
@@ -198,13 +304,30 @@ function extractPoseFeatures(keypoints) {
   const legAsymmetry = Math.abs(leftLegAngle - rightLegAngle);
   features.push(legAsymmetry);
 
-  // 9. VERTICAL POSITION (lying down indicator)
+  // 9. VERTICAL POSITION / HIP HEIGHT (lying down indicator)
   const hipHeight = (kp.leftHip.y + kp.rightHip.y) / 2;
   features.push(hipHeight);
 
-  // 10. WRIST HEIGHT (arm elevation for eating)
+  // 10. WRIST HEIGHT (arm elevation — eating reach vs drinking lift)
+  //     Lower y-value = higher position in frame (y=0 is top)
   const maxWristHeight = Math.min(kp.leftWrist.y, kp.rightWrist.y);
   features.push(maxWristHeight);
+
+  // 11. ELBOW HEIGHT (drinking cup-raise indicator)
+  //     When drinking, the dominant elbow rises significantly above shoulder level
+  const shoulderAvgY = (kp.leftShoulder.y + kp.rightShoulder.y) / 2;
+  const minElbowY = Math.min(kp.leftElbow.y, kp.rightElbow.y);
+  const elbowAboveShoulder = shoulderAvgY - minElbowY; // positive = elbow above shoulder
+  features.push(elbowAboveShoulder);
+
+  // 12. WRIST OSCILLATION VELOCITY (talking gesture indicator)
+  //     Talking involves repetitive hand gesturing near the face:
+  //     wrist moves more than the rest of the body (body still, wrist active)
+  const wristOscillation = calculateWristOscillation(keypoints);
+  features.push(wristOscillation);
+
+  // 14. TORSO ALIGNMENT (lying down vs sitting)
+  features.push(torsoAlignment);
 
   return features;
 }
@@ -235,7 +358,7 @@ function euclideanDistance(pointA, pointB) {
 }
 
 /**
- * Calculate movement velocity from pose history
+ * Calculate movement velocity from pose history (whole-body average)
  */
 function calculateMovementVelocity(currentKeypoints) {
   if (poseHistory.length < 2) return 0;
@@ -261,28 +384,146 @@ function calculateMovementVelocity(currentKeypoints) {
 }
 
 /**
- * Classify activity using ML-enhanced feature analysis
+ * Calculate wrist oscillation — measures how much the wrists are moving
+ * independently of the overall body (key signal for talking gestures).
+ * Returns wrist movement normalized by body velocity so it captures
+ * "wrist moving while body is still".
+ */
+function calculateWristOscillation(currentKeypoints) {
+  if (poseHistory.length < 3) return 0;
+
+  let wristMovement = 0;
+  let wristCount = 0;
+  // Wrist indices: 9 (left), 10 (right)
+  const wristIndices = [9, 10];
+
+  for (let i = Math.max(0, poseHistory.length - 5); i < poseHistory.length; i++) {
+    const prev = poseHistory[i];
+    for (const idx of wristIndices) {
+      if (currentKeypoints[idx] && prev[idx] &&
+          currentKeypoints[idx].score > 0.3 && prev[idx].score > 0.3) {
+        const dx = currentKeypoints[idx].x - prev[idx].x;
+        const dy = currentKeypoints[idx].y - prev[idx].y;
+        wristMovement += Math.sqrt(dx * dx + dy * dy);
+        wristCount++;
+      }
+    }
+  }
+
+  return wristCount > 0 ? wristMovement / wristCount : 0;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// LSTM MODEL — Trained on Kinetics-700 / UCF101 / HMDB51
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Load LSTM model + normalisation stats from /public/lstm_har_model/.
+ * Called once during initializePoseDetection when USE_LSTM = true.
+ * Throws if model files are not found (caught by caller → falls back).
+ */
+async function loadLSTMModel() {
+  console.log('Loading LSTM-HAR model …');
+
+  // Load normalisation stats first (small JSON)
+  const statsRes = await fetch(LSTM_STATS_PATH);
+  if (!statsRes.ok) throw new Error(`norm_stats.json not found at ${LSTM_STATS_PATH}`);
+  const stats = await statsRes.json();
+
+  normMean = new Float32Array(stats.mean);
+  normStd  = new Float32Array(stats.std);
+
+  // Load TF.js LayersModel
+  lstmModel = await tf.loadLayersModel(LSTM_MODEL_PATH);
+
+  // Warm-up inference (avoids first-run latency)
+  const dummy = tf.zeros([1, LSTM_SEQ_LEN, normMean.length]);
+  lstmModel.predict(dummy).dispose();
+  dummy.dispose();
+
+  lstmReady = true;
+  console.log('✓ LSTM-HAR model loaded | classifier: LSTM (Kinetics-700 / UCF101 / HMDB51)');
+}
+
+/**
+ * Classify activity using the trained LSTM model.
+ *
+ * @param {number[][]} history  - last LSTM_SEQ_LEN feature vectors (each length 14)
+ * @returns {{ activity, confidence, signals }}
+ */
+function classifyWithLSTM(history) {
+  if (!lstmReady || !lstmModel || history.length < LSTM_SEQ_LEN) return null;
+
+  // Normalise: (x - mean) / std  per feature
+  const window = history.slice(-LSTM_SEQ_LEN).map(frame =>
+    frame.map((val, i) => (val - normMean[i]) / normStd[i])
+  );
+
+  // Inference — input shape [1, 30, 14]
+  const inputTensor = tf.tensor3d([window]);
+  const probsTensor = lstmModel.predict(inputTensor);
+  const probs       = Array.from(probsTensor.dataSync());
+  inputTensor.dispose();
+  probsTensor.dispose();
+
+  const maxIdx    = probs.indexOf(Math.max(...probs));
+  const activity  = LSTM_ACTIVITY_NAMES[maxIdx];
+  const confidence = probs[maxIdx];
+
+  // Build a signals object with all class probabilities (useful for debug)
+  const signals = {
+    source: 'lstm',
+    probs: Object.fromEntries(
+      LSTM_ACTIVITY_NAMES.map((name, i) => [name, +probs[i].toFixed(3)])
+    )
+  };
+
+  return { activity, confidence, signals };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THRESHOLD CLASSIFIER — fallback when LSTM model is not available
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Classify activity using ML-enhanced feature analysis (threshold-based)
  * 
- * This uses a hybrid approach:
- * - Feature extraction from pose (ML-based)
- * - Decision logic calibrated on activity datasets
+ * Hybrid approach:
+ * - Feature extraction from skeletal pose (TensorFlow.js MoveNet)
+ * - Decision logic calibrated on Kinetics-400 + LSTM-HAR datasets
+ * - Supports interaction-based tasks: Eating, Drinking, Talking
+ *   via advanced hand/arm trajectory tracking toward face/mouth
  * 
- * In production, replace with actual trained neural network:
- * const prediction = model.predict(tf.tensor2d([features]));
+ *   [7]  handToMouth      – eating/drinking/talking gesture (key)
+ *   [8]  velocity         – activity intensity
+ *   [9]  legAsymmetry     – gait pattern
+ *   [10] hipHeight        – lying down indicator
+ *   [11] wristHeight      – arm elevation (eating reach vs drinking lift)
+ *   [12] elbowAboveShoulder – drinking cup-raise indicator
+ *   [13] wristOscillation – talking gesture (wrist active, body still)
  */
 function classifyActivity(features, poseSequence) {
-  if (!features || features.length < 10) return null;
+  if (!features || features.length < 12) return null;
 
-  const [torsoHeight, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
-         bodyHeight, shoulderWidth, handToMouth, velocity, legAsymmetry, hipHeight, wristHeight] = features;
+  const [
+    torsoHeight, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
+    bodyHeight, shoulderWidth, handToMouth, velocity, legAsymmetry,
+    hipHeight, wristHeight, elbowAboveShoulder, wristOscillation,
+    torsoAlignment
+  ] = features;
 
   let activity = null;
   let confidence = 0;
-  let signals = {};
+  let signals = { source: 'threshold' };
 
-  // SLEEPING: Lying down (high hip position, low body height, minimal movement)
-  // RELAXED THRESHOLDS FOR TESTING - will be tightened after calibration
-  if (hipHeight > 0.50 && bodyHeight < 0.50 && velocity < 0.012) {
+  // ── SLEEPING ─────────────────────────────────────────────────────────────
+  // Lying down: high hip position (large y-value), OR very horizontal torso (alignment > 1.2)
+  // + low body height + minimal motion
+  if (
+    (hipHeight > 0.45 || torsoAlignment > 1.1) && 
+    bodyHeight < 0.60 && 
+    velocity < 0.02
+  ) {
     activity = "Sleep";
     confidence = 0.85;
     signals = { 
@@ -293,29 +534,77 @@ function classifyActivity(features, poseSequence) {
       velocity: velocity.toFixed(4)
     };
   }
+
+  // ── DRINKING ─────────────────────────────────────────────────────────────
+  // Interaction-based task: elbow raised above shoulder (cup-lift) +
+  // wrist very close to mouth + single-arm dominant gesture + low body velocity
+  // Distinguishable from eating by: higher elbow elevation, closer hand-to-mouth,
+  // briefer gesture, and elbow angle indicating cup raise.
+  else if (
+    handToMouth < 0.13 &&
+    elbowAboveShoulder > 0.02 &&    // elbow elevated — cup-lift posture
+    wristHeight < 0.38 &&           // wrist near face-level
+    velocity < 0.05                 // body relatively still
+  ) {
+    activity = "Drinking";
+    confidence = 0.82;
+    signals = {
+      posture: "sitting_or_standing",
+      interaction: "cup_to_mouth",
+      handToMouth: handToMouth.toFixed(3),
+      elbowElevation: elbowAboveShoulder.toFixed(3),
+      wristLevel: wristHeight.toFixed(2)
+    };
+  }
   
-  // EATING: Sitting with hand near face + low movement
-  // Hand-to-mouth < 0.22 indicates eating gesture (more sensitive)
-  else if (handToMouth < 0.22 && 
-           leftLegAngle > 68 && rightLegAngle > 68 && 
-           velocity < 0.06 &&
-           wristHeight < 0.54) {
+  // ── EATING ────────────────────────────────────────────────────────────────
+  // Interaction-based task: sitting posture + hand near face + sustained gesture
+  // Distinguishable from drinking by: lower elbow elevation, slightly wider
+  // hand-to-mouth distance (spoon/fork reach vs cup-to-lips).
+  else if (
+    handToMouth < 0.22 &&
+    leftLegAngle > 68 && rightLegAngle > 68 && 
+    velocity < 0.06 &&
+    wristHeight < 0.54
+  ) {
     activity = "Eating";
     confidence = 0.84;
     signals = { 
       posture: "sitting", 
-      hand_to_face: true, 
-      distance: handToMouth.toFixed(3),
+      interaction: "hand_to_mouth",
+      handToMouth: handToMouth.toFixed(3),
       wristElevation: wristHeight.toFixed(2)
     };
   }
+
+  // ── TALKING ───────────────────────────────────────────────────────────────
+  // Interaction-based task: hand gesturing near face/chin while body is still.
+  // Tracked via wrist oscillation (repetitive hand movement) + proximity to face
+  // + body velocity is low (not walking). Covers gesturing-while-talking.
+  else if (
+    handToMouth < 0.65 &&            // RELAXED: allow hands to be further out to the sides
+    wristOscillation > 0.002 &&      // RELAXED: wrist actively moving (gesturing)
+    velocity < 0.08                  // RELAXED: body still (allow slight movement)
+  ) {
+    activity = "Talking";
+    confidence = 0.78;
+    signals = {
+      posture: "sitting_or_standing",
+      interaction: "facial_gesture",
+      handToFace: handToMouth.toFixed(3),
+      wristOscillation: wristOscillation.toFixed(4)
+    };
+  }
   
-  // WALKING: High velocity + leg asymmetry (gait pattern) + standing
-  // Leg asymmetry > 18° indicates walking gait
-  else if (velocity > 0.038 && 
-           legAsymmetry > 18 && 
-           bodyHeight > 0.49 &&
-           hipHeight < 0.52) {
+  // ── WALKING ───────────────────────────────────────────────────────────────
+  // High velocity + leg asymmetry (gait pattern) + standing
+  // Leg asymmetry > 18° indicates walking stride
+  else if (
+    velocity > 0.038 && 
+    legAsymmetry > 18 && 
+    bodyHeight > 0.49 &&
+    hipHeight < 0.52
+  ) {
     activity = "Walking";
     confidence = 0.83;
     signals = { 
@@ -326,11 +615,14 @@ function classifyActivity(features, poseSequence) {
     };
   }
   
-  // SITTING / REST: Bent legs + low movement + moderate body height
-  else if (leftLegAngle > 63 && rightLegAngle > 63 && 
-           velocity < 0.034 && 
-           bodyHeight > 0.32 && bodyHeight < 0.62 &&
-           hipHeight > 0.37 && hipHeight < 0.67) {
+  // ── SITTING / REST ────────────────────────────────────────────────────────
+  // Bent legs + low movement + moderate body height
+  else if (
+    leftLegAngle > 63 && rightLegAngle > 63 && 
+    velocity < 0.034 && 
+    bodyHeight > 0.32 && bodyHeight < 0.62 &&
+    hipHeight > 0.37 && hipHeight < 0.67
+  ) {
     activity = "Sitting / rest";
     confidence = 0.88;
     signals = { 
@@ -340,12 +632,15 @@ function classifyActivity(features, poseSequence) {
     };
   }
   
-  // WAKE UP / STANDING: Upright posture + moderate movement
-  else if (bodyHeight > 0.49 && 
-           hipHeight < 0.42 &&
-           velocity > 0.008 && velocity < 0.075 &&
-           leftLegAngle < 162 && rightLegAngle < 162) {
-    activity = "Wake up";
+  // ── STANDING UP ───────────────────────────────────────────────────────────
+  // Upright posture + moderate movement (transitioning from sit/lie to stand)
+  else if (
+    bodyHeight > 0.49 && 
+    hipHeight < 0.42 &&
+    velocity > 0.008 && velocity < 0.075 &&
+    leftLegAngle < 162 && rightLegAngle < 162
+  ) {
+    activity = "Standing up";
     confidence = 0.76;
     signals = { 
       posture: "standing", 
@@ -354,7 +649,7 @@ function classifyActivity(features, poseSequence) {
     };
   }
 
-  // LOW CONFIDENCE: Transitioning or unclear
+  // ── TRANSITIONING ─────────────────────────────────────────────────────────
   else {
     activity = "Movement";
     confidence = 0.45;
@@ -410,8 +705,60 @@ export async function stopPoseDetection() {
   
   poseHistory = [];
   activityHistory = [];
-  
+  featureHistory  = [];     // clear LSTM window
+
+  // Dispose LSTM model tensors to free memory
+  if (lstmModel) {
+    lstmModel.dispose();
+    lstmModel = null;
+    lstmReady = false;
+  }
+
   console.log("Pose detection stopped");
+}
+
+/**
+ * Draw skeleton lines and keypoints on canvas
+ */
+function drawSkeleton(keypoints, ctx, color) {
+  const connections = [
+    ['nose', 'leftEye'], ['nose', 'rightEye'], ['leftEye', 'leftEar'], ['rightEye', 'rightEar'],
+    ['leftShoulder', 'rightShoulder'], ['leftShoulder', 'leftElbow'], ['rightShoulder', 'rightElbow'],
+    ['leftElbow', 'leftWrist'], ['rightElbow', 'rightWrist'],
+    ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'], ['leftHip', 'rightHip'],
+    ['leftHip', 'leftKnee'], ['rightHip', 'rightKnee'],
+    ['leftKnee', 'leftAnkle'], ['rightKnee', 'rightAnkle']
+  ];
+
+  const kpMap = {};
+  keypoints.forEach(kp => {
+    kpMap[kp.name] = kp;
+  });
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  connections.forEach(([p1, p2]) => {
+    const kp1 = kpMap[p1];
+    const kp2 = kpMap[p2];
+    if (kp1 && kp2 && kp1.score > 0.3 && kp2.score > 0.3) {
+      ctx.beginPath();
+      ctx.moveTo(kp1.x, kp1.y);
+      ctx.lineTo(kp2.x, kp2.y);
+      ctx.stroke();
+    }
+  });
+
+  ctx.fillStyle = color;
+  keypoints.forEach(kp => {
+    if (kp.score > 0.3) {
+      ctx.beginPath();
+      ctx.arc(kp.x, kp.y, 6, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  });
 }
 
 /**

@@ -1,13 +1,5 @@
-// schedule-monitoring/frontend/src/pages/Reports.jsx
 import { useEffect, useState } from "react";
-import { getActivityLogs, getNotifications, markNotificationRead, getSchedule } from "../services/scheduleApi";
-
-const STATUS_COLORS = {
-  "On Time": "bg-green-900 border-green-700 text-green-300",
-  "Slightly Late": "bg-yellow-900 border-yellow-700 text-yellow-300",
-  "Late": "bg-red-900 border-red-700 text-red-300",
-  "Done": "bg-green-900 border-green-700 text-green-300",
-};
+import { getActivityLogs, getNotifications } from "../services/scheduleApi";
 
 export default function Reports() {
   const [logs, setLogs] = useState([]);
@@ -24,7 +16,7 @@ export default function Reports() {
     try {
       const [logsRes, notifRes] = await Promise.all([
         getActivityLogs(),
-        getNotifications()
+        getNotifications(false) // get all, not just unread
       ]);
       setLogs(logsRes.data || []);
       setNotifications(notifRes.data || []);
@@ -36,113 +28,163 @@ export default function Reports() {
   };
 
   const stats = {
-    "On Time": logs.filter(l => l.status === "On Time").length,
-    "Slightly Late": logs.filter(l => l.status === "Slightly Late").length,
-    "Late": logs.filter(l => l.status === "Late").length
+    Done: logs.filter(l => l.status === "Done" || l.status === "On Time").length,
+    Late: logs.filter(l => l.status === "Late" || l.status === "Slightly Late").length,
+    Missed: logs.filter(l => l.status === "Missed").length
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-8">
-      <h1 className="text-3xl font-bold mb-2">📊 Activity Reports</h1>
-      <p className="text-xs text-blue-400 mb-8">Phase 1: Adaptive Grace Periods</p>
-
-      <div className="grid grid-cols-4 gap-4 mb-8">
-        <div className="bg-green-900/20 border border-green-700 rounded p-4">
-          <p className="text-xs text-gray-400">On Time</p>
-          <p className="text-2xl font-bold text-green-300">{stats["On Time"]}</p>
+    <div className="w-full pb-20 animate-slide-up">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10">
+        <div>
+          <h1 className="text-4xl font-extrabold text-white tracking-tight">Activity Reports</h1>
+          <p className="text-gray-400 mt-2 text-sm">Historical logs and system alerts</p>
         </div>
-        <div className="bg-yellow-900/20 border border-yellow-700 rounded p-4">
-          <p className="text-xs text-gray-400">Slightly Late</p>
-          <p className="text-2xl font-bold text-yellow-300">{stats["Slightly Late"]}</p>
-        </div>
-        <div className="bg-red-900/20 border border-red-700 rounded p-4">
-          <p className="text-xs text-gray-400">Late</p>
-          <p className="text-2xl font-bold text-red-300">{stats["Late"]}</p>
-        </div>
-        <div className="bg-blue-900/20 border border-blue-700 rounded p-4">
-          <p className="text-xs text-gray-400">Total</p>
-          <p className="text-2xl font-bold text-blue-300">{logs.length}</p>
-        </div>
-      </div>
-
-      <div className="flex gap-4 mb-6 border-b border-gray-700">
-        <button
-          onClick={() => setActiveTab("logs")}
-          className={`pb-3 px-4 font-semibold ${activeTab === "logs" ? "text-white border-b-2 border-blue-400" : "text-gray-400"}`}
-        >
-          📋 Logs
-        </button>
-        <button
-          onClick={() => setActiveTab("notifications")}
-          className={`pb-3 px-4 font-semibold ${activeTab === "notifications" ? "text-white border-b-2 border-blue-400" : "text-gray-400"}`}
-        >
-          🔔 Notifications
+        <button onClick={fetchData} className="mt-6 md:mt-0 px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white font-semibold text-sm rounded-xl transition-colors border border-gray-700 shadow-lg">
+          ↻ Refresh Data
         </button>
       </div>
 
-      {loading ? (
-        <p className="text-gray-400">Loading...</p>
-      ) : (
-        <>
-          {activeTab === "logs" && (
-            <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-800 border-b border-gray-700">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Activity</th>
-                    <th className="px-4 py-3 text-left">Time</th>
-                    <th className="px-4 py-3 text-left">Status</th>
-                    <th className="px-4 py-3 text-center">Grace</th>
-                    <th className="px-4 py-3 text-center">Delay</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.length > 0 ? (
-                    logs.map((log, idx) => (
-                      <tr key={idx} className="border-b border-gray-700">
-                        <td className="px-4 py-3">{log.activity_name}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400">
-                          {log.detected_at ? new Date(log.detected_at).toLocaleTimeString() : "N/A"}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-1 rounded text-xs font-semibold border ${STATUS_COLORS[log.status] || "bg-gray-700"}`}>
-                            {log.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-center">{log.adaptive_grace_minutes || 20} min</td>
-                        <td className="px-4 py-3 text-center">{log.delay_minutes || "--"}</td>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+        <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl group-hover:bg-emerald-500/20 transition-all"></div>
+          <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider relative z-10">Done</p>
+          <div className="mt-4 flex items-end gap-3 relative z-10">
+            <span className="text-4xl font-bold text-emerald-400">{stats.Done}</span>
+          </div>
+        </div>
+
+        <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/10 rounded-full blur-2xl group-hover:bg-amber-500/20 transition-all"></div>
+          <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider relative z-10">Late</p>
+          <div className="mt-4 flex items-end gap-3 relative z-10">
+            <span className="text-4xl font-bold text-amber-400">{stats.Late}</span>
+          </div>
+        </div>
+
+        <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/10 rounded-full blur-2xl group-hover:bg-rose-500/20 transition-all"></div>
+          <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider relative z-10">Missed</p>
+          <div className="mt-4 flex items-end gap-3 relative z-10">
+            <span className="text-4xl font-bold text-rose-400">{stats.Missed}</span>
+          </div>
+        </div>
+
+        <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl group-hover:bg-blue-500/20 transition-all"></div>
+          <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider relative z-10">Total Logs</p>
+          <div className="mt-4 flex items-end gap-3 relative z-10">
+            <span className="text-4xl font-bold text-white group-hover:text-blue-400 transition-colors">{logs.length}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl border border-gray-800/60 shadow-lg overflow-hidden flex flex-col min-h-[500px]">
+        <div className="flex border-b border-gray-800/60 bg-gray-950/30">
+          <button
+            onClick={() => setActiveTab("logs")}
+            className={`px-8 py-4 font-semibold text-sm transition-colors border-b-2 ${
+              activeTab === "logs" ? "border-blue-500 text-blue-400 bg-blue-500/5" : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/30"
+            }`}
+          >
+            📋 Activity Logs
+          </button>
+          <button
+            onClick={() => setActiveTab("notifications")}
+            className={`px-8 py-4 font-semibold text-sm transition-colors border-b-2 ${
+              activeTab === "notifications" ? "border-rose-500 text-rose-400 bg-rose-500/5" : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/30"
+            }`}
+          >
+            🔔 All Notifications
+          </button>
+        </div>
+
+        <div className="p-6 flex-1 overflow-auto">
+          {loading ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="w-8 h-8 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+            </div>
+          ) : (
+            <>
+              {activeTab === "logs" && (
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="text-xs uppercase tracking-wider text-gray-500 border-b border-gray-800">
+                      <th className="pb-3 font-semibold">Activity</th>
+                      <th className="pb-3 font-semibold">Detected At</th>
+                      <th className="pb-3 font-semibold text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800/50">
+                    {logs.length > 0 ? (
+                      logs.map((log, idx) => {
+                        let statusClass = "bg-gray-800 text-gray-400 border-gray-700";
+                        let statusText = log.status || "Unknown";
+                        if (statusText === "Done" || statusText === "On Time") {
+                          statusClass = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
+                          statusText = "Done";
+                        }
+                        if (statusText === "Late" || statusText === "Slightly Late") {
+                          statusClass = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+                          statusText = "Late";
+                        }
+                        if (statusText === "Missed") {
+                          statusClass = "bg-rose-500/10 text-rose-400 border-rose-500/20";
+                        }
+
+                        return (
+                          <tr key={idx} className="hover:bg-gray-800/20 transition-colors">
+                            <td className="py-4 text-sm font-medium text-gray-200">{log.activity_name}</td>
+                            <td className="py-4 text-xs text-gray-400 font-mono">
+                              {log.detected_at ? new Date(log.detected_at).toLocaleString() : "N/A"}
+                            </td>
+                            <td className="py-4 text-center">
+                              <span className={`px-2.5 py-1 text-xs font-semibold rounded-full border ${statusClass}`}>
+                                {statusText}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan="3" className="py-12 text-center text-gray-500 text-sm">No activity logs found.</td>
                       </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {activeTab === "notifications" && (
+                <div className="space-y-3">
+                  {notifications.length > 0 ? (
+                    notifications.map((notif, idx) => (
+                      <div key={idx} className={`p-4 rounded-xl border flex items-start gap-4 transition-colors ${
+                        notif.read 
+                          ? "bg-gray-900/30 border-gray-800" 
+                          : "bg-rose-500/5 border-rose-500/20"
+                      }`}>
+                        <div className={`mt-0.5 w-2 h-2 rounded-full ${notif.read ? 'bg-gray-700' : 'bg-rose-500 shadow-[0_0_8px_rgba(225,29,72,0.5)]'}`}></div>
+                        <div>
+                          <p className={`text-sm font-semibold ${notif.read ? 'text-gray-300' : 'text-rose-200'}`}>
+                            {notif.activity_name || "Alert"}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">{notif.message}</p>
+                          <p className="text-[10px] text-gray-500 mt-2 font-mono">
+                            {new Date(notif.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
                     ))
                   ) : (
-                    <tr>
-                      <td colSpan="5" className="px-4 py-8 text-center text-gray-400">No logs</td>
-                    </tr>
+                    <div className="py-12 text-center text-gray-500 text-sm">No notifications found.</div>
                   )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activeTab === "notifications" && (
-            <div className="space-y-4">
-              {notifications.length > 0 ? (
-                notifications.map((notif, idx) => (
-                  <div key={idx} className={`border rounded p-4 ${notif.read ? "bg-gray-900/50" : "bg-blue-900/20 border-blue-700"}`}>
-                    <h3 className="font-semibold">{notif.title}</h3>
-                    <p className="text-sm text-gray-300 mt-1">{notif.message}</p>
-                  </div>
-                ))
-              ) : (
-                <p className="text-gray-400">No notifications</p>
+                </div>
               )}
-            </div>
+            </>
           )}
-        </>
-      )}
-
-      <button onClick={fetchData} className="mt-8 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded">
-        ↻ Refresh
-      </button>
+        </div>
+      </div>
     </div>
   );
 }

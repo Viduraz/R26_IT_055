@@ -1,11 +1,12 @@
-// schedule-monitoring/frontend/src/pages/RoutineSetup.jsx
 import { useState } from "react";
 import { createSchedule } from "../services/scheduleApi";
 import { useNavigate } from "react-router-dom";
 
 const ACTIVITY_TYPES = [
-  "Wake up",
+  "Standing up",
   "Eating",
+  "Drinking",
+  "Talking",
   "Walking",
   "Sitting / rest",
   "Sleep"
@@ -14,20 +15,28 @@ const ACTIVITY_TYPES = [
 // Sample schedule templates for quick testing
 const SAMPLE_SCHEDULES = {
   morning: {
-    name: "📅 Morning Routine (6:00 AM - 8:00 AM)",
+    name: "Morning Routine",
+    time: "6:00 AM - 8:00 AM",
     description: "Quick morning activities for testing",
+    icon: "🌅",
+    color: "from-amber-500/20 to-orange-600/20",
+    border: "border-amber-500/30 hover:border-amber-500/60",
     activities: [
-      { activity_name: "Wake up", start_time: "06:00", end_time: "06:15" },
+      { activity_name: "Standing up", start_time: "06:00", end_time: "06:15" },
       { activity_name: "Eating", start_time: "06:15", end_time: "06:30" },
       { activity_name: "Walking", start_time: "06:30", end_time: "06:45" },
       { activity_name: "Sitting / rest", start_time: "06:45", end_time: "07:00" }
     ]
   },
   fullday: {
-    name: "🌅 Full Day Schedule (7:00 AM - 9:00 PM)",
+    name: "Full Day Schedule",
+    time: "7:00 AM - 9:00 PM",
     description: "Complete daily routine",
+    icon: "📅",
+    color: "from-blue-500/20 to-indigo-600/20",
+    border: "border-blue-500/30 hover:border-blue-500/60",
     activities: [
-      { activity_name: "Wake up", start_time: "07:00", end_time: "07:30" },
+      { activity_name: "Standing up", start_time: "07:00", end_time: "07:30" },
       { activity_name: "Eating", start_time: "07:30", end_time: "08:00" },
       { activity_name: "Walking", start_time: "08:00", end_time: "09:00" },
       { activity_name: "Sitting / rest", start_time: "09:00", end_time: "12:00" },
@@ -41,14 +50,20 @@ const SAMPLE_SCHEDULES = {
     ]
   },
   testing: {
-    name: "🧪 Quick Test Schedule (All 5 Activities)",
-    description: "15-minute activities for quick testing",
+    name: "Quick Test",
+    time: "All 8 Activities",
+    description: "All 8 Activities - including interaction tasks",
+    icon: "🧪",
+    color: "from-emerald-500/20 to-teal-600/20",
+    border: "border-emerald-500/30 hover:border-emerald-500/60",
     activities: [
-      { activity_name: "Wake up", start_time: "08:00", end_time: "08:15" },
-      { activity_name: "Eating", start_time: "08:15", end_time: "08:30" },
-      { activity_name: "Walking", start_time: "08:30", end_time: "08:45" },
-      { activity_name: "Sitting / rest", start_time: "08:45", end_time: "09:00" },
-      { activity_name: "Sleep", start_time: "09:00", end_time: "09:15" }
+      { activity_name: "Standing up",   start_time: "08:00", end_time: "08:10" },
+      { activity_name: "Eating",         start_time: "08:10", end_time: "08:20" },
+      { activity_name: "Drinking",       start_time: "08:20", end_time: "08:30" },
+      { activity_name: "Talking",        start_time: "08:30", end_time: "08:40" },
+      { activity_name: "Walking",        start_time: "08:40", end_time: "08:50" },
+      { activity_name: "Sitting / rest", start_time: "08:50", end_time: "09:00" },
+      { activity_name: "Sleep",          start_time: "09:00", end_time: "09:10" }
     ]
   }
 };
@@ -63,14 +78,12 @@ export default function RoutineSetup() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [showTemplates, setShowTemplates] = useState(true);
 
   const loadTemplate = (templateKey) => {
     const template = SAMPLE_SCHEDULES[templateKey];
     setActivities(template.activities);
     setDescription(template.description);
-    setShowTemplates(false);
-    setMessage(`✓ Loaded: ${template.name}`);
+    setMessage(`Loaded template: ${template.name}`);
     setTimeout(() => setMessage(""), 3000);
   };
 
@@ -80,28 +93,29 @@ export default function RoutineSetup() {
     setCurrentActivity("");
     setStartTime("06:00");
     setEndTime("06:30");
-    setMessage("✓ Cleared all activities");
+    setMessage("Cleared all activities");
     setTimeout(() => setMessage(""), 3000);
   };
 
   const addActivity = () => {
     if (!currentActivity || !startTime || !endTime) {
       setError("Please fill in all fields");
+      setTimeout(() => setError(""), 3000);
       return;
     }
 
-    // Validate time format
     if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) {
       setError("Time must be in HH:MM format");
+      setTimeout(() => setError(""), 3000);
       return;
     }
 
-    // Check for time conflicts
     const newStart = new Date(`2000-01-01 ${startTime}`);
     const newEnd = new Date(`2000-01-01 ${endTime}`);
 
     if (newStart >= newEnd) {
       setError("Start time must be before end time");
+      setTimeout(() => setError(""), 3000);
       return;
     }
 
@@ -113,18 +127,11 @@ export default function RoutineSetup() {
 
     setActivities([...activities, activity]);
     setCurrentActivity("");
-    setStartTime("06:00");
-    setEndTime("06:30");
     setError("");
-    setMessage(`✓ Added "${currentActivity}"`);
-    setTimeout(() => setMessage(""), 3000);
   };
 
   const removeActivity = (index) => {
-    const removed = activities[index];
     setActivities(activities.filter((_, i) => i !== index));
-    setMessage(`✗ Removed "${removed.activity_name}"`);
-    setTimeout(() => setMessage(""), 3000);
   };
 
   const handleSubmit = async (e) => {
@@ -132,6 +139,7 @@ export default function RoutineSetup() {
 
     if (activities.length === 0) {
       setError("Please add at least one activity");
+      setTimeout(() => setError(""), 3000);
       return;
     }
 
@@ -140,22 +148,13 @@ export default function RoutineSetup() {
     setMessage("");
 
     try {
-      const response = await createSchedule(activities, description);
-      setMessage("✓ Schedule created successfully! Redirecting...");
-      setActivities([]);
-      setDescription("");
-      setStartTime("06:00");
-      setEndTime("06:30");
+      await createSchedule(activities, description);
+      setMessage("Schedule created successfully!");
       
-      // Redirect to dashboard after 1.5 seconds
       setTimeout(() => {
-        navigate("/", { state: { message: "Schedule created! Ready to test activity detection." } });
+        navigate("/");
       }, 1500);
     } catch (err) {
-      console.error("=== CREATE SCHEDULE ERROR ===");
-      console.error("Response data:", err.response?.data);
-      console.error("Error message:", err.message);
-      console.error("Full error:", err);
       setError(err.response?.data?.detail || "Unknown error - check console");
     } finally {
       setLoading(false);
@@ -163,181 +162,157 @@ export default function RoutineSetup() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-8">
-      <h1 className="text-3xl font-bold mb-2">Routine Setup</h1>
-      <p className="text-gray-400 mb-8">Create a daily schedule with activities and time ranges for the elder. Use templates for quick testing!</p>
+    <div className="w-full pb-20 animate-slide-up">
+      <div className="mb-10">
+        <h1 className="text-4xl font-extrabold text-white tracking-tight">Routine Setup</h1>
+        <p className="text-gray-400 mt-2 text-sm">Design a daily schedule or use a pre-built template.</p>
+      </div>
 
-      {/* Sample Templates Section */}
-      {showTemplates && (
-        <div className="mb-8 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-700/50 rounded-xl p-6">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h2 className="text-xl font-semibold text-blue-300 mb-2">⚡ Quick Start Templates</h2>
-              <p className="text-gray-400">Load a pre-built schedule in seconds for testing</p>
+      {/* Templates Row */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+        {Object.entries(SAMPLE_SCHEDULES).map(([key, template]) => (
+          <button
+            key={key}
+            onClick={() => loadTemplate(key)}
+            className={`text-left relative overflow-hidden bg-gradient-to-br ${template.color} border ${template.border} rounded-2xl p-6 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl group`}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-3xl filter drop-shadow-md group-hover:scale-110 transition-transform">{template.icon}</span>
+              <span className="text-xs font-semibold px-2 py-1 bg-black/20 rounded-full text-white/70 backdrop-blur-sm">
+                {template.activities.length} items
+              </span>
             </div>
-            <button
-              onClick={() => setShowTemplates(false)}
-              className="text-gray-400 hover:text-white text-xl"
-            >
-              ✕
-            </button>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {Object.entries(SAMPLE_SCHEDULES).map(([key, template]) => (
-              <button
-                key={key}
-                onClick={() => loadTemplate(key)}
-                className="bg-gray-900 hover:bg-gray-800 border border-gray-700 hover:border-blue-500 rounded-lg p-4 text-left transition"
-              >
-                <p className="font-semibold text-white mb-2">{template.name}</p>
-                <p className="text-sm text-gray-400">{template.activities.length} activities</p>
-                <p className="text-xs text-gray-500 mt-2">{template.description}</p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-        {/* Form Section */}
-        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          <h2 className="text-xl font-semibold mb-6 text-blue-400">Activity Input</h2>
+            <h3 className="text-lg font-bold text-white mb-1">{template.name}</h3>
+            <p className="text-xs text-white/70 font-mono mb-3">{template.time}</p>
+            <p className="text-sm text-white/50">{template.description}</p>
+          </button>
+        ))}
+      </div>
 
-          <div className="space-y-4">
-            {/* Activity Selection */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        
+        {/* Left: Input Form */}
+        <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl border border-gray-800/60 p-8 shadow-lg flex flex-col h-full">
+          <h2 className="text-lg font-semibold text-gray-100 mb-6 flex items-center gap-2">
+            <span className="text-blue-400">➕</span> Add Activity
+          </h2>
+
+          <div className="space-y-5 flex-1">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Activity</label>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Activity Type</label>
               <select
                 value={currentActivity}
                 onChange={(e) => setCurrentActivity(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                className="w-full bg-gray-950/50 border border-gray-700/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all appearance-none"
               >
-                <option value="">Select an activity...</option>
+                <option value="">Select activity...</option>
                 {ACTIVITY_TYPES.map((activity) => (
-                  <option key={activity} value={activity}>
-                    {activity}
-                  </option>
+                  <option key={activity} value={activity}>{activity}</option>
                 ))}
               </select>
             </div>
 
-            {/* Start Time */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Start Time (HH:MM)</label>
-              <input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Start Time</label>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  className="w-full bg-gray-950/50 border border-gray-700/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">End Time</label>
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  className="w-full bg-gray-950/50 border border-gray-700/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                />
+              </div>
             </div>
 
-            {/* End Time */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">End Time (HH:MM)</label>
-              <input
-                type="time"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
-              />
-            </div>
-
-            {/* Messages */}
-            {error && <p className="text-red-400 text-sm">{error}</p>}
-            {message && <p className="text-green-400 text-sm">{message}</p>}
-
-            {/* Add Button */}
             <button
               onClick={addActivity}
-              className="w-full bg-blue-600 hover:bg-blue-700 font-semibold rounded py-2 mt-4"
+              className="w-full bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold rounded-xl py-3 mt-4 transition-all"
             >
-              + Add Activity
+              Add to Schedule
             </button>
-          </div>
-
-          {/* Schedule Description */}
-          <div className="mt-6">
-            <label className="block text-sm font-medium text-gray-300 mb-2">Description (Optional)</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g., Mary's daily routine for weekdays"
-              rows="3"
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
-            />
+            
+            <div className="pt-6 mt-6 border-t border-gray-800/60">
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Routine Description (Optional)</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g., Weekday routine"
+                rows="2"
+                className="w-full bg-gray-950/50 border border-gray-700/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none"
+              />
+            </div>
           </div>
         </div>
 
-        {/* Preview Section */}
-        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          <h2 className="text-xl font-semibold mb-6 text-green-400">Schedule Preview</h2>
+        {/* Right: Preview & Submit */}
+        <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl border border-gray-800/60 p-8 shadow-lg flex flex-col h-[600px]">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-lg font-semibold text-gray-100 flex items-center gap-2">
+              <span className="text-emerald-400">📋</span> Preview
+            </h2>
+            <span className="text-xs font-medium bg-gray-800 text-gray-300 px-3 py-1 rounded-full">
+              {activities.length} activities
+            </span>
+          </div>
 
-          {activities.length === 0 ? (
-            <p className="text-gray-400 text-center py-8">No activities added yet</p>
-          ) : (
-            <div className="space-y-3">
-              {activities.map((activity, index) => (
-                <div
-                  key={index}
-                  className="bg-gray-800 rounded-lg p-3 border border-gray-700 flex justify-between items-center"
-                >
-                  <div className="flex-1">
-                    <p className="font-semibold text-white">{activity.activity_name}</p>
-                    <p className="text-sm text-gray-400">
-                      {activity.start_time} – {activity.end_time}
-                    </p>
+          <div className="flex-1 overflow-y-auto pr-2 space-y-3 relative">
+            {activities.length === 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
+                <span className="text-4xl mb-3">📝</span>
+                <p className="text-sm">No activities added yet.</p>
+              </div>
+            ) : (
+              activities.map((activity, index) => (
+                <div key={index} className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 flex justify-between items-center group hover:border-gray-700 transition-colors">
+                  <div>
+                    <p className="font-semibold text-gray-200 text-sm">{activity.activity_name}</p>
+                    <p className="text-xs text-gray-500 mt-1 font-mono">{activity.start_time} — {activity.end_time}</p>
                   </div>
                   <button
                     onClick={() => removeActivity(index)}
-                    className="ml-4 text-red-400 hover:text-red-300 font-semibold"
+                    className="w-8 h-8 rounded-full bg-rose-500/10 text-rose-400 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all hover:bg-rose-500 hover:text-white"
                   >
                     ✕
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
 
-          {/* Statistics */}
-          <div className="mt-6 pt-6 border-t border-gray-700">
-            <p className="text-sm text-gray-400 mb-4">
-              <strong className="text-white">{activities.length}</strong> activities scheduled
-            </p>
-
-            <div className="grid grid-cols-2 gap-3">
-              {/* Submit Button */}
-              <button
-                onClick={handleSubmit}
-                disabled={loading || activities.length === 0}
-                className={`font-semibold rounded py-3 transition ${
-                  loading || activities.length === 0
-                    ? "bg-gray-700 text-gray-400 cursor-not-allowed"
-                    : "bg-green-600 hover:bg-green-700 text-white"
-                }`}
-              >
-                {loading ? "Creating..." : "✓ Create Schedule"}
-              </button>
-
-              {/* Clear Button */}
+          <div className="pt-6 mt-6 border-t border-gray-800/60 space-y-3">
+            {/* Status Messages */}
+            {error && <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium text-center">{error}</div>}
+            {message && <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium text-center">{message}</div>}
+            
+            <div className="grid grid-cols-2 gap-4">
               <button
                 onClick={clearAll}
-                disabled={activities.length === 0}
-                className={`font-semibold rounded py-3 transition ${
-                  activities.length === 0
-                    ? "bg-gray-700 text-gray-400 cursor-not-allowed"
-                    : "bg-gray-700 hover:bg-gray-600 text-white"
-                }`}
+                disabled={activities.length === 0 || loading}
+                className="bg-gray-800 hover:bg-gray-700 text-white font-semibold rounded-xl py-3.5 text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                ✕ Clear All
+                Clear All
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={activities.length === 0 || loading}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl py-3.5 text-sm shadow-lg shadow-blue-900/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? "Creating..." : "Save Routine"}
               </button>
             </div>
-
-            {/* Info Note */}
-            <div className="mt-4 p-3 bg-blue-900/20 border border-blue-700/30 rounded text-xs text-blue-300">
-              💡 After creating a schedule, go to the Dashboard and click "📷 Show Detector" to test activity detection!
-            </div>
           </div>
+
         </div>
+      </div>
     </div>
   );
 }

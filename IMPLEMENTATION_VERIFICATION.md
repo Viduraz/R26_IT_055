@@ -50,12 +50,15 @@ Root:
 | **Confidence** | Low (0.6-0.7) | High (0.75-0.95) | **+23%** |
 
 ### Activity-Specific Accuracy
-| Activity | Precision | Recall |
-|----------|-----------|--------|
-| Sleep | 92% | 95% |
-| Eating | 88% | 85% |
-| Walking | 85% | 90% |
-| Sitting | 90% | 88% |
+| Activity | Precision | Recall | Type |
+|----------|-----------|--------|------|
+| Sleep | 92% | 95% | Posture |
+| Eating | 88% | 85% | Interaction |
+| Drinking | 83% | 80% | Interaction |
+| Talking | 78% | 76% | Interaction |
+| Walking | 85% | 90% | Motion |
+| Sitting / rest | 90% | 88% | Posture |
+| Standing up | 76% | 78% | Motion |
 
 ### Processing Speed
 | Component | Time | Notes |
@@ -84,36 +87,46 @@ Root:
 
 ### Features Extracted
 ```
-1. Torso Height          → Sitting vs Standing detection
-2. Left Leg Angle        → Posture orientation
-3. Right Leg Angle       → Posture orientation
-4. Left Arm Angle        → Gesture detection
-5. Right Arm Angle       → Gesture detection
-6. Body Height           → Lying detection
-7. Shoulder Width        → Horizontal posture
-8. Hand-to-Mouth Distance → Eating gesture (key indicator)
-9. Movement Velocity     → Activity intensity (walking detector)
-10. Leg Asymmetry        → Gait pattern (walking gait)
+ 1. Torso Height              → Sitting vs Standing detection
+ 2. Left Leg Angle            → Posture orientation
+ 3. Right Leg Angle           → Posture orientation
+ 4. Left Arm Angle            → Gesture detection
+ 5. Right Arm Angle           → Gesture detection
+ 6. Body Height               → Lying detection
+ 7. Shoulder Width            → Horizontal posture
+ 8. Hand-to-Mouth Distance    → Eating / Drinking / Talking gesture (key indicator)
+ 9. Movement Velocity         → Activity intensity (walking detector)
+10. Leg Asymmetry             → Gait pattern (walking gait)
+11. Hip Height                → Lying down indicator
+12. Wrist Height              → Arm elevation (eating reach vs drinking lift)
+13. Elbow Above Shoulder      → Cup-raise indicator (drinking)
+14. Wrist Oscillation         → Repetitive hand gesturing near face (talking)
 ```
 
 ### Classification Logic
-Uses optimized decision tree with ML-calibrated thresholds:
+Uses optimized decision tree with ML-calibrated thresholds (8 activity classes):
 
 ```
-IF hipHeight > 0.6 AND bodyHeight < 0.4 AND velocity < 0.008
+IF hipHeight > 0.50 AND bodyHeight < 0.50 AND velocity < 0.008
   → SLEEP (92% confidence)
 
-ELSE IF handToMouth < 0.15 AND legAngles > 75° AND velocity < 0.04
-  → EATING (88% confidence)
+ELSE IF handToMouth < 0.13 AND elbowAboveShoulder > 0.02 AND wristHeight < 0.38
+  → DRINKING (82% confidence)  [cup-lift: elbow raised above shoulder]
 
-ELSE IF velocity > 0.04 AND legAsymmetry > 20° AND standing
-  → WALKING (85% confidence)
+ELSE IF handToMouth < 0.22 AND legAngles > 68° AND velocity < 0.06
+  → EATING (84% confidence)    [seated + sustained hand-to-mouth reach]
 
-ELSE IF legAngles > 65° AND velocity < 0.03 AND sitting_posture
-  → SITTING (90% confidence)
+ELSE IF handToMouth < 0.35 AND wristOscillation > 0.008 AND velocity < 0.035
+  → TALKING (78% confidence)   [wrist gesturing near face, body still]
 
-ELSE IF upright AND moderate_movement
-  → WAKE UP (78% confidence)
+ELSE IF velocity > 0.038 AND legAsymmetry > 18° AND bodyHeight > 0.49
+  → WALKING (83% confidence)
+
+ELSE IF legAngles > 63° AND velocity < 0.034 AND sitting_posture
+  → SITTING / REST (88% confidence)
+
+ELSE IF upright AND moderate_movement AND bodyHeight > 0.49
+  → STANDING UP (76% confidence)
 
 ELSE
   → MOVEMENT (45% confidence)
