@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule } from "../services/scheduleApi";
 import ActivityDetectorMonitor from "../components/ActivityDetectorMonitor";
+import AlertModal from "../components/AlertModal";
 import toast from "react-hot-toast";
 
 export default function ScheduleDashboard() {
@@ -13,7 +14,9 @@ export default function ScheduleDashboard() {
   const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showDetector, setShowDetector] = useState(false);
+  const [activeAlert, setActiveAlert] = useState(null);
   const prevUnreadCount = useRef(0);
+  const shownMissedRef = useRef(new Set());
 
   useEffect(() => {
     fetchData();
@@ -41,6 +44,24 @@ export default function ScheduleDashboard() {
           icon: '⚠️',
           duration: 4000,
         });
+
+        // Show full-screen modal for new Missed notifications
+        const missedNotifs = newNotifs.filter(
+          n => !n.read && n.status === "Missed" && !shownMissedRef.current.has(n.notification_id)
+        );
+        if (missedNotifs.length > 0) {
+          const m = missedNotifs[0];
+          shownMissedRef.current.add(m.notification_id);
+          setActiveAlert({
+            status: "Missed",
+            activityName: m.activity_name,
+            message: m.message,
+            time: new Date(m.created_at || Date.now()).toLocaleString([], {
+              month: 'short', day: 'numeric',
+              hour: '2-digit', minute: '2-digit'
+            }),
+          });
+        }
       }
       prevUnreadCount.current = newUnreadCount;
 
@@ -184,7 +205,8 @@ export default function ScheduleDashboard() {
                       
                       if (log) {
                         if (log.status === "Done" || log.status === "On Time") { statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900"; statusText = "Done"; textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"; }
-                        if (log.status === "Late") { statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900"; statusText = "Late"; textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20"; }
+                        if (log.status === "Early") { statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900"; statusText = "Early"; textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"; }
+                        if (log.status === "Late" || log.status === "Slightly Late") { statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900"; statusText = "Late"; textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20"; }
                         if (log.status === "Missed") { statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900"; statusText = "Missed"; textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20"; }
                       } else {
                         textClass = "text-gray-400 bg-gray-800 border-gray-700";
@@ -245,7 +267,13 @@ export default function ScheduleDashboard() {
 
           </div>
         </div>
-      )}
+      )}\n
+
+      {/* Full-screen Missed alert modal */}
+      <AlertModal
+        alert={activeAlert}
+        onDismiss={() => setActiveAlert(null)}
+      />
     </div>
   );
 }

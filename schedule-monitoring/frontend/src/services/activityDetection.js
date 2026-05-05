@@ -49,7 +49,7 @@ const LSTM_MODEL_PATH = '/lstm_har_model/model.json';
 const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
 
 const LSTM_ACTIVITY_NAMES = [
-  'Sleep', 'Eating', 'Drinking', 'Talking',
+  'Sleep', 'Eating', 'Drinking', 'Taking Medications', 'Talking',
   'Walking', 'Sitting / rest', 'Standing up', 'Movement'
 ];
 
@@ -68,14 +68,21 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
     onActivityCallback = onActivityDetected;
     onAlignmentChangeCallback = onAlignmentChange;
 
-    // Initialize TensorFlow.js backend
+    // STEP 1: Start webcam immediately so video shows up right away
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    // STEP 2: Initialize TensorFlow.js backend
+    await tf.setBackend('webgl');
     await tf.ready();
     console.log("TensorFlow.js backend:", tf.getBackend());
 
-    // Load MoveNet model (pre-trained on COCO dataset)
-    // Two versions available: Lightning (faster) and Thunder (more accurate)
+    // STEP 3: Load MoveNet LIGHTNING (smaller and faster than THUNDER)
     const detectorConfig = {
-      modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
+      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
       enableSmoothing: true,
       minPoseScore: 0.25,
     };
@@ -94,19 +101,7 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
       );
     }
 
-    // Start webcam stream
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: 640,
-        height: 480,
-        facingMode: 'user'
-      }
-    });
-
-    video.srcObject = stream;
-    await video.play();
-
-    // Start detection loop
+    // STEP 4: Start detection loop
     isRunning = true;
     detectPoseLoop();
 
@@ -512,39 +507,73 @@ function classifyActivity(features, poseSequence) {
     torsoAlignment
   ] = features;
 
+  // ── KEYPOINT VISIBILITY CHECK ─────────────────────────────────────────────
+  // Check if lower-body keypoints (hips, knees, ankles) are actually visible.
+  // When camera only shows the upper body, MoveNet estimates these with very
+  // low confidence — we should not make full-body classifications in that case.
+  const latestPose = poseSequence && poseSequence[poseSequence.length - 1];
+  const lowerBodyVisible = latestPose && (() => {
+    const lowerIndices = [11, 12, 13, 14, 15, 16]; // hips, knees, ankles
+    const visible = lowerIndices.filter(i => latestPose[i] && latestPose[i].score > 0.35);
+    return visible.length >= 4; // at least 4 of 6 lower-body points visible
+  })();
+
   let activity = null;
   let confidence = 0;
   let signals = { source: 'threshold' };
 
   // ── SLEEPING ─────────────────────────────────────────────────────────────
-  // Lying down: high hip position (large y-value), OR very horizontal torso (alignment > 1.2)
-  // + low body height + minimal motion
+  // PRIMARY: Detect horizontal torso from upper body alone (torsoAlignment > 1.1
+  // means the torso is wider than it is tall — clear lying-down signal).
+  // This works even when MoveNet fails to detect lower-body keypoints when lying flat.
+  // SECONDARY: Full-body check with lower body visible.
   if (
-    (hipHeight > 0.45 || torsoAlignment > 1.1) && 
-    bodyHeight < 0.60 && 
-    velocity < 0.02
+    (
+      // Upper-body horizontal posture (works without lower body keypoints)
+      (torsoAlignment > 1.1 && velocity < 0.04) ||
+      // Full-body lying down
+      (lowerBodyVisible && hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02)
+    )
   ) {
     activity = "Sleep";
-    confidence = 0.85;
-    signals = { 
-      posture: "lying", 
-      movement: "minimal", 
+    confidence = torsoAlignment > 1.3 ? 0.90 : 0.82;
+    signals = {
+      posture: "lying",
+      movement: "minimal",
+      torsoAlignment: torsoAlignment.toFixed(2),
       hipHeight: hipHeight.toFixed(2),
       bodyHeight: bodyHeight.toFixed(2),
       velocity: velocity.toFixed(4)
     };
   }
 
+  // ── TAKING MEDICATIONS ────────────────────────────────────────────────────
+  // Key distinguisher from Drinking: elbow stays LOW (pill pickup — no cup-tilt).
+  // Key distinguisher from Eating: hand is VERY close to mouth (pill vs spoon).
+  // Signal: precise, brief wrist-to-lips gesture with elbow at/below shoulder level.
+  else if (
+    handToMouth < 0.10 &&             // very close — pill/tablet sized gesture
+    elbowAboveShoulder <= 0.01 &&     // elbow NOT raised (no cup-tilt)
+    wristHeight < 0.42 &&             // wrist near face level
+    velocity < 0.05                   // body still
+  ) {
+    activity = "Taking Medications";
+    confidence = 0.80;
+    signals = {
+      posture: "sitting_or_standing",
+      interaction: "pill_to_mouth",
+      handToMouth: handToMouth.toFixed(3),
+      elbowElevation: elbowAboveShoulder.toFixed(3),
+      wristLevel: wristHeight.toFixed(2)
+    };
+  }
+
   // ── DRINKING ─────────────────────────────────────────────────────────────
-  // Interaction-based task: elbow raised above shoulder (cup-lift) +
-  // wrist very close to mouth + single-arm dominant gesture + low body velocity
-  // Distinguishable from eating by: higher elbow elevation, closer hand-to-mouth,
-  // briefer gesture, and elbow angle indicating cup raise.
   else if (
     handToMouth < 0.13 &&
-    elbowAboveShoulder > 0.02 &&    // elbow elevated — cup-lift posture
-    wristHeight < 0.38 &&           // wrist near face-level
-    velocity < 0.05                 // body relatively still
+    elbowAboveShoulder > 0.02 &&
+    wristHeight < 0.38 &&
+    velocity < 0.05
   ) {
     activity = "Drinking";
     confidence = 0.82;
@@ -556,21 +585,18 @@ function classifyActivity(features, poseSequence) {
       wristLevel: wristHeight.toFixed(2)
     };
   }
-  
+
   // ── EATING ────────────────────────────────────────────────────────────────
-  // Interaction-based task: sitting posture + hand near face + sustained gesture
-  // Distinguishable from drinking by: lower elbow elevation, slightly wider
-  // hand-to-mouth distance (spoon/fork reach vs cup-to-lips).
   else if (
     handToMouth < 0.22 &&
-    leftLegAngle > 68 && rightLegAngle > 68 && 
+    leftLegAngle > 68 && rightLegAngle > 68 &&
     velocity < 0.06 &&
     wristHeight < 0.54
   ) {
     activity = "Eating";
     confidence = 0.84;
-    signals = { 
-      posture: "sitting", 
+    signals = {
+      posture: "sitting",
       interaction: "hand_to_mouth",
       handToMouth: handToMouth.toFixed(3),
       wristElevation: wristHeight.toFixed(2)
@@ -578,13 +604,10 @@ function classifyActivity(features, poseSequence) {
   }
 
   // ── TALKING ───────────────────────────────────────────────────────────────
-  // Interaction-based task: hand gesturing near face/chin while body is still.
-  // Tracked via wrist oscillation (repetitive hand movement) + proximity to face
-  // + body velocity is low (not walking). Covers gesturing-while-talking.
   else if (
-    handToMouth < 0.65 &&            // RELAXED: allow hands to be further out to the sides
-    wristOscillation > 0.002 &&      // RELAXED: wrist actively moving (gesturing)
-    velocity < 0.08                  // RELAXED: body still (allow slight movement)
+    handToMouth < 0.65 &&
+    wristOscillation > 0.002 &&
+    velocity < 0.08
   ) {
     activity = "Talking";
     confidence = 0.78;
@@ -595,61 +618,65 @@ function classifyActivity(features, poseSequence) {
       wristOscillation: wristOscillation.toFixed(4)
     };
   }
-  
+
   // ── WALKING ───────────────────────────────────────────────────────────────
-  // High velocity + leg asymmetry (gait pattern) + standing
-  // Leg asymmetry > 18° indicates walking stride
+  // Only classify walking if lower body is actually visible
   else if (
-    velocity > 0.038 && 
-    legAsymmetry > 18 && 
+    lowerBodyVisible &&
+    velocity > 0.038 &&
+    legAsymmetry > 18 &&
     bodyHeight > 0.49 &&
     hipHeight < 0.52
   ) {
     activity = "Walking";
     confidence = 0.83;
-    signals = { 
-      posture: "standing", 
-      gait_detected: true, 
+    signals = {
+      posture: "standing",
+      gait_detected: true,
       velocity: velocity.toFixed(4),
       legAsymmetry: legAsymmetry.toFixed(1)
     };
   }
-  
+
   // ── SITTING / REST ────────────────────────────────────────────────────────
-  // Bent legs + low movement + moderate body height
+  // Also catches upper-body-only camera view when the person is still
   else if (
-    leftLegAngle > 63 && rightLegAngle > 63 && 
-    velocity < 0.034 && 
-    bodyHeight > 0.32 && bodyHeight < 0.62 &&
-    hipHeight > 0.37 && hipHeight < 0.67
+    velocity < 0.034 &&
+    (
+      // Full body visible and seated
+      (lowerBodyVisible && leftLegAngle > 63 && rightLegAngle > 63 && bodyHeight > 0.32 && bodyHeight < 0.62) ||
+      // Upper body only — if still, default to sitting/rest
+      (!lowerBodyVisible && velocity < 0.04)
+    )
   ) {
     activity = "Sitting / rest";
-    confidence = 0.88;
-    signals = { 
-      posture: "sitting", 
+    confidence = lowerBodyVisible ? 0.88 : 0.72;
+    signals = {
+      posture: "sitting",
       movement: "low",
-      legAngles: [Math.round(leftLegAngle), Math.round(rightLegAngle)]
+      upperBodyOnly: !lowerBodyVisible,
+      legAngles: lowerBodyVisible ? [Math.round(leftLegAngle), Math.round(rightLegAngle)] : "not visible"
     };
   }
-  
+
   // ── STANDING UP ───────────────────────────────────────────────────────────
-  // Upright posture + moderate movement (transitioning from sit/lie to stand)
   else if (
-    bodyHeight > 0.49 && 
+    lowerBodyVisible &&
+    bodyHeight > 0.49 &&
     hipHeight < 0.42 &&
     velocity > 0.008 && velocity < 0.075 &&
     leftLegAngle < 162 && rightLegAngle < 162
   ) {
     activity = "Standing up";
     confidence = 0.76;
-    signals = { 
-      posture: "standing", 
+    signals = {
+      posture: "standing",
       movement: "moderate",
       bodyHeight: bodyHeight.toFixed(2)
     };
   }
 
-  // ── TRANSITIONING ─────────────────────────────────────────────────────────
+  // ── TRANSITIONING / UNKNOWN ───────────────────────────────────────────────
   else {
     activity = "Movement";
     confidence = 0.45;

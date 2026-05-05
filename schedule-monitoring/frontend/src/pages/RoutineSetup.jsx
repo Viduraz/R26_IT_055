@@ -6,6 +6,7 @@ const ACTIVITY_TYPES = [
   "Standing up",
   "Eating",
   "Drinking",
+  "Taking Medications",
   "Talking",
   "Walking",
   "Sitting / rest",
@@ -50,21 +51,22 @@ const SAMPLE_SCHEDULES = {
     ]
   },
   testing: {
-    name: "Quick Test",
-    time: "All 8 Activities",
-    description: "All 8 Activities - including interaction tasks",
+    name: "Quick Test (Starts Now)",
+    time: "Live Dynamic Schedule",
+    description: "Generates 1-minute activities starting from the current time for quick alert testing.",
     icon: "🧪",
     color: "from-emerald-500/20 to-teal-600/20",
     border: "border-emerald-500/30 hover:border-emerald-500/60",
-    activities: [
-      { activity_name: "Standing up",   start_time: "08:00", end_time: "08:10" },
-      { activity_name: "Eating",         start_time: "08:10", end_time: "08:20" },
-      { activity_name: "Drinking",       start_time: "08:20", end_time: "08:30" },
-      { activity_name: "Talking",        start_time: "08:30", end_time: "08:40" },
-      { activity_name: "Walking",        start_time: "08:40", end_time: "08:50" },
-      { activity_name: "Sitting / rest", start_time: "08:50", end_time: "09:00" },
-      { activity_name: "Sleep",          start_time: "09:00", end_time: "09:10" }
-    ]
+    activities: [] // Will be generated dynamically
+  },
+  demo: {
+    name: "5-Minute Live Demo",
+    time: "Live Dynamic Schedule",
+    description: "DEMO_MODE: 5 activities, 1 min each. Deviations (Late/Missed) happen after a 2-min delay.",
+    icon: "🎥",
+    color: "from-purple-500/20 to-pink-600/20",
+    border: "border-purple-500/30 hover:border-purple-500/60",
+    activities: [] // Will be generated dynamically
   }
 };
 
@@ -80,7 +82,48 @@ export default function RoutineSetup() {
   const [error, setError] = useState("");
 
   const loadTemplate = (templateKey) => {
-    const template = SAMPLE_SCHEDULES[templateKey];
+    let template = { ...SAMPLE_SCHEDULES[templateKey] };
+    
+    if (templateKey === "testing") {
+      const now = new Date();
+      const generatedActivities = [];
+      const formatTime = (d) => d.toTimeString().substring(0, 5);
+      
+      ACTIVITY_TYPES.forEach((actName, idx) => {
+        // Start 1st activity exactly now, each lasts 1 minute
+        const start = new Date(now.getTime() + idx * 60000);
+        const end = new Date(now.getTime() + (idx + 1) * 60000);
+        
+        generatedActivities.push({
+          activity_name: actName,
+          start_time: formatTime(start),
+          end_time: formatTime(end)
+        });
+      });
+      
+      template.activities = generatedActivities;
+      template.time = `Starts at ${formatTime(now)}`;
+    } else if (templateKey === "demo") {
+      const now = new Date();
+      const generatedActivities = [];
+      const formatTime = (d) => d.toTimeString().substring(0, 5);
+      
+      ACTIVITY_TYPES.slice(0, 5).forEach((actName, idx) => {
+        // Start activities from now, each lasting 1 minute
+        const start = new Date(now.getTime() + idx * 60000);
+        const end = new Date(now.getTime() + (idx + 1) * 60000);
+        
+        generatedActivities.push({
+          activity_name: actName,
+          start_time: formatTime(start),
+          end_time: formatTime(end)
+        });
+      });
+      
+      template.activities = generatedActivities;
+      template.time = `Starts at ${formatTime(now)}`;
+    }
+
     setActivities(template.activities);
     setDescription(template.description);
     setMessage(`Loaded template: ${template.name}`);
