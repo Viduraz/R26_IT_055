@@ -119,6 +119,7 @@ export default function ActivityDetectorMonitor() {
   const [isDetecting, setIsDetecting] = useState(false);
   const [currentExpected, setCurrentExpected] = useState("Walking");
   const [demoOverride, setDemoOverride] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [isAligned, setIsAligned] = useState(false);
   const [currentActivity, setCurrentActivity] = useState(null);
   const [schedule, setSchedule] = useState(null);
@@ -284,12 +285,13 @@ export default function ActivityDetectorMonitor() {
   };
 
   const startDetection = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || isInitializing) return;
     if (!schedule) {
       setDebugInfo("⚠️ No schedule available, but detection will run in test mode!");
     }
 
     try {
+      setIsInitializing(true);
       setDebugInfo("🔄 Initializing MoveNet ML pose detection...");
       console.log("Starting pose detection with ML-based schedule validation:", schedule);
       await initializePoseDetection(
@@ -304,6 +306,8 @@ export default function ActivityDetectorMonitor() {
     } catch (error) {
       console.error("Error:", error);
       setDebugInfo(`✗ Error initializing detection: ${error.message}\n\nMake sure to allow camera permission!`);
+    } finally {
+      setIsInitializing(false);
     }
   };
 
@@ -349,20 +353,7 @@ export default function ActivityDetectorMonitor() {
 
 
 
-          {/* Visual Signals Overlay (Left Side) */}
-          {isDetecting && liveFeatures && (
-            <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.h2m < 0.65 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
-                <span className="text-xs">🍽️</span> HAND NEAR FACE
-              </div>
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.velocity < 0.03 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
-                <span className="text-xs">🛑</span> BODY STILL
-              </div>
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${liveFeatures.torsoAlignment > 1.1 ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-black/40 border-gray-700 text-gray-500'}`}>
-                <span className="text-xs">🛏️</span> LYING DOWN
-              </div>
-            </div>
-          )}
+          {/* Visual Signals Overlay (Left Side) removed as requested */}
 
 
 
@@ -391,9 +382,12 @@ export default function ActivityDetectorMonitor() {
           {!isDetecting ? (
             <button
               onClick={startDetection}
-              className="flex-1 bg-green-600 hover:bg-green-700 px-4 py-2 rounded font-semibold transition"
+              disabled={isInitializing}
+              className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                isInitializing ? "bg-green-800 text-gray-300 cursor-not-allowed" : "bg-green-600 hover:bg-green-700"
+              }`}
             >
-              ▶ Start Activity Detection
+              {isInitializing ? "⏳ Initializing ML Models..." : "▶ Start Activity Detection"}
             </button>
           ) : (
             <button
