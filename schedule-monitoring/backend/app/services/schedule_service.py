@@ -24,7 +24,7 @@ class ScheduleService:
     # ====================== 20-MINUTE RULE LOGIC ======================
 
     def check_activity_status(self, expected_start: datetime, detected_at: datetime) -> dict:
-        grace_minutes = 20
+        grace_minutes = 1 # TEST MODE (Reduced from 20)
         
         detected_naive = detected_at.replace(tzinfo=None)
         expected_naive = expected_start.replace(tzinfo=None)
@@ -158,7 +158,7 @@ class ScheduleService:
                             "expected_end": activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None),
                             "detected_at": None,
                             "status": "Missed",
-                            "adaptive_grace_minutes": 20,
+                            "adaptive_grace_minutes": 1, # TEST MODE
                             "delay_minutes": None,
                             "detection_confidence": 1.0,
                             "signals": {},

@@ -13,8 +13,8 @@ scheduler = BackgroundScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     service = ScheduleService()
-    # Check for missed activities every 5 minutes
-    scheduler.add_job(service.check_missed_activities, 'interval', minutes=5)
+    # Start background scheduler for checking missed activities (TEST MODE: 1 min)
+    scheduler.add_job(service.check_missed_activities, 'interval', minutes=1)
     scheduler.start()
     yield
     scheduler.shutdown()
