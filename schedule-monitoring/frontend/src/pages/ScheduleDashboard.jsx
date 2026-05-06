@@ -15,6 +15,7 @@ export default function ScheduleDashboard() {
   const [loading, setLoading] = useState(true);
   const [showDetector, setShowDetector] = useState(false);
   const [activeAlert, setActiveAlert] = useState(null);
+  const [hasAutoOpened, setHasAutoOpened] = useState(false);
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
 
@@ -23,6 +24,22 @@ export default function ScheduleDashboard() {
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!loading && schedule.length > 0 && !hasAutoOpened) {
+      setShowDetector(true);
+      setHasAutoOpened(true);
+    }
+  }, [loading, schedule.length, hasAutoOpened]);
+
+  const handleStartTracking = () => {
+    if (schedule.length > 0) {
+      setShowDetector(!showDetector);
+    } else {
+      toast.error("No active routine! Please set up a schedule first.", { icon: "⚠️", duration: 3000 });
+      setTimeout(() => navigate("/routine-setup"), 1500);
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -97,23 +114,22 @@ export default function ScheduleDashboard() {
 
   return (
     <div className="w-full pb-20">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 animate-slide-up">
+      {/* Dashboard Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 animate-slide-up">
         <div>
-          <h1 className="text-4xl font-extrabold text-white tracking-tight">Dashboard</h1>
-          <p className="text-gray-400 mt-2 text-sm">Real-time activity tracking and routine monitoring</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
+          <p className="text-gray-400 text-sm mt-1">Real-time health metrics and routine monitoring.</p>
         </div>
-        <div className="flex gap-4 mt-6 md:mt-0">
-          <button
-            onClick={() => setShowDetector(!showDetector)}
-            className={`px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg ${
-              showDetector
-                ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
-                : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20"
-            }`}
-          >
-            {showDetector ? "⏹ Hide Camera" : "▶ Start Detection"}
-          </button>
-        </div>
+        <button
+          onClick={handleStartTracking}
+          className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${
+            showDetector
+              ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
+              : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
+          }`}
+        >
+          {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
+        </button>
       </div>
 
       {loading ? (
@@ -130,45 +146,71 @@ export default function ScheduleDashboard() {
             </div>
           )}
 
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-900/20 group">
-              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Scheduled Today</p>
-              <div className="mt-4 flex items-end gap-3">
-                <span className="text-4xl font-bold text-white group-hover:text-blue-400 transition-colors">{todayActivities}</span>
-                <span className="text-sm text-gray-500 mb-1">activities</span>
+          {/* Health Metrics KPI Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-indigo-900/20 group relative overflow-hidden">
+              <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 relative z-10"><span>🌙</span> Sleep Quality</p>
+              <div className="mt-4 flex items-end gap-3 mb-4 relative z-10">
+                <span className="text-4xl font-bold text-white group-hover:text-indigo-400 transition-colors">85%</span>
+                <span className="text-sm text-gray-500 mb-1">7h 45m (Restful)</span>
+              </div>
+              <div className="w-full h-12 mt-2 relative z-10">
+                <svg viewBox="0 0 100 30" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                  <path d="M0 25 C 10 25, 15 5, 25 5 C 35 5, 40 25, 50 25 C 60 25, 65 10, 75 10 C 85 10, 90 20, 100 20" 
+                        fill="none" stroke="currentColor" strokeWidth="2.5" className="text-indigo-500/80 group-hover:text-indigo-400 transition-colors drop-shadow-[0_4px_6px_rgba(99,102,241,0.4)]" />
+                  <path d="M0 25 C 10 25, 15 5, 25 5 C 35 5, 40 25, 50 25 C 60 25, 65 10, 75 10 C 85 10, 90 20, 100 20 L 100 30 L 0 30 Z" 
+                        fill="url(#indigoGrad)" className="opacity-20" />
+                  <defs>
+                    <linearGradient id="indigoGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#6366f1" stopOpacity="1" />
+                      <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                </svg>
               </div>
             </div>
 
-            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-900/20 group">
-              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Logged Activities</p>
-              <div className="mt-4 flex items-end gap-3">
-                <span className="text-4xl font-bold text-white group-hover:text-emerald-400 transition-colors">{totalLogs}</span>
-                <span className="text-sm text-gray-500 mb-1">detected</span>
+            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-900/20 group relative overflow-hidden">
+              <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 relative z-10"><span>👣</span> Step Count</p>
+              <div className="mt-4 flex items-end gap-3 mb-4 relative z-10">
+                <span className="text-4xl font-bold text-white group-hover:text-emerald-400 transition-colors">4,230</span>
+                <span className="text-sm text-gray-500 mb-1">steps today</span>
+              </div>
+              <div className="w-full h-12 mt-2 flex items-end justify-between gap-1.5 relative z-10">
+                {[40, 60, 45, 80, 55, 90, 65].map((h, i) => (
+                  <div key={i} className="w-full h-full bg-emerald-500/10 rounded-t-sm group-hover:bg-emerald-500/20 transition-colors relative group/bar">
+                    <div 
+                      className="absolute bottom-0 w-full bg-emerald-500 rounded-t-sm shadow-[0_0_8px_rgba(16,185,129,0.5)] transition-all duration-500" 
+                      style={{ height: `${h}%` }}
+                    ></div>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className={`bg-gray-900/40 backdrop-blur-md border rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl group ${unreadCount > 0 ? 'border-rose-500/50 hover:shadow-rose-900/20' : 'border-gray-800'}`}>
-              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Active Alerts</p>
-              <div className="mt-4 flex items-end gap-3">
-                <span className={`text-4xl font-bold transition-colors ${unreadCount > 0 ? 'text-rose-400' : 'text-white'}`}>{unreadCount}</span>
-                <span className="text-sm text-gray-500 mb-1">unread</span>
+            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-amber-900/20 group relative overflow-hidden">
+              <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl pointer-events-none"></div>
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 relative z-10"><span>⚡</span> Activity Level</p>
+              <div className="mt-4 flex items-end gap-3 mb-4 relative z-10">
+                <span className="text-4xl font-bold text-white group-hover:text-amber-400 transition-colors">Active</span>
+                <span className="text-sm text-gray-500 mb-1">Moderate pace</span>
               </div>
-            </div>
-
-            <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-amber-900/20 group">
-              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Deviations</p>
-              <div className="mt-4 flex items-end gap-3">
-                <span className="text-4xl font-bold text-white group-hover:text-amber-400 transition-colors">{deviations.length}</span>
-                <span className="text-sm text-gray-500 mb-1">recorded</span>
+              <div className="w-full h-12 mt-2 relative z-10">
+                <svg viewBox="0 0 100 30" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                  <polyline points="0,25 20,25 25,10 30,28 35,5 40,25 60,25 65,15 70,25 100,25" 
+                            fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" 
+                            className="text-amber-500 group-hover:text-amber-400 transition-colors drop-shadow-[0_2px_8px_rgba(245,158,11,0.6)]" />
+                </svg>
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-4">
+          <div className="pt-4">
             
-            {/* Left Column: Timeline */}
-            <div className="lg:col-span-2 space-y-8">
+            {/* Timeline */}
+            <div className="w-full space-y-8">
               <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-8 border border-gray-800/60 shadow-lg relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-32 bg-blue-500/5 rounded-full blur-3xl"></div>
                 <div className="flex justify-between items-center mb-8 relative z-10">
@@ -234,40 +276,9 @@ export default function ScheduleDashboard() {
               </div>
             </div>
 
-            {/* Right Column: Alerts */}
-            <div className="space-y-8">
-              <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-6 border border-gray-800/60 shadow-lg relative overflow-hidden">
-                 <div className="absolute top-0 left-0 p-32 bg-rose-500/5 rounded-full blur-3xl pointer-events-none"></div>
-                <div className="flex items-center justify-between mb-6 relative z-10">
-                  <h2 className="text-lg font-semibold text-gray-100 flex items-center gap-2">
-                    <span className="w-8 h-8 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-400 text-sm">🔔</span>
-                    Alerts
-                  </h2>
-                  {unreadCount > 0 && <span className="bg-rose-500 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-[0_0_10px_rgba(225,29,72,0.4)] animate-pulse-slow">{unreadCount} new</span>}
-                </div>
-
-                {notifications.filter(n => !n.read).length === 0 ? (
-                  <div className="py-8 text-center relative z-10">
-                    <p className="text-4xl mb-3">✅</p>
-                    <p className="text-gray-500 text-sm">All clear! No recent alerts.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3 relative z-10">
-                    {notifications.filter(n => !n.read).slice(0, 5).map((notif) => (
-                      <div key={notif.notification_id} className="p-4 rounded-xl border border-rose-900/30 bg-rose-950/20 hover:bg-rose-900/30 transition-colors relative overflow-hidden group cursor-pointer">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-rose-500 to-rose-700 group-hover:w-1.5 transition-all"></div>
-                        <p className="font-medium text-rose-200 text-sm">{notif.activity_name}</p>
-                        <p className="text-xs text-rose-400/80 mt-1">{notif.message}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
           </div>
         </div>
-      )}\n
+      )}
 
       {/* Full-screen Missed alert modal */}
       <AlertModal

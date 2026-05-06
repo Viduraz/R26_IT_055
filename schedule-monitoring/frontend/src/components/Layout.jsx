@@ -5,7 +5,8 @@ export default function Layout({ children }) {
   const location = useLocation();
   
   const navItems = [
-    { name: "Dashboard", path: "/", icon: "📊" },
+    { name: "Home", path: "/", icon: "🏠" },
+    { name: "Dashboard", path: "/dashboard", icon: "📊" },
     { name: "Routine Setup", path: "/routine-setup", icon: "⚙️" },
     { name: "Reports", path: "/reports", icon: "📑" },
   ];

@@ -165,10 +165,10 @@ def get_db() -> Database:
     # Try to connect to real MongoDB
     if _client is None:
         try:
+            import certifi
             _client = MongoClient(
                 settings.MONGODB_URI,
-                tlsAllowInvalidCertificates=True,
-                tlsInsecure=True,
+                tlsCAFile=certifi.where(),
                 serverSelectionTimeoutMS=5000,  # 5 second timeout
                 retryWrites=False
             )

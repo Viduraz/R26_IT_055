@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import Home from "./pages/Home";
 import ScheduleDashboard from "./pages/ScheduleDashboard";
 import RoutineSetup from "./pages/RoutineSetup";
 import Reports from "./pages/Reports";
@@ -18,7 +19,8 @@ function App() {
     <BrowserRouter>
       <Layout>
         <Routes>
-          <Route path="/" element={<ScheduleDashboard />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/dashboard" element={<ScheduleDashboard />} />
           <Route path="/routine-setup" element={<RoutineSetup />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="*" element={<Navigate to="/" replace />} />
