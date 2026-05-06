@@ -16,6 +16,8 @@
 
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
+import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
 // ── LSTM toggle ────────────────────────────────────────────────────────────────
 // Set to true after running:  pipelines/train_lstm_har.py
@@ -24,6 +26,10 @@ const USE_LSTM = false;
 
 // ── MoveNet state ──────────────────────────────────────────────────────────────
 let detector = null;
+let faceDetector = null;
+let objectDetector = null;
+let lastDetectedObjects = [];
+let mouthHistory = [];
 let isRunning = false;
 let videoElement = null;
 let onActivityCallback = null;
@@ -34,17 +40,25 @@ let currentAlignment = false;
 
 // ── Temporal history ───────────────────────────────────────────────────────────
 const HISTORY_SIZE = 30;          // frames kept for threshold fallback
-let poseHistory    = [];          // raw keypoint history
-let activityHistory = [];         // smoothed prediction history
-let featureHistory  = [];         // 14-feature vectors for LSTM window
+let poseHistory = [];          // raw keypoint history
+let activityHistory = [];
+// Temporal Action Memory for Sequential State Machine
+const actionMemory = {
+  lastCupSeen: 0,
+  lastFoodSeen: 0,
+  lastEmptyHandToMouth: 0,
+  lastCupToMouth: 0,
+};
+// smoothed prediction history
+let featureHistory = [];         // 14-feature vectors for LSTM window
 
 // ── LSTM model state ───────────────────────────────────────────────────────────
-let lstmModel   = null;           // tf.LayersModel (null until loaded)
-let normMean    = null;           // Float32Array[14]
-let normStd     = null;           // Float32Array[14]
-let lstmReady   = false;          // true once model + stats are loaded
+let lstmModel = null;           // tf.LayersModel (null until loaded)
+let normMean = null;           // Float32Array[14]
+let normStd = null;           // Float32Array[14]
+let lstmReady = false;          // true once model + stats are loaded
 
-const LSTM_SEQ_LEN    = 30;       // frames per inference window
+const LSTM_SEQ_LEN = 30;       // frames per inference window
 const LSTM_MODEL_PATH = '/lstm_har_model/model.json';
 const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
 
@@ -91,8 +105,15 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
       poseDetection.SupportedModels.MoveNet,
       detectorConfig
     );
-
     console.log("✓ MoveNet pose detector loaded");
+
+    const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+    const faceDetectorConfig = { runtime: 'tfjs', refineLandmarks: false };
+    faceDetector = await faceLandmarksDetection.createDetector(faceModel, faceDetectorConfig);
+    console.log("✓ Face Landmarks detector loaded");
+
+    objectDetector = await cocoSsd.load();
+    console.log("✓ COCO-SSD object detector loaded");
 
     // Attempt to load LSTM model (non-blocking — falls back to thresholds if absent)
     if (USE_LSTM) {
@@ -119,12 +140,23 @@ async function detectPoseLoop() {
   if (!isRunning || !detector || !videoElement) return;
 
   try {
-    // Detect poses in current frame
-    const poses = await detector.estimatePoses(videoElement);
+    // Detect poses, faces, and objects in current frame
+    // We only run object detection every 5th frame to save CPU, or if we don't have recent objects.
+    let objects = lastDetectedObjects;
+    let faces = [];
+    let poses = [];
+    try {
+      poses = await detector.estimatePoses(videoElement);
+      faces = await faceDetector.estimateFaces(videoElement);
+      if (Math.random() < 0.2 || lastDetectedObjects.length === 0) {
+        objects = await objectDetector.detect(videoElement);
+        lastDetectedObjects = objects;
+      }
+    } catch (e) { console.error(e); }
 
     if (poses && poses.length > 0) {
       const pose = poses[0];
-      
+
       // Normalize keypoints so thresholds work correctly (0.0 to 1.0)
       const width = videoElement.videoWidth || 640;
       const height = videoElement.videoHeight || 480;
@@ -133,11 +165,57 @@ async function detectPoseLoop() {
         x: p.x / width,
         y: p.y / height
       }));
-      
+
       // Extract features from detected pose
       const features = extractPoseFeatures(normalizedKeypoints);
       let smoothedActivity = null;
-      
+
+      // Calculate mouth variance and advanced ML features
+      let mouthOpenRatio = 0;
+      let headTiltRatio = 1.0;
+
+      if (faces && faces.length > 0 && faces[0].keypoints) {
+        const faceKp = faces[0].keypoints;
+
+        // 1. Mouth Open Ratio
+        if (faceKp[13] && faceKp[14] && faceKp[10] && faceKp[152]) {
+          const lipDist = Math.sqrt(Math.pow(faceKp[13].x - faceKp[14].x, 2) + Math.pow(faceKp[13].y - faceKp[14].y, 2));
+          const faceHeight = Math.sqrt(Math.pow(faceKp[10].x - faceKp[152].x, 2) + Math.pow(faceKp[10].y - faceKp[152].y, 2));
+          mouthOpenRatio = lipDist / (faceHeight || 1);
+        }
+
+        // 2. Head Tilt Ratio (Pitch) - Swallowing detection
+        if (faceKp[152] && faceKp[1] && faceKp[10]) {
+          const chinToNose = faceKp[152].y - faceKp[1].y;
+          const noseToForehead = faceKp[1].y - faceKp[10].y;
+          headTiltRatio = chinToNose / (noseToForehead + 0.001);
+        }
+      }
+      mouthHistory.push(mouthOpenRatio);
+      // Keep a slightly longer history for chewing peaks
+      if (mouthHistory.length > 40) mouthHistory.shift();
+
+      let chewingCycles = 0;
+      let mouthVariance = 0;
+      if (mouthHistory.length > 10) {
+        const mean = mouthHistory.reduce((a, b) => a + b, 0) / mouthHistory.length;
+        mouthVariance = mouthHistory.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / mouthHistory.length;
+
+        // 3. Chewing Peak Detection Algorithm (adjusted for realistic ~30fps frame gaps)
+        for (let i = 5; i < mouthHistory.length - 5; i++) {
+          const prev = mouthHistory[i - 5];
+          const curr = mouthHistory[i];
+          const next = mouthHistory[i + 5];
+          // A peak is when mouth opens then closes over a ~330ms window
+          if (curr > prev + 0.005 && curr > next + 0.005 && curr > 0.02) {
+            chewingCycles++;
+          }
+        }
+      }
+
+      const isChewing = chewingCycles >= 1; // Rhythmic chewing detected
+      const isSwallowing = headTiltRatio < 0.8; // Head tilted back
+
       if (features) {
         // Add to pose history
         poseHistory.push(normalizedKeypoints);
@@ -152,12 +230,12 @@ async function detectPoseLoop() {
         // ── Classify: LSTM (primary) or threshold (fallback) ────────────────
         const activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
           ? classifyWithLSTM(featureHistory)
-          : classifyActivity(features, poseHistory);
-        
+          : classifyActivity(features, poseHistory, mouthVariance, lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles);
+
         if (activityResult) {
           // Smooth predictions using temporal history
           smoothedActivity = smoothPredictions(activityResult, activityHistory);
-          
+
           // Add to activity history
           activityHistory.push(smoothedActivity);
           if (activityHistory.length > 20) {
@@ -183,32 +261,54 @@ async function detectPoseLoop() {
           canvasElement.width = videoElement.videoWidth;
           canvasElement.height = videoElement.videoHeight;
         }
-        
+
         const ctx = canvasElement.getContext('2d');
         ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-        
+
         // Check alignment with expected activity
         let isAligned = false;
         if (smoothedActivity && expectedActivityRef && expectedActivityRef.current) {
-           isAligned = smoothedActivity.activity.toLowerCase() === expectedActivityRef.current.toLowerCase() && 
-                       smoothedActivity.confidence >= CONFIDENCE_THRESHOLD;
+          isAligned = smoothedActivity.activity.toLowerCase() === expectedActivityRef.current.toLowerCase() &&
+            smoothedActivity.confidence >= CONFIDENCE_THRESHOLD;
         }
-        
+
         if (isAligned !== currentAlignment) {
           currentAlignment = isAligned;
           if (onAlignmentChangeCallback) onAlignmentChangeCallback(isAligned);
         }
 
-        // const skeletonColor = isAligned ? '#4ade80' : '#ef4444'; // Green if aligned, Red if not
-        // drawSkeleton(pose.keypoints, ctx, skeletonColor);
+        // Draw object bounding boxes
+        if (lastDetectedObjects) {
+          lastDetectedObjects.forEach(obj => {
+            ctx.strokeStyle = '#00FFFF';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(obj.bbox[0], obj.bbox[1], obj.bbox[2], obj.bbox[3]);
+            ctx.fillStyle = '#00FFFF';
+            ctx.font = '16px Arial';
+            ctx.fillText(`${obj.class} (${Math.round(obj.score * 100)}%)`, obj.bbox[0], obj.bbox[1] > 20 ? obj.bbox[1] - 5 : 10);
+          });
+        }
+
+        // Draw face landmarks (lips only for clarity)
+        if (faces && faces.length > 0) {
+          ctx.fillStyle = '#FF00FF';
+          const faceKp = faces[0].keypoints;
+          [13, 14, 78, 308].forEach(idx => {
+            if (faceKp[idx]) {
+              ctx.beginPath();
+              ctx.arc(faceKp[idx].x, faceKp[idx].y, 3, 0, 2 * Math.PI);
+              ctx.fill();
+            }
+          });
+        }
       }
     } else if (canvasElement) {
-       const ctx = canvasElement.getContext('2d');
-       ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-       if (currentAlignment !== false) {
-         currentAlignment = false;
-         if (onAlignmentChangeCallback) onAlignmentChangeCallback(false);
-       }
+      const ctx = canvasElement.getContext('2d');
+      ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      if (currentAlignment !== false) {
+        currentAlignment = false;
+        if (onAlignmentChangeCallback) onAlignmentChangeCallback(false);
+      }
     }
   } catch (error) {
     console.error("Error in detection loop:", error);
@@ -255,12 +355,12 @@ function extractPoseFeatures(keypoints) {
   const shoulderMidY = (kp.leftShoulder.y + kp.rightShoulder.y) / 2;
   const hipMidX = (kp.leftHip.x + kp.rightHip.x) / 2;
   const hipMidY = (kp.leftHip.y + kp.rightHip.y) / 2;
-  
+
   const torsoDX = Math.abs(hipMidX - shoulderMidX);
   const torsoDY = Math.abs(hipMidY - shoulderMidY);
-  const torsoHeight = torsoDY; 
+  const torsoHeight = torsoDY;
   const torsoAlignment = torsoDX / (torsoDY + 0.001); // > 1.0 means more horizontal than vertical
-  
+
   features.push(torsoHeight);
   // We'll use torsoAlignment later or replace an unused feature
 
@@ -332,9 +432,9 @@ function extractPoseFeatures(keypoints) {
  */
 function calculateAngle(pointA, pointB, pointC) {
   if (!pointA || !pointB || !pointC) return 0;
-  
+
   const radians = Math.atan2(pointC.y - pointB.y, pointC.x - pointB.x) -
-                  Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x);
+    Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x);
   let angle = Math.abs(radians * 180.0 / Math.PI);
   if (angle > 180.0) {
     angle = 360 - angle;
@@ -357,24 +457,24 @@ function euclideanDistance(pointA, pointB) {
  */
 function calculateMovementVelocity(currentKeypoints) {
   if (poseHistory.length < 2) return 0;
-  
+
   const prevKeypoints = poseHistory[poseHistory.length - 1];
   let totalMovement = 0;
   let count = 0;
-  
+
   // Track movement of key points: nose, wrists, ankles
   const keypointsToTrack = [0, 9, 10, 15, 16];
-  
+
   for (const idx of keypointsToTrack) {
     if (currentKeypoints[idx] && prevKeypoints[idx] &&
-        currentKeypoints[idx].score > 0.3 && prevKeypoints[idx].score > 0.3) {
+      currentKeypoints[idx].score > 0.3 && prevKeypoints[idx].score > 0.3) {
       const dx = currentKeypoints[idx].x - prevKeypoints[idx].x;
       const dy = currentKeypoints[idx].y - prevKeypoints[idx].y;
       totalMovement += Math.sqrt(dx * dx + dy * dy);
       count++;
     }
   }
-  
+
   return count > 0 ? totalMovement / count : 0;
 }
 
@@ -396,7 +496,7 @@ function calculateWristOscillation(currentKeypoints) {
     const prev = poseHistory[i];
     for (const idx of wristIndices) {
       if (currentKeypoints[idx] && prev[idx] &&
-          currentKeypoints[idx].score > 0.3 && prev[idx].score > 0.3) {
+        currentKeypoints[idx].score > 0.3 && prev[idx].score > 0.3) {
         const dx = currentKeypoints[idx].x - prev[idx].x;
         const dy = currentKeypoints[idx].y - prev[idx].y;
         wristMovement += Math.sqrt(dx * dx + dy * dy);
@@ -426,7 +526,7 @@ async function loadLSTMModel() {
   const stats = await statsRes.json();
 
   normMean = new Float32Array(stats.mean);
-  normStd  = new Float32Array(stats.std);
+  normStd = new Float32Array(stats.std);
 
   // Load TF.js LayersModel
   lstmModel = await tf.loadLayersModel(LSTM_MODEL_PATH);
@@ -457,12 +557,12 @@ function classifyWithLSTM(history) {
   // Inference — input shape [1, 30, 14]
   const inputTensor = tf.tensor3d([window]);
   const probsTensor = lstmModel.predict(inputTensor);
-  const probs       = Array.from(probsTensor.dataSync());
+  const probs = Array.from(probsTensor.dataSync());
   inputTensor.dispose();
   probsTensor.dispose();
 
-  const maxIdx    = probs.indexOf(Math.max(...probs));
-  const activity  = LSTM_ACTIVITY_NAMES[maxIdx];
+  const maxIdx = probs.indexOf(Math.max(...probs));
+  const activity = LSTM_ACTIVITY_NAMES[maxIdx];
   const confidence = probs[maxIdx];
 
   // Build a signals object with all class probabilities (useful for debug)
@@ -497,7 +597,7 @@ function classifyWithLSTM(history) {
  *   [12] elbowAboveShoulder – drinking cup-raise indicator
  *   [13] wristOscillation – talking gesture (wrist active, body still)
  */
-function classifyActivity(features, poseSequence) {
+function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [], isChewing = false, isSwallowing = false, headTiltRatio = 1.0, chewingCycles = 0) {
   if (!features || features.length < 12) return null;
 
   const [
@@ -521,6 +621,32 @@ function classifyActivity(features, poseSequence) {
   let activity = null;
   let confidence = 0;
   let signals = { source: 'threshold' };
+
+  const hasCup = objects && objects.some(obj => ['cup', 'bottle', 'wine glass'].includes(obj.class));
+  const hasFoodOrBowl = objects && objects.some(obj => ['bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza', 'donut', 'cake', 'apple', 'banana', 'orange'].includes(obj.class));
+
+  // --- STATE MACHINE: Update Temporal Memory ---
+  const now = Date.now();
+  if (hasCup) actionMemory.lastCupSeen = now;
+  if (hasFoodOrBowl) actionMemory.lastFoodSeen = now;
+
+  // Track gestures
+  if (handToMouth < 0.45) {
+    if (hasCup) {
+      actionMemory.lastCupToMouth = now;
+    } else {
+      actionMemory.lastEmptyHandToMouth = now;
+    }
+  }
+
+  // Sequence conditions
+  const sawCupRecently = (now - actionMemory.lastCupSeen) < 8000;
+  const sawFoodRecently = (now - actionMemory.lastFoodSeen) < 8000;
+  const didPillGestureRecently = (now - actionMemory.lastEmptyHandToMouth) < 12000;
+  const didDrinkGestureRecently = (now - actionMemory.lastCupToMouth) < 8000;
+  const didEatGestureRecently = (now - actionMemory.lastEmptyHandToMouth) < 5000;
+
+  const hasPhone = objects && objects.some(obj => obj.class === 'cell phone');
 
   // ── SLEEPING ─────────────────────────────────────────────────────────────
   // PRIMARY: Detect horizontal torso from upper body alone (torsoAlignment > 1.1
@@ -547,75 +673,70 @@ function classifyActivity(features, poseSequence) {
     };
   }
 
-  // ── TAKING MEDICATIONS ────────────────────────────────────────────────────
-  // Key distinguisher from Drinking: elbow stays LOW (pill pickup — no cup-tilt).
-  // Key distinguisher from Eating: hand is VERY close to mouth (pill vs spoon).
-  // Signal: precise, brief wrist-to-lips gesture with elbow at/below shoulder level.
+  // ── TAKING MEDICATIONS (SEQUENTIAL MODEL) ────────────────────────────────
   else if (
-    handToMouth < 0.10 &&             // very close — pill/tablet sized gesture
-    elbowAboveShoulder <= 0.01 &&     // elbow NOT raised (no cup-tilt)
-    wristHeight < 0.42 &&             // wrist near face level
-    velocity < 0.05                   // body still
+    didPillGestureRecently && // 1. Pill to mouth first
+    didDrinkGestureRecently && // 2. Cup to mouth second
+    isSwallowing &&            // 3. Swallowing motion
+    velocity < 0.08
   ) {
     activity = "Taking Medications";
-    confidence = 0.80;
+    confidence = sawCupRecently ? 0.99 : 0.90;
     signals = {
       posture: "sitting_or_standing",
-      interaction: "pill_to_mouth",
-      handToMouth: handToMouth.toFixed(3),
-      elbowElevation: elbowAboveShoulder.toFixed(3),
-      wristLevel: wristHeight.toFixed(2)
+      interaction: "pill_then_water",
+      pillPhase: ((now - actionMemory.lastEmptyHandToMouth) / 1000).toFixed(1) + "s ago",
+      waterPhase: "active",
+      headTilt: headTiltRatio.toFixed(2)
     };
   }
 
-  // ── DRINKING ─────────────────────────────────────────────────────────────
+  // ── DRINKING (SEQUENTIAL MODEL) ──────────────────────────────────────────
   else if (
-    handToMouth < 0.13 &&
-    elbowAboveShoulder > 0.02 &&
-    wristHeight < 0.38 &&
-    velocity < 0.05
+    (sawCupRecently || didDrinkGestureRecently) && // 1. Cup detected OR Cup gesture
+    (isSwallowing || sawCupRecently) &&            // 2. Swallowing motion OR Cup clearly seen
+    velocity < 0.08
   ) {
     activity = "Drinking";
-    confidence = 0.82;
+    confidence = sawCupRecently ? 0.96 : 0.86;
     signals = {
       posture: "sitting_or_standing",
-      interaction: "cup_to_mouth",
-      handToMouth: handToMouth.toFixed(3),
-      elbowElevation: elbowAboveShoulder.toFixed(3),
-      wristLevel: wristHeight.toFixed(2)
+      interaction: "cup_sequence",
+      cupSeen: sawCupRecently ? ((now - actionMemory.lastCupSeen) / 1000).toFixed(1) + "s ago" : "no",
+      swallow: isSwallowing ? headTiltRatio.toFixed(2) : "optional (cup seen)"
     };
   }
 
-  // ── EATING ────────────────────────────────────────────────────────────────
+  // ── EATING (SEQUENTIAL MODEL) ────────────────────────────────────────────
   else if (
-    handToMouth < 0.22 &&
-    leftLegAngle > 68 && rightLegAngle > 68 &&
-    velocity < 0.06 &&
-    wristHeight < 0.54
+    (sawFoodRecently || didEatGestureRecently) && // 1. Food detected OR Food gesture
+    (isChewing || sawFoodRecently || mouthVariance > 0.00015) &&     // 2. Rhythmic chewing / mouth moving OR food clearly seen
+    velocity < 0.08
   ) {
     activity = "Eating";
-    confidence = 0.84;
+    confidence = sawFoodRecently ? 0.97 : 0.89;
     signals = {
       posture: "sitting",
-      interaction: "hand_to_mouth",
-      handToMouth: handToMouth.toFixed(3),
-      wristElevation: wristHeight.toFixed(2)
+      interaction: "food_sequence",
+      foodSeen: sawFoodRecently ? ((now - actionMemory.lastFoodSeen) / 1000).toFixed(1) + "s ago" : "no",
+      chewCycles: isChewing ? chewingCycles : "optional (food seen)"
     };
   }
 
   // ── TALKING ───────────────────────────────────────────────────────────────
   else if (
-    handToMouth < 0.65 &&
-    wristOscillation > 0.002 &&
+    handToMouth > 0.15 && // hands not covering mouth completely
+    mouthVariance > 0.0001 && // STRICTLY requires mouth movement
+    !isChewing && // Not eating
     velocity < 0.08
   ) {
     activity = "Talking";
-    confidence = 0.78;
+    confidence = (mouthVariance > 0.0002) ? 0.92 : 0.80;
     signals = {
       posture: "sitting_or_standing",
-      interaction: "facial_gesture",
+      interaction: "mouth_movement",
       handToFace: handToMouth.toFixed(3),
-      wristOscillation: wristOscillation.toFixed(4)
+      mouthVariance: mouthVariance.toFixed(6)
     };
   }
 
@@ -692,15 +813,15 @@ function classifyActivity(features, poseSequence) {
  */
 function smoothPredictions(currentActivity, history) {
   if (!history || history.length < 5) return currentActivity;
-  
+
   // Count occurrences in recent window
   const activityCounts = {};
   const recentWindow = history.slice(-12); // Last 12 frames
-  
+
   recentWindow.forEach(item => {
     activityCounts[item.activity] = (activityCounts[item.activity] || 0) + 1;
   });
-  
+
   // Boost confidence if activity is consistent
   const currentCount = activityCounts[currentActivity.activity] || 0;
   if (currentCount >= 8) {
@@ -708,7 +829,7 @@ function smoothPredictions(currentActivity, history) {
   } else if (currentCount >= 5) {
     currentActivity.confidence = Math.min(0.90, currentActivity.confidence + 0.03);
   }
-  
+
   return currentActivity;
 }
 
@@ -717,22 +838,29 @@ function smoothPredictions(currentActivity, history) {
  */
 export async function stopPoseDetection() {
   isRunning = false;
-  
+
   if (videoElement && videoElement.srcObject) {
     const stream = videoElement.srcObject;
     const tracks = stream.getTracks();
     tracks.forEach(track => track.stop());
     videoElement.srcObject = null;
   }
-  
+
   if (detector) {
     detector.dispose();
     detector = null;
   }
-  
+  if (faceDetector) {
+    faceDetector.dispose();
+    faceDetector = null;
+  }
+  objectDetector = null;
+
   poseHistory = [];
+  mouthHistory = [];
+  lastDetectedObjects = [];
   activityHistory = [];
-  featureHistory  = [];     // clear LSTM window
+  featureHistory = [];     // clear LSTM window
 
   // Dispose LSTM model tensors to free memory
   if (lstmModel) {

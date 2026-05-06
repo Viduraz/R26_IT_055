@@ -25,16 +25,19 @@ class ScheduleService:
 
     def check_activity_status(self, expected_start: datetime, detected_at: datetime) -> dict:
         grace_minutes = 20
-        deadline = expected_start + timedelta(minutes=grace_minutes)
+        
+        detected_naive = detected_at.replace(tzinfo=None)
+        expected_naive = expected_start.replace(tzinfo=None)
+        deadline = expected_naive + timedelta(minutes=grace_minutes)
         
         # Calculate time difference in minutes
-        diff_seconds = (detected_at - expected_start).total_seconds()
+        diff_seconds = (detected_naive - expected_naive).total_seconds()
         delay_minutes = round(diff_seconds / 60, 1)
 
-        if detected_at < expected_start:
+        if detected_naive < expected_naive:
             status = "Early"
             confidence = 1.0
-        elif detected_at <= deadline:
+        elif detected_naive <= deadline:
             status = "Done"
             confidence = 1.0
         else:
