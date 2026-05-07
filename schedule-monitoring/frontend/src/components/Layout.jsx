@@ -1,8 +1,14 @@
 import { Link, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
+import { useState, useEffect } from "react";
 
 export default function Layout({ children }) {
   const location = useLocation();
+  const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
+
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+  }, [theme]);
   
   const navItems = [
     { name: "Home", path: "/", icon: "🏠" },
@@ -58,6 +64,101 @@ export default function Layout({ children }) {
           {children}
         </div>
       </main>
+
+      {/* Theme Toggle Button */}
+      <button
+        onClick={() => {
+          setTheme(theme === "dark" ? "light" : "dark");
+        }}
+        className="fixed top-6 right-8 z-50 px-4 py-2 rounded-xl border border-gray-800 bg-gray-900/60 hover:bg-gray-800 text-amber-400 hover:text-amber-300 transition duration-300 shadow-lg flex items-center justify-center gap-2 text-xs font-bold hover:scale-105 active:scale-95"
+        style={theme === "light" ? { backgroundColor: "#ffffff", borderColor: "#e6dec9", color: "#d97706" } : {}}
+        title="Toggle Warm Light Mode"
+      >
+        {theme === "dark" ? "☀️ Light Mode" : "🌙 Dark Mode"}
+      </button>
+
+      {theme === "light" && (
+        <style>{`
+          body, .flex.h-screen {
+            background-color: #faf6f0 !important;
+            color: #3c322a !important;
+          }
+          aside {
+            background-color: #f5efe6 !important;
+            border-right-color: #ebdcb9 !important;
+          }
+          aside h1 {
+            background: linear-gradient(to right, #b45309, #d97706) !important;
+            -webkit-background-clip: text !important;
+            color: transparent !important;
+          }
+          aside p, aside .text-gray-500, aside .text-gray-400 {
+            color: #8c8072 !important;
+          }
+          aside .hover\\:bg-gray-800\\/50:hover, aside .hover\\:text-gray-200:hover {
+            background-color: rgba(217, 119, 6, 0.05) !important;
+            color: #b45309 !important;
+          }
+          aside .bg-blue-600\\/10 {
+            background-color: rgba(217, 119, 6, 0.1) !important;
+            color: #b45309 !important;
+            border-color: rgba(217, 119, 6, 0.2) !important;
+          }
+          aside .bg-gray-900 {
+            background-color: #ffffff !important;
+            border-color: #cbd5e1 !important;
+            color: #786c5f !important;
+          }
+          main {
+            background-color: #faf6f0 !important;
+          }
+          /* Card containers across pages */
+          .bg-gray-900\\/40, .bg-gray-800\\/20, .bg-gray-800\\/40, .bg-gray-950\\/40, .bg-gray-950\\/30, .border-gray-800, .border-gray-800\\/60, .border-gray-800\\/80, .border-gray-700\\/50, .border-rose-500\\/20, [style*="border"], [style*="background-color: rgba"], [style*="background-color:rgba"] {
+            background-color: #ffffff !important;
+            border-color: #ebdcb9 !important;
+            color: #3c322a !important;
+          }
+          /* Override hardcoded page backgrounds */
+          [style*="#06080f"], [style*="rgb(6, 8, 15)"] {
+            background-color: #faf6f0 !important;
+            background: #faf6f0 !important;
+          }
+          /* Neutralize/recolor background glow blobs */
+          [style*="radial-gradient"] {
+            background: radial-gradient(circle, rgba(217, 119, 6, 0.04) 0%, transparent 70%) !important;
+          }
+          h1, h2, h3, h4, .text-white, .text-gray-100, .text-gray-200, [style*="color: rgb(255, 255, 255)"], [style*="color: #fff"] {
+            color: #2d241e !important;
+          }
+          p, .text-gray-400 {
+            color: #786c5f !important;
+          }
+          .text-gray-500 {
+            color: #8c8072 !important;
+          }
+          input, select, textarea, [style*="background: rgba"] {
+            background-color: #ffffff !important;
+            border-color: #cbd5e1 !important;
+            color: #3c322a !important;
+          }
+          .bg-blue-600, .bg-green-600, .bg-indigo-600, [style*="background: rgb(59"] {
+            background-color: #d97706 !important;
+            color: #ffffff !important;
+          }
+          .bg-blue-600:hover, .bg-green-600:hover, .bg-indigo-600:hover {
+            background-color: #b45309 !important;
+          }
+          /* Custom overrides for specific metrics cards */
+          .text-emerald-400 { color: #16a34a !important; }
+          .bg-emerald-500\\/10 { background-color: rgba(22, 163, 74, 0.1) !important; }
+          .text-amber-400 { color: #d97706 !important; }
+          .bg-amber-500\\/10 { background-color: rgba(217, 119, 6, 0.1) !important; }
+          .text-rose-400 { color: #dc2626 !important; }
+          .bg-rose-500\\/10 { background-color: rgba(220, 38, 38, 0.1) !important; }
+          /* Timeline elements */
+          .border-l-2 { border-left-color: #cbd5e1 !important; }
+        `}</style>
+      )}
     </div>
   );
 }

@@ -216,7 +216,7 @@ export default function ActivityDetectorMonitor() {
     // Debounce detection
     if (now - lastTime < DETECTION_DEBOUNCE) return;
     if (detectionData.confidence < CONFIDENCE_THRESHOLD) return;
-    
+
     // Ignore generic "Movement" to prevent flooding the logs and backend
     if (detectionData.activity_name === "Movement") return;
     let activityStatus = "Unexpected";
@@ -383,9 +383,8 @@ export default function ActivityDetectorMonitor() {
             <button
               onClick={startDetection}
               disabled={isInitializing}
-              className={`flex-1 px-4 py-2 rounded font-semibold transition ${
-                isInitializing ? "bg-green-800 text-gray-300 cursor-not-allowed" : "bg-green-600 hover:bg-green-700"
-              }`}
+              className={`flex-1 px-4 py-2 rounded font-semibold transition ${isInitializing ? "bg-green-800 text-gray-300 cursor-not-allowed" : "bg-green-600 hover:bg-green-700"
+                }`}
             >
               {isInitializing ? "⏳ Initializing ML Models..." : "▶ Start Activity Detection"}
             </button>

@@ -10,6 +10,7 @@ import os
 
 _client: MongoClient | None = None
 _mock_db = None
+_mongo_failed = False
 
 # In-memory mock collections for development
 _mock_collections = {
@@ -18,6 +19,9 @@ _mock_collections = {
     "notifications": [],
     "deviations": []
 }
+
+# Shared ID counters (class-level, not instance-level) to avoid duplicate IDs
+_mock_id_counters: dict = {}
 
 
 class MockDatabase:
@@ -29,14 +33,14 @@ class MockDatabase:
         """Return a mock collection"""
         if key not in self.collections:
             self.collections[key] = []
-        return MockCollection(self.collections[key])
+        return MockCollection(self.collections[key], name=key)
 
 
 class MockCollection:
     """Mock MongoDB collection for development/testing"""
-    def __init__(self, data):
+    def __init__(self, data, name="default"):
         self.data = data
-        self._id_counter = 0
+        self._name = name
         self._query = {}
         self._projection = None
         self._sort_key = None
@@ -46,13 +50,15 @@ class MockCollection:
     
     def insert_one(self, doc):
         """Mock insert_one"""
-        self._id_counter += 1
-        doc["_id"] = str(self._id_counter)
+        global _mock_id_counters
+        _mock_id_counters[self._name] = _mock_id_counters.get(self._name, 0) + 1
+        new_id = _mock_id_counters[self._name]
+        doc["_id"] = str(new_id)
         self.data.append(doc)
         class Result:
             def __init__(self, inserted_id):
                 self.inserted_id = inserted_id
-        return Result(self._id_counter)
+        return Result(new_id)
     
     def find(self, query=None, projection=None):
         """Mock find - returns self for chaining"""
@@ -129,33 +135,74 @@ class MockCollection:
         return doc if return_document else None
     
     def update_one(self, query, update):
-        """Mock update_one"""
+        """Mock update_one — returns an object with matched_count & modified_count"""
+        class UpdateResult:
+            def __init__(self, matched, modified):
+                self.matched_count = matched
+                self.modified_count = modified
+
         for d in self.data:
             if self._matches(d, query):
                 if "$set" in update:
                     d.update(update["$set"])
-                return
-    
+                return UpdateResult(1, 1)
+        return UpdateResult(0, 0)
+
+    def delete_one(self, query):
+        """Mock delete_one — returns an object with deleted_count"""
+        class DeleteResult:
+            def __init__(self, count):
+                self.deleted_count = count
+
+        for i, d in enumerate(self.data):
+            if self._matches(d, query):
+                self.data.pop(i)
+                return DeleteResult(1)
+        return DeleteResult(0)
+
+    def delete_many(self, query):
+        """Mock delete_many — returns an object with deleted_count"""
+        class DeleteResult:
+            def __init__(self, count):
+                self.deleted_count = count
+
+        before = len(self.data)
+        self.data[:] = [d for d in self.data if not self._matches(d, query)]
+        return DeleteResult(before - len(self.data))
+
     def aggregate(self, pipeline):
         """Mock aggregation"""
         return self.data
     
     def _matches(self, doc, query):
-        """Check if document matches query"""
+        """Check if document matches query (supports $gte, $lte, $lt, $gt)"""
         if not query:
             return True
         for key, value in query.items():
-            if key not in doc or doc[key] != value:
-                return False
+            doc_val = doc.get(key)
+            if isinstance(value, dict):
+                # Handle comparison operators
+                for op, op_val in value.items():
+                    if op == "$gte" and not (doc_val is not None and doc_val >= op_val):
+                        return False
+                    elif op == "$lte" and not (doc_val is not None and doc_val <= op_val):
+                        return False
+                    elif op == "$gt" and not (doc_val is not None and doc_val > op_val):
+                        return False
+                    elif op == "$lt" and not (doc_val is not None and doc_val < op_val):
+                        return False
+            else:
+                if doc_val != value:
+                    return False
         return True
 
 
 def get_db() -> Database:
     """Return the shared MongoDB database instance (singleton)."""
-    global _client, _mock_db
+    global _client, _mock_db, _mongo_failed
     
     # Use mock database for development if MongoDB fails
-    use_mock = os.getenv("USE_MOCK_DB", "false").lower() == "true"
+    use_mock = os.getenv("USE_MOCK_DB", "false").lower() == "true" or _mongo_failed
     
     if use_mock:
         if _mock_db is None:
@@ -169,7 +216,7 @@ def get_db() -> Database:
             _client = MongoClient(
                 settings.MONGODB_URI,
                 tlsCAFile=certifi.where(),
-                serverSelectionTimeoutMS=5000,  # 5 second timeout
+                serverSelectionTimeoutMS=2000,  # 2 second timeout
                 retryWrites=False
             )
             # Test connection
@@ -178,10 +225,20 @@ def get_db() -> Database:
             print(f"⚠️  MongoDB connection failed: {e}")
             print("🔄 Falling back to mock in-memory database for development")
             _client = None
+            _mongo_failed = True
             _mock_db = MockDatabase()
             return _mock_db
     
-    return _client[settings.MONGODB_DB_NAME]
+    # Defensively wrap DB access to fall back on error
+    try:
+        _client.admin.command('ping')
+        return _client[settings.MONGODB_DB_NAME]
+    except Exception as e:
+        print(f"⚠️  MongoDB connection lost: {e}")
+        print("🔄 Falling back to mock in-memory database")
+        _mongo_failed = True
+        _mock_db = MockDatabase()
+        return _mock_db
 
 
 def close_db() -> None:

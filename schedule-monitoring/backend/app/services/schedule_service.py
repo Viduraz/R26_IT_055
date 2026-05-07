@@ -207,9 +207,16 @@ class ScheduleService:
             schedules = list(_schedules().find({"user_id": user_id}))
         else:
             schedules = list(_schedules().find({}))
-        
+
         for s in schedules:
             s["_id"] = str(s["_id"])
+            # Defensively convert any Pydantic model objects → plain dicts
+            if "activities" in s and isinstance(s["activities"], list):
+                s["activities"] = [
+                    a.model_dump() if hasattr(a, "model_dump") else
+                    (dict(a) if not isinstance(a, dict) else a)
+                    for a in s["activities"]
+                ]
         return schedules
 
     def get_activity_logs(self, user_id: str = None, limit: int = 100):

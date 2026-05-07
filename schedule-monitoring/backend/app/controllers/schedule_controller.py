@@ -12,9 +12,15 @@ def get_schedule(user: dict):
 
 def create_schedule(user: dict, payload):
     """Create a new schedule."""
+    # Convert Pydantic ActivitySchema objects to plain dicts so the
+    # mock in-memory DB (and service layer) can use .get() on them.
+    activities_as_dicts = [
+        a.model_dump() if hasattr(a, "model_dump") else dict(a)
+        for a in payload.activities
+    ]
     return _svc.create_schedule(
         user_id=user.get("user_id", "dev-user"),
-        activities=payload.activities,
+        activities=activities_as_dicts,
         description=payload.description
     )
 

@@ -8,14 +8,14 @@ const ACTIVITY_TYPES = [
 ];
 
 const ACTIVITY_COLORS = {
-  "Eating":             { dot: "#f59e0b", badge: "rgba(245,158,11,0.15)", text: "#fbbf24", border: "rgba(245,158,11,0.4)", icon: "🍽️" },
-  "Drinking":           { dot: "#3b82f6", badge: "rgba(59,130,246,0.15)", text: "#60a5fa", border: "rgba(59,130,246,0.4)", icon: "🥤" },
+  "Eating": { dot: "#f59e0b", badge: "rgba(245,158,11,0.15)", text: "#fbbf24", border: "rgba(245,158,11,0.4)", icon: "🍽️" },
+  "Drinking": { dot: "#3b82f6", badge: "rgba(59,130,246,0.15)", text: "#60a5fa", border: "rgba(59,130,246,0.4)", icon: "🥤" },
   "Taking Medications": { dot: "#a855f7", badge: "rgba(168,85,247,0.15)", text: "#c084fc", border: "rgba(168,85,247,0.4)", icon: "💊" },
-  "Walking":            { dot: "#22c55e", badge: "rgba(34,197,94,0.15)",  text: "#4ade80", border: "rgba(34,197,94,0.4)",  icon: "🚶" },
-  "Sleep":              { dot: "#6366f1", badge: "rgba(99,102,241,0.15)", text: "#818cf8", border: "rgba(99,102,241,0.4)", icon: "🌙" },
-  "Standing up":        { dot: "#06b6d4", badge: "rgba(6,182,212,0.15)",  text: "#22d3ee", border: "rgba(6,182,212,0.4)",  icon: "🧍" },
-  "Talking":            { dot: "#f43f5e", badge: "rgba(244,63,94,0.15)",  text: "#fb7185", border: "rgba(244,63,94,0.4)",  icon: "💬" },
-  "Sitting / rest":     { dot: "#94a3b8", badge: "rgba(148,163,184,0.1)", text: "#cbd5e1", border: "rgba(148,163,184,0.3)", icon: "🪑" },
+  "Walking": { dot: "#22c55e", badge: "rgba(34,197,94,0.15)", text: "#4ade80", border: "rgba(34,197,94,0.4)", icon: "🚶" },
+  "Sleep": { dot: "#6366f1", badge: "rgba(99,102,241,0.15)", text: "#818cf8", border: "rgba(99,102,241,0.4)", icon: "🌙" },
+  "Standing up": { dot: "#06b6d4", badge: "rgba(6,182,212,0.15)", text: "#22d3ee", border: "rgba(6,182,212,0.4)", icon: "🧍" },
+  "Talking": { dot: "#f43f5e", badge: "rgba(244,63,94,0.15)", text: "#fb7185", border: "rgba(244,63,94,0.4)", icon: "💬" },
+  "Sitting / rest": { dot: "#94a3b8", badge: "rgba(148,163,184,0.1)", text: "#cbd5e1", border: "rgba(148,163,184,0.3)", icon: "🪑" },
 };
 
 const TEMPLATES = {
@@ -148,7 +148,7 @@ export default function RoutineSetup() {
     try {
       await createSchedule(activities, description);
       setMessage("✓ Schedule created successfully!");
-      setTimeout(() => navigate("/"), 1500);
+      setTimeout(() => navigate("/dashboard", { state: { fromSetup: true } }), 1500);
     } catch (err) {
       setError(err.response?.data?.detail || "Unknown error - check console");
     } finally { setLoading(false); }

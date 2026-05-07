@@ -80,3 +80,16 @@ def _reports():
 def _deviations():
     """Get all activity mismatches."""
     return get_deviations(_user)
+
+
+@router.get("/debug-db", summary="Debug database state")
+def _debug_db():
+    """Retrieve full mock database state for debugging."""
+    from shared.backend.config.database import _mock_collections, _mongo_failed
+    return {
+        "database_type": "Mock In-Memory DB (Fallback Active)" if _mongo_failed else "Real MongoDB Connection",
+        "schedules": _mock_collections.get("schedules", []),
+        "activity_logs": _mock_collections.get("activity_logs", []),
+        "notifications": _mock_collections.get("notifications", []),
+        "deviations": _mock_collections.get("deviations", [])
+    }
