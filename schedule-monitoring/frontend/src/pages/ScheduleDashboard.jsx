@@ -5,6 +5,47 @@ import ActivityDetectorMonitor from "../components/ActivityDetectorMonitor";
 import AlertModal from "../components/AlertModal";
 import toast from "react-hot-toast";
 
+const getActivityIcon = (name) => {
+  const n = name.toLowerCase();
+  if (n.includes("eat") || n.includes("breakfast") || n.includes("dinner") || n.includes("lunch") || n.includes("food")) return "🍲";
+  if (n.includes("med") || n.includes("pill") || n.includes("tablet")) return "💊";
+  if (n.includes("therapy") || n.includes("exercise") || n.includes("physio")) return "🏃‍♂️";
+  if (n.includes("walk")) return "🚶‍♂️";
+  if (n.includes("read") || n.includes("book")) return "📖";
+  if (n.includes("sleep") || n.includes("bed") || n.includes("rest")) return "🌙";
+  if (n.includes("stand")) return "🧍";
+  if (n.includes("drink") || n.includes("water") || n.includes("hydrate")) return "💧";
+  return "📋";
+};
+
+const getActivityCategory = (name) => {
+  const n = name.toLowerCase();
+  if (n.includes("eat") || n.includes("breakfast") || n.includes("dinner") || n.includes("lunch")) return "Nutrition & Dining";
+  if (n.includes("med") || n.includes("pill") || n.includes("tablet")) return "Healthcare & Meds";
+  if (n.includes("therapy") || n.includes("exercise")) return "Mobility & Therapy";
+  if (n.includes("walk")) return "Leisure & Walking";
+  if (n.includes("read") || n.includes("book")) return "Leisure & Cognitive";
+  if (n.includes("sleep") || n.includes("bed") || n.includes("rest")) return "Rest & Recovery";
+  if (n.includes("drink") || n.includes("water")) return "Hydration";
+  return "Daily Routine";
+};
+
+const isCurrentActivity = (start, end) => {
+  try {
+    const now = new Date();
+    const [sHr, sMin] = start.split(":").map(Number);
+    const [eHr, eMin] = end.split(":").map(Number);
+    
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const startMin = sHr * 60 + sMin;
+    const endMin = eHr * 60 + eMin;
+    
+    return nowMin >= startMin && nowMin <= endMin;
+  } catch (e) {
+    return false;
+  }
+};
+
 export default function ScheduleDashboard() {
   const navigate = useNavigate();
   const [schedule, setSchedule] = useState([]);
@@ -237,35 +278,105 @@ export default function ScheduleDashboard() {
                     </button>
                   </div>
                 ) : (
-                  <div className="relative border-l-2 border-gray-800/80 ml-4 space-y-8 py-2 z-10">
+                  <div className="relative border-l-2 border-gray-800/80 sm:ml-20 ml-12 space-y-8 py-2 z-10">
                     {schedule[0]?.activities?.map((activity, idx) => {
                       // Find if there is a log for this
                       const log = recentLogs.find(l => l.activity_name === activity.activity_name);
+                      const isCurrent = isCurrentActivity(activity.start_time, activity.end_time);
+                      
                       let statusDot = "bg-gray-800 border-gray-700";
-                      let statusText = "Pending";
-                      let textClass = "text-gray-500";
+                      let statusText = "Planned";
+                      let textClass = "text-purple-400 bg-purple-500/10 border-purple-500/20";
+                      let progress = 0;
+                      let barColor = "bg-gray-800";
+                      let glowClass = "hover:shadow-gray-900/10 border-gray-800";
                       
                       if (log) {
-                        if (log.status === "Done" || log.status === "On Time") { statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900"; statusText = "Done"; textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"; }
-                        if (log.status === "Early") { statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900"; statusText = "Early"; textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"; }
-                        if (log.status === "Late" || log.status === "Slightly Late") { statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900"; statusText = "Late"; textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20"; }
-                        if (log.status === "Missed") { statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900"; statusText = "Missed"; textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20"; }
-                      } else {
-                        textClass = "text-gray-400 bg-gray-800 border-gray-700";
+                        if (log.status === "Done" || log.status === "On Time") { 
+                          statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900"; 
+                          statusText = "Completed"; 
+                          textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
+                          progress = 100;
+                          barColor = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
+                          glowClass = "hover:shadow-emerald-950/10 border-emerald-900/40 hover:border-emerald-500/30";
+                        }
+                        else if (log.status === "Early") { 
+                          statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900"; 
+                          statusText = "Early"; 
+                          textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
+                          progress = 100;
+                          barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
+                          glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
+                        }
+                        else if (log.status === "Late" || log.status === "Slightly Late") { 
+                          statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900"; 
+                          statusText = "Late"; 
+                          textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
+                          progress = 65;
+                          barColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
+                          glowClass = "hover:shadow-amber-950/10 border-amber-900/40 hover:border-amber-500/30";
+                        }
+                        else if (log.status === "Missed") { 
+                          statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900"; 
+                          statusText = "Missed"; 
+                          textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20";
+                          progress = 0;
+                          barColor = "bg-rose-500/20";
+                          glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
+                        }
+                      } else if (isCurrent) {
+                        statusDot = "bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.5)] border-blue-900 animate-pulse"; 
+                        statusText = "In Progress"; 
+                        textClass = "text-blue-400 bg-blue-500/10 border-blue-500/20";
+                        progress = 65;
+                        barColor = "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]";
+                        glowClass = "hover:shadow-blue-950/10 border-blue-900/40 hover:border-blue-500/30";
                       }
 
                       return (
-                        <div key={idx} className="relative pl-8 group">
-                          <div className={`absolute -left-[9px] top-1.5 w-4 h-4 rounded-full border-2 ${statusDot} transition-all duration-300 group-hover:scale-125 z-10`} />
-                          <div className="bg-gray-800/30 hover:bg-gray-800/60 transition-colors border border-gray-700/50 rounded-xl p-4 flex justify-between items-center backdrop-blur-sm">
-                            <div>
-                              <p className="font-semibold text-gray-200">{activity.activity_name}</p>
-                              <p className="text-xs text-gray-500 mt-1 font-mono tracking-tight">
-                                {activity.start_time} — {activity.end_time}
-                              </p>
+                        <div key={idx} className="relative pl-8 sm:pl-12 group transition-all duration-300">
+                          {/* Thread Dot */}
+                          <div className={`absolute -left-[9px] top-8 w-4 h-4 rounded-full border-2 ${statusDot} transition-all duration-300 group-hover:scale-125 z-10`} />
+                          
+                          {/* Left Time Label */}
+                          <div className="absolute -left-12 sm:-left-20 top-7 text-xs font-semibold text-gray-500 tracking-tight text-right w-10 sm:w-16 group-hover:text-gray-400 transition-colors">
+                            {activity.start_time}
+                          </div>
+
+                          {/* Beautiful Glassmorphic Card */}
+                          <div className={`bg-gray-800/20 hover:bg-gray-800/40 hover:shadow-2xl transition-all duration-300 border ${glowClass} rounded-2xl p-6 backdrop-blur-sm`}>
+                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                              <div className="flex items-center gap-4">
+                                <span className="w-12 h-12 rounded-xl bg-gray-800/80 flex items-center justify-center text-2xl border border-gray-700/50 shadow-md group-hover:scale-105 transition-transform duration-300">
+                                  {getActivityIcon(activity.activity_name)}
+                                </span>
+                                <div>
+                                  <h4 className="font-bold text-lg text-white group-hover:text-blue-400 transition-colors">{activity.activity_name}</h4>
+                                  <p className="text-xs text-gray-500 font-medium mt-0.5">{getActivityCategory(activity.activity_name)}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs text-gray-500 font-mono tracking-tight bg-gray-800/40 px-2.5 py-1 rounded-lg border border-gray-800">
+                                  {activity.start_time} — {activity.end_time}
+                                </span>
+                                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${textClass}`}>
+                                  {statusText}
+                                </div>
+                              </div>
                             </div>
-                            <div className={`text-xs font-semibold px-3 py-1 rounded-full border ${textClass}`}>
-                              {statusText}
+
+                            {/* Progress Bar */}
+                            <div className="mt-5">
+                              <div className="flex justify-between items-center text-xs text-gray-500 mb-1.5 font-medium">
+                                <span>Progress</span>
+                                <span>{progress}%</span>
+                              </div>
+                              <div className="w-full h-2 bg-gray-800/60 rounded-full overflow-hidden border border-gray-800">
+                                <div 
+                                  className={`h-full rounded-full ${barColor} transition-all duration-500`} 
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
                             </div>
                           </div>
                         </div>
