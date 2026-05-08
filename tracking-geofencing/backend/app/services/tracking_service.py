@@ -16,12 +16,18 @@ class TrackingService:
         return {"message": f"Session {payload.session_id} ingested by Tracking Service"}
 
     async def update_visibility(self, payload: TrackVisibilityRequest) -> dict:
-        visible = False
+        detection = {"present": False, "bbox": None, "confidence": None, "keypoints": None}
+
         if payload.live_frame:
-            # Check for body joints via Google MediaPipe ML
-            visible = SkeletonTracker.detect_presence(payload.live_frame)
-            
-        evaluation = evaluate_absence(payload.session_id, visible)
+            # Full detection: YOLO bbox + MediaPipe skeleton keypoints
+            detection = SkeletonTracker.detect_with_bbox(payload.live_frame)
+
+        evaluation = evaluate_absence(payload.session_id, detection["present"])
+
+        # Merge bbox, confidence, and keypoints into the response for the frontend
+        evaluation["bbox"]       = detection["bbox"]
+        evaluation["confidence"] = detection["confidence"]
+        evaluation["keypoints"]  = detection["keypoints"]
         return evaluation
 
     async def get_caregiver_status(self, session_id: str) -> dict:
