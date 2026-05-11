@@ -2,8 +2,17 @@
 anomaly-detection/backend/app/routes/anomaly_routes.py
 """
 from fastapi import APIRouter
-from app.controllers.anomaly_controller import process_frame, get_history, get_model_status
-from app.schemas.anomaly_schema import AnomalyProcessRequest
+from app.controllers.anomaly_controller import (
+    process_frame,
+    get_history,
+    get_model_status,
+    get_camera_snapshot,
+    process_frame_from_camera,
+    probe_camera,
+    get_camera_config_ctrl,
+    update_camera_config_ctrl,
+)
+from app.schemas.anomaly_schema import AnomalyProcessRequest, CameraProcessRequest, CameraConfigRequest
 
 router = APIRouter()
 
@@ -26,3 +35,31 @@ async def _model_status():
 @router.get("/health", summary="Service health check")
 def _health():
     return {"status": "ok", "service": "anomaly-detection"}
+
+
+# ── IP Camera routes ──────────────────────────────────────────────────────────
+
+@router.get("/camera-snapshot", summary="Proxy one JPEG snapshot from the IP camera as base64")
+def _camera_snapshot():
+    return get_camera_snapshot()
+
+
+@router.post("/camera-process", summary="Capture from IP camera and run anomaly detection in one step")
+async def _camera_process(payload: CameraProcessRequest):
+    return await process_frame_from_camera(payload)
+
+
+@router.get("/camera-probe", summary="Diagnostic: probe all known snapshot URLs and report which work")
+def _camera_probe():
+    return probe_camera()
+
+
+@router.get("/camera-config", summary="Get current IP camera configuration")
+def _get_camera_config():
+    return get_camera_config_ctrl()
+
+
+@router.put("/camera-config", summary="Update IP camera credentials / RTSP URL and restart the stream thread")
+def _update_camera_config(payload: CameraConfigRequest):
+    return update_camera_config_ctrl(payload)
+
