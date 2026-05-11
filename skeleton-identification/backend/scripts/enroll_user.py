@@ -26,7 +26,7 @@ from services.feature_extraction.static_features import StaticFeatureExtractor
 from services.feature_extraction.gait_features import GaitFeatureExtractor
 
 
-async def enroll(name: str, duration: int = 60, camera: int = 0, camera_url: str = None):
+async def enroll(name: str, role: str = "caregiver", duration: int = 60, camera: int = 0, camera_url: str = None):
     """Enroll a user by capturing skeleton features from webcam or IP camera."""
     import cv2
 
@@ -37,11 +37,11 @@ async def enroll(name: str, duration: int = 60, camera: int = 0, camera_url: str
     existing = await UserCRUD.get_by_name(name)
     if existing:
         user_id = existing["user_id"]
-        print(f"[INFO] User '{name}' already exists (ID: {user_id}). Adding more samples.")
+        print(f"[INFO] User '{name}' ({existing.get('role', 'N/A')}) already exists (ID: {user_id}). Adding more samples.")
     else:
-        user = UserInDB(name=name)
+        user = UserInDB(name=name, role=role)
         user_id = await UserCRUD.create(user)
-        print(f"[INFO] Created user '{name}' (ID: {user_id})")
+        print(f"[INFO] Created user '{name}' with role '{role}' (ID: {user_id})")
 
     await UserCRUD.update_enrollment_status(user_id, "in_progress")
 
@@ -170,6 +170,7 @@ async def enroll(name: str, duration: int = 60, camera: int = 0, camera_url: str
 def main():
     parser = argparse.ArgumentParser(description="Enroll a user via webcam or phone camera")
     parser.add_argument("--name", type=str, required=True, help="User's full name")
+    parser.add_argument("--role", type=str, default="caregiver", choices=["caregiver", "patient", "guardian"], help="User's role")
     parser.add_argument("--duration", type=int, default=60, help="Recording duration in seconds")
     parser.add_argument("--camera", type=int, default=0, help="Camera index (for local webcam)")
     parser.add_argument(
@@ -179,7 +180,7 @@ def main():
     )
     args = parser.parse_args()
 
-    asyncio.run(enroll(args.name, args.duration, args.camera, args.camera_url))
+    asyncio.run(enroll(args.name, args.role, args.duration, args.camera, args.camera_url))
 
 
 if __name__ == "__main__":

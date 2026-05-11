@@ -42,7 +42,7 @@ async def create_user(req: UserCreate):
             status_code=409, detail=f"User '{req.name}' already exists"
         )
 
-    user = UserInDB(name=req.name, email=req.email)
+    user = UserInDB(name=req.name, email=req.email, role=req.role)
     if req.notes:
         user.metadata["notes"] = req.notes
 
@@ -51,6 +51,7 @@ async def create_user(req: UserCreate):
         user_id=user.user_id,
         name=user.name,
         email=user.email,
+        role=user.role,
         enrollment_status=user.enrollment_status,
         enrollment_frames_count=user.enrollment_frames_count,
         created_at=user.created_at,

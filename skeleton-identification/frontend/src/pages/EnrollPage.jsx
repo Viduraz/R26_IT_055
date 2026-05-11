@@ -13,6 +13,7 @@ export default function EnrollPage() {
   const [selectedUserId, setSelectedUserId] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [role, setRole] = useState('caregiver');
   const [creatingUser, setCreatingUser] = useState(false);
 
   const [usePhoneCamera, setUsePhoneCamera] = useState(false);
@@ -92,10 +93,11 @@ export default function EnrollPage() {
     if (!name.trim()) { toast('Please enter a name', 'error'); return; }
     setCreatingUser(true);
     try {
-      const user = await apiCreateUser(name.trim(), email.trim() || null);
-      toast(`User "${user.name}" created!`, 'success');
+      const user = await apiCreateUser(name.trim(), email.trim() || null, role);
+      toast(`User "${user.name}" created with role ${role}!`, 'success');
       setName('');
       setEmail('');
+      setRole('caregiver');
       const updated = await fetchUsers();
       setUsers(updated);
       setSelectedUserId(user.user_id);
@@ -207,6 +209,18 @@ export default function EnrollPage() {
                 className="form-input"
               />
             </div>
+            <div>
+              <label className="form-label">Role</label>
+              <select
+                value={role}
+                onChange={e => setRole(e.target.value)}
+                className="form-select"
+              >
+                <option value="caregiver">Caregiver</option>
+                <option value="patient">Patient</option>
+                <option value="guardian">Guardian</option>
+              </select>
+            </div>
             <button
               onClick={handleCreateUser}
               disabled={creatingUser || !name.trim()}
@@ -230,7 +244,7 @@ export default function EnrollPage() {
               <option value="">-- Select User --</option>
               {users.map(u => (
                 <option key={u.user_id} value={u.user_id}>
-                  {u.name} ({u.enrollment_status})
+                  {u.name} [{u.role || 'caregiver'}] ({u.enrollment_status})
                 </option>
               ))}
             </select>

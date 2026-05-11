@@ -5,8 +5,16 @@ import LoadingSpinner from '../components/LoadingSpinner';
 
 const STATUS_STYLES = {
   enrolled:    'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+  completed:   'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
   pending:     'bg-amber-500/15 text-amber-400 border-amber-500/20',
   incomplete:  'bg-rose-500/15 text-rose-400 border-rose-500/20',
+  in_progress: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20',
+};
+
+const ROLE_STYLES = {
+  caregiver: 'bg-violet-500/15 text-violet-400 border-violet-500/20',
+  patient:   'bg-cyan-500/15 text-cyan-400 border-cyan-500/20',
+  guardian:  'bg-rose-500/15 text-rose-400 border-rose-500/20',
 };
 
 export default function UsersPage() {
@@ -86,6 +94,7 @@ export default function UsersPage() {
 
 function UserCard({ user, onDelete, deleting }) {
   const statusStyle = STATUS_STYLES[user.enrollment_status] || STATUS_STYLES.incomplete;
+  const roleStyle = ROLE_STYLES[user.role] || ROLE_STYLES.caregiver;
 
   return (
     <div className="glass-card p-4 hover:border-white/10 transition-all duration-200 animate-fade-in">
@@ -101,7 +110,9 @@ function UserCard({ user, onDelete, deleting }) {
           </div>
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-100 truncate">{user.name}</div>
-            <div className="text-xs text-slate-500 font-mono truncate">{user.user_id.substring(0, 12)}…</div>
+            <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${roleStyle}`}>
+              {user.role || 'caregiver'}
+            </div>
           </div>
         </div>
         <button
@@ -126,10 +137,13 @@ function UserCard({ user, onDelete, deleting }) {
       </div>
 
       <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/5">
-        <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${statusStyle}`}>
-          {user.enrollment_status}
-        </span>
-        <span className="text-xs text-slate-500">{user.enrollment_frames_count} frames</span>
+        <div className="flex flex-col gap-1">
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border w-fit ${statusStyle}`}>
+            {user.enrollment_status.toUpperCase()}
+          </span>
+          <span className="text-[10px] text-slate-500 font-mono">{user.user_id.substring(0, 8)}…</span>
+        </div>
+        <span className="text-xs text-slate-400 font-medium">{user.enrollment_frames_count} frames</span>
       </div>
     </div>
   );

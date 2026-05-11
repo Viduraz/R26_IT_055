@@ -36,15 +36,19 @@ def init_predictor(p: Predictor, t: ModelTrainer):
     trainer = t
 
 
-async def _build_user_name_map() -> Dict[str, str]:
+async def _build_user_info_map() -> Dict[str, Dict[str, str]]:
     users = await UserCRUD.list_all()
-    return {u["user_id"]: u["name"] for u in users}
+    return {u["user_id"]: {"name": u["name"], "role": u.get("role", "caregiver")} for u in users}
 
 
-def _normalize_identified_name(raw_value: Optional[str], user_name_map: Dict[str, str]) -> str:
-    if not raw_value:
-        return "Unknown Person"
-    return user_name_map.get(raw_value, raw_value if raw_value != "unknown" else "Unknown Person")
+def _normalize_identified_info(raw_value: Optional[str], user_info_map: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+    if not raw_value or raw_value == "unknown":
+        return {"name": "Unknown Person", "role": "N/A"}
+    
+    info = user_info_map.get(raw_value)
+    if info:
+        return info
+    return {"name": raw_value, "role": "N/A"}
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -320,7 +324,7 @@ async def download_pdf_report():
     )
 
     logs = await IdentificationLogCRUD.get_all()
-    user_name_map = await _build_user_name_map()
+    user_info_map = await _build_user_info_map()
 
     today = datetime.utcnow().date()
     todays_logs = []
@@ -343,11 +347,14 @@ async def download_pdf_report():
     confidence_values = []
     person_counts = Counter()
     person_confidences = defaultdict(list)
+    person_roles = {}
 
     for log_item in todays_logs:
-        raw_name = log_item.get("predicted_user_id")
+        raw_id = log_item.get("predicted_user_id")
         confidence = float(log_item.get("confidence", 0) or 0)
-        display_name = _normalize_identified_name(raw_name, user_name_map)
+        info = _normalize_identified_info(raw_id, user_info_map)
+        display_name = info["name"]
+        display_role = info["role"]
         confidence_values.append(confidence)
 
         if display_name == "Unknown Person":
@@ -355,11 +362,12 @@ async def download_pdf_report():
         else:
             person_counts[display_name] += 1
             person_confidences[display_name].append(confidence)
+            person_roles[display_name] = display_role
 
         known_rows.append(
             [
                 str(log_item.get("timestamp", ""))[:19].replace("T", " "),
-                display_name,
+                f"{display_name} ({display_role})",
                 f"{round(confidence * 100, 1)}%",
                 f"{round(float(log_item.get('latency_ms', 0) or 0), 2)} ms",
                 log_item.get("model_version", "—") or "—",
@@ -391,18 +399,18 @@ async def download_pdf_report():
     story.append(Paragraph(f"Average confidence: {round(average_confidence * 100, 1)}%", styles["ReportSub"]))
     story.append(Spacer(1, 0.18 * inch))
 
-    summary_data = [["Person", "Appearances", "Avg Confidence"]]
+    summary_data = [["Person", "Role", "Appearances", "Avg Confidence"]]
     for person, count in person_counts.most_common():
         avg_conf = sum(person_confidences[person]) / len(person_confidences[person]) if person_confidences[person] else 0.0
-        summary_data.append([person, str(count), f"{round(avg_conf * 100, 1)}%"])
+        summary_data.append([person, person_roles.get(person, "N/A"), str(count), f"{round(avg_conf * 100, 1)}%"])
 
     if unknown_count > 0:
-        summary_data.append(["Unknown Person", str(unknown_count), "0%"])
+        summary_data.append(["Unknown Person", "N/A", str(unknown_count), "0%"])
 
     if len(summary_data) == 1:
-        summary_data.append(["No identified people", "0", "0%"])
+        summary_data.append(["No identified people", "N/A", "0", "0%"])
 
-    summary_table = Table(summary_data, colWidths=[3.0 * inch, 1.2 * inch, 1.5 * inch])
+    summary_table = Table(summary_data, colWidths=[2.5 * inch, 1.2 * inch, 1.0 * inch, 1.3 * inch])
     summary_table.setStyle(
         TableStyle(
             [
@@ -424,7 +432,7 @@ async def download_pdf_report():
     story.append(summary_table)
     story.append(Spacer(1, 0.2 * inch))
 
-    detail_data = [["Time", "Person", "Confidence", "Latency", "Method"]] + known_rows
+    detail_data = [["Time", "Person (Role)", "Confidence", "Latency", "Method"]] + known_rows
     detail_table = Table(detail_data, colWidths=[1.8 * inch, 2.2 * inch, 1.0 * inch, 1.0 * inch, 1.0 * inch], repeatRows=1)
     detail_table.setStyle(
         TableStyle(

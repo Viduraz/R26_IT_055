@@ -16,6 +16,7 @@ class UserCreate(BaseModel):
     """Request body for creating a new user."""
     name: str = Field(..., min_length=1, max_length=100, examples=["John Doe"])
     email: Optional[str] = Field(None, examples=["john@example.com"])
+    role: Optional[str] = Field(None, examples=["caregiver", "patient", "guardian"])
     notes: Optional[str] = None
 
 
@@ -24,6 +25,7 @@ class UserResponse(BaseModel):
     user_id: str
     name: str
     email: Optional[str] = None
+    role: Optional[str] = None
     enrollment_status: str
     enrollment_frames_count: int = 0
     created_at: datetime
@@ -35,6 +37,7 @@ class UserInDB(BaseModel):
     user_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: Optional[str] = None
+    role: Optional[str] = "caregiver"  # caregiver | patient | guardian
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     enrollment_status: str = "pending"  # pending | in_progress | completed | failed
