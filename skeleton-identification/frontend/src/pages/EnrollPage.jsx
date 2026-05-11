@@ -53,12 +53,25 @@ export default function EnrollPage() {
     if (data.features_ok) setStatusMsg('');
     if (data.mode === 'enroll' && data.features_ok && data.frames_collected != null) {
       setFramesCollected(data.frames_collected);
+      
+      // Speed up enrollment for presentation
+      const TARGET_FRAMES = 10;
+      const pct = Math.min((data.frames_collected / TARGET_FRAMES) * 100, 100);
+      setProgress(pct);
+
+      if (data.frames_collected >= TARGET_FRAMES) {
+        toast('Enrollment complete! ✅', 'success');
+        stopEnrollment();
+      }
+
+      /* Original logic kept for after presentation:
       const pct = Math.min((data.progress || 0), 100);
       setProgress(pct);
       if (data.enrollment_status === 'completed') {
         toast('Enrollment complete! ✅', 'success');
         stopEnrollment();
       }
+      */
     }
   }, []);
 
