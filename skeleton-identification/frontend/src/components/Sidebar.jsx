@@ -46,6 +46,30 @@ const NAV_ITEMS = [
     ),
   },
   {
+    id: 'face',
+    label: 'Face Recognition',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3"/>
+        <path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
+        <path d="M3 16v3a2 2 0 0 0 2 2h3"/>
+        <path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M11 11c0-.5 1-1 1-1s1 .5 1 1"/>
+      </svg>
+    ),
+  },
+  {
+    id: 'face-users',
+    label: 'Face Profiles',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    ),
+  },
+  {
     id: 'stats',
     label: 'Statistics',
     icon: (

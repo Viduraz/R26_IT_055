@@ -14,7 +14,13 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 async def list_users():
     """List all enrolled users."""
     users = await UserCRUD.list_all()
-    return [UserResponse(**u) for u in users]
+    # Map metadata['notes'] to the top-level notes field in the response
+    return [
+        UserResponse(
+            **u, 
+            notes=u.get("metadata", {}).get("notes") if u.get("metadata") else None
+        ) for u in users
+    ]
 
 
 @router.get("/{user_id}")
@@ -52,6 +58,7 @@ async def create_user(req: UserCreate):
         name=user.name,
         email=user.email,
         role=user.role,
+        notes=user.metadata.get("notes"),
         enrollment_status=user.enrollment_status,
         enrollment_frames_count=user.enrollment_frames_count,
         created_at=user.created_at,

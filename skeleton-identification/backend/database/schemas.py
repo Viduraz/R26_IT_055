@@ -26,6 +26,7 @@ class UserResponse(BaseModel):
     name: str
     email: Optional[str] = None
     role: Optional[str] = None
+    notes: Optional[str] = None
     enrollment_status: str
     enrollment_frames_count: int = 0
     created_at: datetime

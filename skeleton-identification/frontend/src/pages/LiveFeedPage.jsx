@@ -22,9 +22,9 @@ export default function LiveFeedPage({ onFpsChange }) {
   const cameraStreamRef = useRef(null);
 
   // DOM refs
-  const videoRef     = useRef(null);
-  const canvasRef    = useRef(null);
-  const ipcamImgRef  = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const ipcamImgRef = useRef(null);
 
   // WebSocket stream state (mutable, for the hook)
   const streamStateRef = useRef({
@@ -44,20 +44,20 @@ export default function LiveFeedPage({ onFpsChange }) {
     }
 
     setPipelineStats({
-      latency:  `${data.latency_ms ?? '--'} ms`,
+      latency: `${data.latency_ms ?? '--'} ms`,
       features: data.num_features ?? '--',
-      gait:     `${data.gait_buffer ?? 0} / 30`,
-      method:   data.identification?.method ?? '--',
+      gait: `${data.gait_buffer ?? 0} / 30`,
+      method: data.identification?.method ?? '--',
     });
 
     if (!data.features_ok) return;
 
     const id = data.identification || {};
     setIdResult({
-      name:     id.user || 'unknown',
-      isKnown:  id.is_known || false,
-      conf:     id.confidence || 0,
-      method:   id.method || 'none',
+      name: id.user || 'unknown',
+      isKnown: id.is_known || false,
+      conf: id.confidence || 0,
+      method: id.method || 'none',
     });
   }, []);
 
@@ -198,14 +198,14 @@ export default function LiveFeedPage({ onFpsChange }) {
           {!isStreaming ? (
             <button onClick={startCamera} className="btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <polygon points="5 3 19 12 5 21 5 3"/>
+                <polygon points="5 3 19 12 5 21 5 3" />
               </svg>
               Start Camera
             </button>
           ) : (
             <button onClick={stopCamera} className="btn-danger">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="6" width="12" height="12" rx="1"/>
+                <rect x="6" y="6" width="12" height="12" rx="1" />
               </svg>
               Stop
             </button>
@@ -257,8 +257,8 @@ export default function LiveFeedPage({ onFpsChange }) {
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-dark-900/80">
                   <div className="w-16 h-16 rounded-2xl bg-dark-600/80 flex items-center justify-center mb-4">
                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500">
-                      <polygon points="23 7 16 12 23 17 23 7"/>
-                      <rect x="1" y="5" width="15" height="14" rx="2"/>
+                      <polygon points="23 7 16 12 23 17 23 7" />
+                      <rect x="1" y="5" width="15" height="14" rx="2" />
                     </svg>
                   </div>
                   <p className="text-slate-400 text-sm">Click "Start Camera" to begin</p>
@@ -308,11 +308,10 @@ export default function LiveFeedPage({ onFpsChange }) {
             <div className="space-y-1.5">
               <div className="confidence-bar-track">
                 <div
-                  className={`confidence-bar-fill transition-all duration-500 ${
-                    confPct >= 75 ? 'bg-gradient-to-r from-emerald-500 to-emerald-400' :
-                    confPct >= 50 ? 'bg-gradient-to-r from-amber-500 to-amber-400' :
-                    'bg-gradient-to-r from-rose-500 to-rose-400'
-                  }`}
+                  className={`confidence-bar-fill transition-all duration-500 ${confPct >= 75 ? 'bg-gradient-to-r from-emerald-500 to-emerald-400' :
+                      confPct >= 50 ? 'bg-gradient-to-r from-amber-500 to-amber-400' :
+                        'bg-gradient-to-r from-rose-500 to-rose-400'
+                    }`}
                   style={{ width: `${confPct}%` }}
                 />
               </div>
@@ -343,10 +342,10 @@ export default function LiveFeedPage({ onFpsChange }) {
             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Pipeline</h3>
             <div className="space-y-2">
               {[
-                { label: 'Latency',    value: pipelineStats.latency },
-                { label: 'Features',   value: pipelineStats.features },
+                { label: 'Latency', value: pipelineStats.latency },
+                { label: 'Features', value: pipelineStats.features },
                 { label: 'Gait Buffer', value: pipelineStats.gait },
-                { label: 'Method',     value: pipelineStats.method },
+                { label: 'Method', value: pipelineStats.method },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0">
                   <span className="text-xs text-slate-400">{label}</span>
@@ -363,16 +362,16 @@ export default function LiveFeedPage({ onFpsChange }) {
 
 function IpcamDot({ status }) {
   const colors = {
-    connected:    'bg-emerald-500',
-    connecting:   'bg-amber-400 animate-pulse',
+    connected: 'bg-emerald-500',
+    connecting: 'bg-amber-400 animate-pulse',
     disconnected: 'bg-slate-600',
-    error:        'bg-rose-500',
+    error: 'bg-rose-500',
   };
   const labels = {
-    connected:    'Connected',
-    connecting:   'Connecting…',
+    connected: 'Connected',
+    connecting: 'Connecting…',
     disconnected: 'Disconnected',
-    error:        'Error',
+    error: 'Error',
   };
   return (
     <div className="flex items-center gap-1.5 text-xs text-slate-400 flex-shrink-0">

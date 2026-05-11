@@ -27,7 +27,9 @@ export default function UsersPage() {
     setLoading(true);
     try {
       const data = await fetchUsers();
-      setUsers(data);
+      // Exclude users enrolled through FaceRecognitionPage
+      const skeletonUsers = data.filter(u => u.notes !== 'face_recognition');
+      setUsers(skeletonUsers);
     } catch {
       toast('Failed to load users', 'error');
     } finally {

@@ -12,11 +12,16 @@ export async function fetchUsers() {
   return res.json();
 }
 
-export async function createUser(name, email, role) {
+export async function createUser(name, email, role, notes) {
   const res = await fetch(`${API_BASE}/api/users/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, email: email || null, role: role || 'caregiver' }),
+    body: JSON.stringify({ 
+      name, 
+      email: email || null, 
+      role: role || 'caregiver',
+      notes: notes || null
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

@@ -11,6 +11,8 @@ import EnrollPage    from './pages/EnrollPage';
 import UsersPage     from './pages/UsersPage';
 import TrainingPage  from './pages/TrainingPage';
 import StatsPage     from './pages/StatsPage';
+import FaceRecognitionPage from './pages/FaceRecognitionPage';
+import FaceUsersPage from './pages/FaceUsersPage';
 
 // ── Inner layout needs AppContext ─────────────────────────────────────────────
 function DashboardLayout() {
@@ -47,6 +49,8 @@ function DashboardLayout() {
           {activeTab === 'enroll'   && <EnrollPage />}
           {activeTab === 'users'    && <UsersPage />}
           {activeTab === 'training' && <TrainingPage />}
+          {activeTab === 'face'     && <FaceRecognitionPage />}
+          {activeTab === 'face-users' && <FaceUsersPage />}
           {activeTab === 'stats'    && <StatsPage />}
         </div>
       </div>
