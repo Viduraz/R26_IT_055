@@ -14,16 +14,16 @@ FALL_PERSIST_FRAMES:    int   = 6      # must persist for N frames before confir
 FALL_BODY_LOW_RATIO:    float = 0.70   # body centre y > 70% of frame = near floor
 
 # ── Inactivity Detection Rules ────────────────────────────────────────────────
-INACTIVITY_ENERGY_THRESHOLD: float = 0.008  # total pose energy below this = still
-INACTIVITY_WARNING_SEC:      int   = 15     # warn after 15s
-INACTIVITY_ALERT_SEC:        int   = 30     # alert after 30s
-INACTIVITY_CRITICAL_SEC:     int   = 60     # critical after 60s
+INACTIVITY_ENERGY_THRESHOLD: float = 0.012  # total pose energy below this = still (increased to ignore small fidgets)
+INACTIVITY_WARNING_SEC:      int   = 3      # warn after 3s
+INACTIVITY_ALERT_SEC:        int   = 6      # alert after 6s
+INACTIVITY_CRITICAL_SEC:     int   = 10     # critical after 10s
 
 # ── Aggression Detection Rules ────────────────────────────────────────────────
-AGGRESSION_WRIST_VELOCITY:   float = 0.08   # wrist frame-to-frame delta > this
-AGGRESSION_BODY_VELOCITY:    float = 0.05   # body centre velocity > this
-AGGRESSION_ENERGY_HIGH:      float = 0.06   # total pose energy > this = high motion
-AGGRESSION_PERSIST_FRAMES:   int   = 5      # must occur in N frames
+AGGRESSION_WRIST_VELOCITY:   float = 0.05   # wrist frame-to-frame delta > this
+AGGRESSION_BODY_VELOCITY:    float = 0.02   # body centre velocity > this
+AGGRESSION_ENERGY_HIGH:      float = 0.04   # total pose energy > this = high motion
+AGGRESSION_PERSIST_FRAMES:   int   = 2      # must occur in N frames
 
 # ── Sequence Buffer ───────────────────────────────────────────────────────────
 SEQUENCE_WINDOW:  int = 30    # frames per analysis window

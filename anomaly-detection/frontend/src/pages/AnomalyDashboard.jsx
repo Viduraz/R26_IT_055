@@ -3,9 +3,9 @@
  *
  * Live anomaly detection dashboard:
  *  - Source toggle: Webcam  OR  IP Camera (via backend proxy)
- *  - Webcam mode: react-webcam → POST /api/anomaly/process every 2 s
- *  - IP Camera mode: backend fetches frame → POST /api/anomaly/camera-process every 2 s
- *  - IP Camera preview: GET /api/anomaly/camera-snapshot polled every 1.2 s
+ *  - Webcam mode: react-webcam → POST /api/anomaly/process every 0.2 s
+ *  - IP Camera mode: backend fetches frame → POST /api/anomaly/camera-process every 0.2 s
+ *  - IP Camera preview: GET /api/anomaly/camera-snapshot polled every 0.5 s
  *  - MediaPipe skeleton canvas overlay, fall banner, alert log
  */
 
@@ -14,7 +14,7 @@ import Webcam from "react-webcam";
 import axios from "axios";
 
 const ANOMALY_API = "http://localhost:8003/api/anomaly";
-const POLL_MS = 2000;
+const POLL_MS = 200;
 const SNAPSHOT_MS = 500;  // IP camera preview — backend now returns buffered frame (~1–5 ms), so we can poll fast
 const TRAIL_LEN = 25;
 

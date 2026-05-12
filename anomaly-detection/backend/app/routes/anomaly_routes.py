@@ -9,10 +9,8 @@ from app.controllers.anomaly_controller import (
     get_camera_snapshot,
     process_frame_from_camera,
     probe_camera,
-    get_camera_config_ctrl,
-    update_camera_config_ctrl,
 )
-from app.schemas.anomaly_schema import AnomalyProcessRequest, CameraProcessRequest, CameraConfigRequest
+from app.schemas.anomaly_schema import AnomalyProcessRequest, CameraProcessRequest
 
 router = APIRouter()
 
@@ -52,14 +50,4 @@ async def _camera_process(payload: CameraProcessRequest):
 @router.get("/camera-probe", summary="Diagnostic: probe all known snapshot URLs and report which work")
 def _camera_probe():
     return probe_camera()
-
-
-@router.get("/camera-config", summary="Get current IP camera configuration")
-def _get_camera_config():
-    return get_camera_config_ctrl()
-
-
-@router.put("/camera-config", summary="Update IP camera credentials / RTSP URL and restart the stream thread")
-def _update_camera_config(payload: CameraConfigRequest):
-    return update_camera_config_ctrl(payload)
 

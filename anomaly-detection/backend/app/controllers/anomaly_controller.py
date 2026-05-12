@@ -5,10 +5,8 @@ from app.services.anomaly_service import AnomalyService
 from app.services.camera_service  import (
     get_camera_snapshot as _fetch_snapshot,
     probe_all_paths,
-    reconfigure_camera,
-    get_camera_config,
 )
-from app.schemas.anomaly_schema   import AnomalyProcessRequest, CameraProcessRequest, CameraConfigRequest
+from app.schemas.anomaly_schema   import AnomalyProcessRequest, CameraProcessRequest
 
 _svc = AnomalyService()
 
@@ -61,24 +59,3 @@ def probe_camera() -> dict:
     Open http://localhost:8003/api/anomaly/camera-probe in your browser to diagnose.
     """
     return probe_all_paths()
-
-
-def get_camera_config_ctrl() -> dict:
-    """
-    GET /api/anomaly/camera-config
-    Returns the current active IP camera configuration (password redacted).
-    """
-    return get_camera_config()
-
-
-def update_camera_config_ctrl(payload: CameraConfigRequest) -> dict:
-    """
-    PUT /api/anomaly/camera-config
-    Applies new IP camera credentials / RTSP URL and restarts the capture thread.
-    """
-    return reconfigure_camera(
-        host=payload.host,
-        user=payload.user,
-        pwd=payload.password,
-        rtsp_url=payload.rtsp_url,
-    )
