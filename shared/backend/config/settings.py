@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Walk up the directory tree to find the root .env
-_ROOT = Path(__file__).resolve().parents[4]  # shared/backend/config -> root
+_ROOT = Path(__file__).resolve().parents[3]  # shared/backend/config -> root
 load_dotenv(_ROOT / ".env")
 
 

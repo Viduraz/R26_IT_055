@@ -35,15 +35,15 @@ export default function Login() {
     }
   };
 
-  const handleFaceVerify = async (liveFaceSample) => {
+  const handleFaceVerify = async (liveFaceSample, liveSkeletonSample) => {
     setError("");
     setLoading(true);
     try {
-      const data = await loginWithFace(form.email, form.password, liveFaceSample);
+      const data = await loginWithFace(form.email, form.password, liveFaceSample, liveSkeletonSample);
       localStorage.setItem("access_token", data.access_token);
       window.location.href = `http://localhost:5178/auth-callback?token=${data.access_token}`;
     } catch (err) {
-      setError(err.response?.data?.detail || "Face verification failed. Please try again.");
+      setError(err.response?.data?.detail || "Biometric verification failed. Please try again.");
     } finally {
       setLoading(false);
     }

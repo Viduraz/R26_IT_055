@@ -19,6 +19,7 @@ class AuthService:
     def __init__(self):
         self._user_service = UserService()
         self._face_service_url = os.getenv("FACE_SERVICE_URL", "http://localhost:8001")
+        self._skeleton_service_url = os.getenv("SKELETON_SERVICE_URL", "http://localhost:8005")
 
     async def register(self, payload: RegisterRequest) -> dict:
         # Check for duplicate email
@@ -120,7 +121,7 @@ class AuthService:
         if not user or not verify_password(payload.password, user["password_hash"]):
             return None
 
-        # Call ML Service to verify the live face sample against stored embedding
+        # 1. Face Verification
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
@@ -155,6 +156,55 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Face verification connection issue: {repr(e)}"
             )
+
+        # 2. Skeleton Verification (if sample provided)
+        if payload.live_skeleton_sample:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Note: SKELETON_SERVICE_URL usually points to the gateway (8080 or 8005)
+                    # We need to find the user in skeleton system by email to get their user_id
+                    skeleton_user_resp = await client.get(f"{self._skeleton_service_url}/api/users/")
+                    skeleton_user_resp.raise_for_status()
+                    skeleton_users = skeleton_user_resp.json()
+                    
+                    target_skeleton_user_id = next(
+                        (u["user_id"] for u in skeleton_users if u["email"] == user["email"]), 
+                        None
+                    )
+                    
+                    if not target_skeleton_user_id:
+                        print(f"[WARNING] User {user['email']} not found in Skeleton System.")
+                        # If not enrolled in skeleton, we might want to skip or fail.
+                        # For now, let's just log it and proceed if face was OK, or fail if required.
+                    else:
+                        resp = await client.post(
+                            f"{self._skeleton_service_url}/api/verify-frame",
+                            json={"frame": payload.live_skeleton_sample}
+                        )
+                        resp.raise_for_status()
+                        skeleton_data = resp.json()
+                        
+                        if not skeleton_data.get("matched"):
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail=f"Skeleton verification failed: {skeleton_data.get('detail', 'Unknown error')}"
+                            )
+                        
+                        predicted_uid = skeleton_data.get("predicted_user")
+                        if predicted_uid != target_skeleton_user_id:
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Skeleton verification failed: Identity mismatch"
+                            )
+                        
+                        print(f"[INFO] Skeleton verification successful for {user['email']}")
+
+            except httpx.HTTPStatusError as e:
+                print(f"[ERROR] Skeleton Verification Service Error: {e.response.text}")
+                # We can decide if skeleton verification is mandatory
+                # raise HTTPException(status_code=e.response.status_code, detail="Skeleton Verification Service Error")
+            except Exception as e:
+                print(f"[ERROR] Unexpected Skeleton verification issue: {repr(e)}")
 
         token = create_access_token({"sub": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")})
         return {"access_token": token, "token_type": "bearer"}

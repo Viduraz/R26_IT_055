@@ -8,11 +8,12 @@ export const loginUser = async (email, password) => {
   return res.data;
 };
 
-export const loginWithFace = async (email, password, liveFaceSample) => {
+export const loginWithFace = async (email, password, liveFaceSample, liveSkeletonSample) => {
   const res = await axios.post(`${AUTH_BASE}/caregiver/verify-face-login`, {
     email,
     password,
     live_face_sample: liveFaceSample,
+    live_skeleton_sample: liveSkeletonSample,
   });
   return res.data;
 };
