@@ -9,6 +9,7 @@ from app.controllers.auth_controller import (
     login_with_face,
     get_profile,
 )
+from app.services.camera_service import get_camera_frame
 
 router = APIRouter()
 
@@ -16,3 +17,14 @@ router.post("/register", summary="Register a new user")(register_user)
 router.post("/login", summary="Login and receive JWT")(login_user)
 router.post("/caregiver/verify-face-login", summary="Login with Face Verification for Caregiver")(login_with_face)
 router.get("/me", summary="Get current user profile")(get_profile)
+
+
+@router.get("/camera-snapshot", summary="Proxy latest IP camera frame as base64 JPEG for face capture UI")
+def camera_snapshot():
+    """
+    Returns { "frame": "data:image/jpeg;base64,..." }
+    The frontend polls this during face enrollment / login when IP camera source is selected.
+    Uses a persistent RTSP background thread — response time ~1–5 ms after cold-start.
+    """
+    return {"frame": get_camera_frame()}
+

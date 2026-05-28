@@ -1,11 +1,12 @@
 /**
  * anomaly-detection/frontend/src/pages/AnomalyDashboard.jsx
  *
- * Live webcam anomaly detection dashboard:
- *  - Webcam feed with MediaPipe skeleton canvas overlay
- *  - Polls POST /api/anomaly/process every 2s
- *  - Shows real-time anomaly status, confidence, alerts
- *  - FALL DETECTED → full-screen red critical banner
+ * Live anomaly detection dashboard:
+ *  - Source toggle: Webcam  OR  IP Camera (via backend proxy)
+ *  - Webcam mode: react-webcam → POST /api/anomaly/process every 0.2 s
+ *  - IP Camera mode: backend fetches frame → POST /api/anomaly/camera-process every 0.2 s
+ *  - IP Camera preview: GET /api/anomaly/camera-snapshot polled every 0.5 s
+ *  - MediaPipe skeleton canvas overlay, fall banner, alert log
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -13,7 +14,8 @@ import Webcam from "react-webcam";
 import axios from "axios";
 
 const ANOMALY_API = "http://localhost:8003/api/anomaly";
-const POLL_MS = 2000;
+const POLL_MS = 200;
+const SNAPSHOT_MS = 500;  // IP camera preview — backend now returns buffered frame (~1–5 ms), so we can poll fast
 const TRAIL_LEN = 25;
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -46,6 +48,7 @@ const SKELETON_PAIRS = [
 
 export default function AnomalyDashboard() {
   const [isOn, setIsOn] = useState(false);
+  const [cameraSource, setCameraSource] = useState("webcam"); // "webcam" | "ip_camera"
   const [anomalyType, setAnomalyType] = useState("no_person");
   const [confidence, setConfidence] = useState(0);
   const [severity, setSeverity] = useState("none");
@@ -56,7 +59,12 @@ export default function AnomalyDashboard() {
   const [error, setError] = useState("");
   const [personId, setPersonId] = useState("patient_001");
   const [evidence, setEvidence] = useState({});
-  const [alertLog, setAlertLog] = useState([]);  // last 5 alerts
+  const [alertLog, setAlertLog] = useState([]);
+
+  // IP camera preview
+  const [ipFrame, setIpFrame] = useState(null);
+  const [ipError, setIpError] = useState(null);
+  const [ipLoading, setIpLoading] = useState(false);
 
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
@@ -65,8 +73,10 @@ export default function AnomalyDashboard() {
   const inFlight = useRef(false);
   const trailRef = useRef([]);
   const isOnRef = useRef(false);
+  const sourceRef = useRef("webcam");
 
   useEffect(() => { isOnRef.current = isOn; }, [isOn]);
+  useEffect(() => { sourceRef.current = cameraSource; }, [cameraSource]);
 
   // ── Canvas drawing ─────────────────────────────────────────────────────────
   const drawCanvas = useCallback((bboxData, kpts, trail, boxColor) => {
@@ -172,20 +182,59 @@ export default function AnomalyDashboard() {
     drawCanvas(bbox, keypoints, trailRef.current, col.box);
   }, [bbox, keypoints, anomalyType, isOn, drawCanvas]);
 
+  // ── IP Camera preview polling (runs when ip_camera selected + monitoring ON) ──
+  useEffect(() => {
+    if (cameraSource !== "ip_camera" || !isOn) return;
+
+    let active = true;
+    setIpLoading(true);
+    setIpError(null);
+    setIpFrame(null);
+
+    const fetchPreview = async () => {
+      try {
+        const { data } = await axios.get(`${ANOMALY_API}/camera-snapshot`, { timeout: 10000 });
+        if (active) { setIpFrame(data.frame); setIpError(null); setIpLoading(false); }
+      } catch (err) {
+        if (active) {
+          setIpError(err.response?.data?.detail || "IP camera unreachable");
+          setIpLoading(false);
+        }
+      }
+    };
+
+    fetchPreview();
+    const timer = setInterval(fetchPreview, SNAPSHOT_MS);
+    return () => { active = false; clearInterval(timer); };
+  }, [cameraSource, isOn]);
+
   // ── Polling ───────────────────────────────────────────────────────────────
   const pollTick = useCallback(async () => {
-    if (inFlight.current || !isOnRef.current || !webcamRef.current) return;
-    const frame = webcamRef.current.getScreenshot();
-    if (!frame) return;
+    if (inFlight.current || !isOnRef.current) return;
 
     inFlight.current = true;
     try {
-      const { data } = await axios.post(`${ANOMALY_API}/process`, {
-        live_frame: frame,
-        person_id: personId,
-        caregiver_id: null,
-        session_id: null,
-      });
+      let data;
+      if (sourceRef.current === "ip_camera") {
+        // Backend fetches frame from camera — no webcamRef needed
+        const resp = await axios.post(`${ANOMALY_API}/camera-process`, {
+          person_id: personId,
+          caregiver_id: null,
+          session_id: null,
+        });
+        data = resp.data;
+      } else {
+        if (!webcamRef.current) { inFlight.current = false; return; }
+        const frame = webcamRef.current.getScreenshot();
+        if (!frame) { inFlight.current = false; return; }
+        const resp = await axios.post(`${ANOMALY_API}/process`, {
+          live_frame: frame,
+          person_id: personId,
+          caregiver_id: null,
+          session_id: null,
+        });
+        data = resp.data;
+      }
 
       setAnomalyType(data.anomaly_type || "no_person");
       setConfidence(data.confidence || 0);
@@ -197,14 +246,12 @@ export default function AnomalyDashboard() {
       setLastPoll(new Date());
       setError("");
 
-      // Update trail
       if (data.bbox) {
         const cx = data.bbox.x + data.bbox.w / 2;
         const cy = data.bbox.y + data.bbox.h / 2;
         trailRef.current = [...trailRef.current.slice(-(TRAIL_LEN - 1)), { x: cx, y: cy }];
       }
 
-      // Alert log
       if (data.anomaly_type && data.anomaly_type !== "normal_activity" && data.anomaly_type !== "no_person") {
         setAlertLog(prev => [{
           type: data.anomaly_type,
@@ -290,6 +337,7 @@ export default function AnomalyDashboard() {
             {isOn ? "MONITORING" : "OFFLINE"}
           </span>
           <button
+            id="toggle-monitoring-btn"
             onClick={() => setIsOn(v => !v)}
             className={`px-5 py-2 font-bold rounded-xl transition-all ${isOn ? "bg-red-600 hover:bg-red-500 text-white" : "bg-indigo-600 hover:bg-indigo-500 text-white"
               }`}
@@ -298,6 +346,35 @@ export default function AnomalyDashboard() {
           </button>
         </div>
       </div>
+
+      {/* ── Camera Source Toggle ─────────────────────────────────────────── */}
+      {!isOn && (
+        <div className="flex items-center gap-2 mb-5 p-1 bg-gray-900 rounded-xl border border-gray-700 max-w-xs">
+          {[
+            { id: "webcam", label: "🖥️ Webcam" },
+            { id: "ip_camera", label: "📡 IP Camera" },
+          ].map(({ id, label }) => (
+            <button
+              key={id}
+              id={`source-toggle-${id}`}
+              onClick={() => setCameraSource(id)}
+              className={`flex-1 py-2 px-4 rounded-lg text-sm font-semibold transition-all ${cameraSource === id
+                ? "bg-indigo-600 text-white shadow"
+                : "text-gray-400 hover:text-white"
+                }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {isOn && (
+        <div className="mb-4 flex items-center gap-2 text-xs text-gray-500 font-mono">
+          <span className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1">
+            Source: {cameraSource === "ip_camera" ? "📡 IP Camera (169.254.110.15)" : "🖥️ Webcam"}
+          </span>
+        </div>
+      )}
 
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
       <div className="flex gap-2 mb-5 text-sm">
@@ -327,24 +404,67 @@ export default function AnomalyDashboard() {
           <div ref={wrapperRef} className="relative flex-1 bg-gray-950 min-h-[380px]">
             {isOn ? (
               <>
-                <Webcam
-                  ref={webcamRef}
-                  audio={false}
-                  screenshotFormat="image/jpeg"
-                  videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
-                  className="w-full h-full object-cover"
-                  style={{ transform: "scaleX(-1)" }}
-                />
-                <canvas
-                  ref={canvasRef}
-                  className="absolute inset-0 w-full h-full"
-                  style={{ pointerEvents: "none", transform: "scaleX(-1)" }}
-                />
-                {/* REC */}
+                {/* ── Webcam source ── */}
+                {cameraSource === "webcam" && (
+                  <>
+                    <Webcam
+                      ref={webcamRef}
+                      audio={false}
+                      screenshotFormat="image/jpeg"
+                      videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
+                      className="w-full h-full object-cover"
+                      style={{ transform: "scaleX(-1)" }}
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full"
+                      style={{ pointerEvents: "none", transform: "scaleX(-1)" }}
+                    />
+                  </>
+                )}
+
+                {/* ── IP Camera source ── */}
+                {cameraSource === "ip_camera" && (
+                  <>
+                    {ipLoading && (
+                      <div className="flex flex-col items-center justify-center gap-4 text-gray-500 py-20">
+                        <div className="w-12 h-12 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin" />
+                        <p className="font-mono text-sm">Connecting to 169.254.110.15…</p>
+                      </div>
+                    )}
+                    {ipError && !ipLoading && (
+                      <div className="flex flex-col items-center justify-center gap-3 text-red-400 py-20">
+                        <span className="text-5xl">📡</span>
+                        <p className="font-semibold">Camera Unreachable</p>
+                        <p className="text-xs text-red-500 max-w-xs text-center">{ipError}</p>
+                      </div>
+                    )}
+                    {ipFrame && !ipLoading && (
+                      <img
+                        src={ipFrame}
+                        alt="IP camera feed"
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                    {/* Canvas overlay for skeleton/bbox — always rendered on top */}
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full"
+                      style={{ pointerEvents: "none" }}
+                    />
+                    {/* Camera IP badge */}
+                    {ipFrame && (
+                      <div className="absolute bottom-2 right-2 bg-black/60 text-gray-300 text-xs font-mono px-2 py-0.5 rounded">
+                        169.254.110.15
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── Shared overlays (REC badge + pose badge) ── */}
                 <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 bg-red-600/90 text-white text-xs font-black px-3 py-1 rounded-full animate-pulse tracking-widest">
                   <span className="w-2 h-2 bg-white rounded-full" />REC
                 </div>
-                {/* Pose badge */}
                 <div className="absolute top-4 right-4 z-10 flex flex-col gap-1.5 items-end">
                   <span className={`backdrop-blur-sm text-xs font-mono px-3 py-1 rounded-full border ${poseValid ? "bg-emerald-700/80 text-emerald-200 border-emerald-500/40" : "bg-gray-700/80 text-gray-400 border-gray-600"
                     }`}>
@@ -391,8 +511,8 @@ export default function AnomalyDashboard() {
             </p>
             {severity !== "none" && (
               <span className={`mt-2 inline-block text-xs font-bold uppercase px-2 py-0.5 rounded ${severity === "critical" ? "bg-red-600/30 text-red-300" :
-                  severity === "high" ? "bg-orange-600/30 text-orange-300" :
-                    "bg-yellow-600/30 text-yellow-300"
+                severity === "high" ? "bg-orange-600/30 text-orange-300" :
+                  "bg-yellow-600/30 text-yellow-300"
                 }`}>
                 {severity} severity
               </span>
@@ -436,8 +556,8 @@ export default function AnomalyDashboard() {
               <div className="space-y-2">
                 {alertLog.map((a, i) => (
                   <div key={i} className={`flex items-center justify-between text-xs px-3 py-2 rounded-lg border ${a.sev === "critical" ? "bg-red-900/30 border-red-600/40 text-red-300" :
-                      a.sev === "high" ? "bg-orange-900/30 border-orange-600/40 text-orange-300" :
-                        "bg-yellow-900/30 border-yellow-600/40 text-yellow-300"
+                    a.sev === "high" ? "bg-orange-900/30 border-orange-600/40 text-orange-300" :
+                      "bg-yellow-900/30 border-yellow-600/40 text-yellow-300"
                     }`}>
                     <span className="font-bold">{a.type.replace(/_/g, " ")}</span>
                     <span className="opacity-70">{a.time}</span>
