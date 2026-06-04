@@ -922,3 +922,4 @@ function drawSkeleton(keypoints, ctx, color) {
 export function isPoseDetectionRunning() {
   return isRunning;
 }
+
