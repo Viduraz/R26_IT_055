@@ -1,0 +1,434 @@
+# 🛡️ Anomaly Detection — Complete System Summary
+
+> **Service 4** of the Secure Elder Care platform · Port `8003` (backend) / `5176` (frontend)  
+> **Status:** Fully implemented — Phase 1 ✅ Phase 2 ✅ Phase 3 ✅
+
+---
+
+## 📐 System Architecture
+
+```
+Webcam / IP Camera
+        │
+        ▼
+React Frontend (Vite, port 5176)
+  └─ WebSocket stream (200ms frames)
+        │
+        ▼
+FastAPI Backend (Uvicorn, port 8003)
+  ├─ WebSocket /api/anomaly/ws/process
+  │       │
+  │       ▼
+  │  ┌────────────────────────────────────────┐
+  │  │         anomaly_service.py             │
+  │  │  (Orchestrates full pipeline)          │
+  │  └────────────────┬───────────────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  1. extract_pose.py        │  MediaPipe BlazePose
+  │     │     33 landmarks × [x,y,z,vis]      │
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  2. feature_engineer.py    │  40-dim feature vector
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  3. sequence_buffer.py     │  30-frame rolling window
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  4. rule_engine.py         │  Always-on rule layer
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  5. lstm_model.py          │  PyTorch LSTM classifier
+  │     │     + autoencoder_model.py │  PyTorch AE anomaly score
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  6. detect_anomaly.py      │  Hybrid fusion decision
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  7. decision_explainer.py  │  WHY + factors (Phase 3)
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  8. prediction_smoother.py │  8-frame majority vote
+  │     └─────────────┬──────────────┘
+  │                   │
+  │     ┌─────────────▼──────────────┐
+  │     │  9. alert_service.py       │  Dedup + log + dispatch
+  │     └─────────────┬──────────────┘
+  │                   │
+  └──────── WebSocket Response ──────►  React Dashboard
+                                         (live update every 200ms)
+```
+
+---
+
+## 🧠 ML Pipeline — Stage by Stage
+
+### Stage 1 — Pose Extraction
+**File:** [`extract_pose.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/extract_pose.py)
+
+- Uses **MediaPipe BlazePose** (Google) to detect the human skeleton
+- Extracts **33 body landmarks**, each with `[x, y, z, visibility]`
+- Returns bounding box `{x, y, w, h}` (normalised 0–1) for canvas drawing
+- If no person is detected → returns `pose_valid: false` → pipeline short-circuits
+
+---
+
+### Stage 2 — Feature Engineering (40 Features)
+**File:** [`feature_engineer.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/feature_engineer.py)
+
+| Feature Group | Indices | Description |
+|---|---|---|
+| **Joint Angles** | [0–7] | Elbow, shoulder, knee, hip (both sides) — normalised /180 |
+| **3D Body Tilt** | [8] | Torso angle from vertical + MediaPipe z-depth enhancement |
+| **Slopes** | [9–10] | Hip & shoulder lateral lean |
+| **Body Centre** | [11–12] | X, Y position of body's geometric centre |
+| **Head Height** | [13] | Nose Y relative to hip centre (standing vs. fallen) |
+| **Aspect Ratio** | [14] | `body_h / body_w` — wide = lying, tall = standing |
+| **Visibility** | [15–17] | Wrist and average landmark confidence |
+| **Velocities** | [18–21] | Body velocity, wrist L/R velocity, head drop speed |
+| **Motion Energy** | [22] | Total landmark displacement per frame (Phase 3) |
+| **Raw Positions** | [23–38] | Key joint XY for rule engine access |
+| **CoM Stability** | [39] | Center of Mass stability score (Phase 3) |
+
+> **Phase 3 Enhancement:** Feature [8] now uses 3D z-depth from MediaPipe for more accurate fall tilt detection. Feature [39] is CoM stability (0=moving, 1=still).
+
+---
+
+### Stage 3 — Sequence Buffer
+**File:** [`sequence_buffer.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/sequence_buffer.py)
+
+- Maintains a **30-frame rolling window** per person
+- Also stores the previous raw frame for velocity computation
+- Per-person counter dictionary for fall/aggression/inactivity persistence tracking
+- `flush(person_id)` called on WebSocket disconnect to clean memory
+
+---
+
+### Stage 4 — Rule Engine (Always-On)
+**File:** [`rule_engine.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/rule_engine.py)
+
+Works with zero ML weights — pure geometric heuristics. Priority: **Fall > Aggression > Inactivity**
+
+#### Fall Detection Rules
+| Signal | Threshold | Description |
+|---|---|---|
+| Torso angle | > 45° | Person leaning severely |
+| Body centre Y | > 0.65 | Centre of mass dropped low in frame |
+| Aspect ratio | < 1.0 | Body wider than tall (horizontal posture) |
+| Head drop speed | > threshold | Rapid downward nose movement |
+| **Persistence** | ≥ 3 frames | Must confirm across consecutive frames |
+
+#### Aggression Detection Rules
+| Signal | Threshold |
+|---|---|
+| Max wrist velocity | > 0.05/frame |
+| Body velocity OR pose energy | above threshold |
+| Persistence | ≥ 2 frames |
+
+#### Inactivity Detection Rules
+| Duration | Event | Severity |
+|---|---|---|
+| ≥ 30 sec | `inactivity_warning` | medium |
+| ≥ 60 sec | `prolonged_inactivity` | high |
+| ≥ 120 sec | `prolonged_inactivity` | critical |
+
+Evidence: `pose_energy < 0.012` sustained for N frames
+
+---
+
+### Stage 5 — ML Models (PyTorch)
+
+#### LSTM Classifier
+**File:** [`lstm_model.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/models/lstm_model.py)  
+**Weights:** [`lstm_weights.pt`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/trained_models/lstm_weights.pt) (893 KB)
+
+- Architecture: `40 → LSTM(128) → LSTM(64) → FC(5)`
+- Input: 30-frame × 40-feature sequence
+- Output: 5-class probability vector (normal, fall, aggression, inactivity, unusual)
+- Threshold: `prob ≥ 0.65` to fire
+
+#### Autoencoder (AE)
+**File:** [`autoencoder_model.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/models/autoencoder_model.py)  
+**Weights:** [`ae_weights.pt`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/trained_models/ae_weights.pt) (2.7 MB)
+
+- Architecture: `40→32→16→8→16→32→40` (encoder + decoder)
+- Trained on normal activity sequences only
+- Output: **Reconstruction error** (MSE) — high error = anomalous pattern
+- Threshold: `ae_error ≥ 0.05` (strict), `≥ 0.10` for standalone detection
+
+> **Training:** Both models trained on a 4-class synthetic dataset (normal, fall, aggression, inactivity) using `train_lstm.py` and `train_ae.py` in the `scripts/` folder.
+
+---
+
+### Stage 6 — Hybrid Decision Fusion
+**File:** [`detect_anomaly.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/detect_anomaly.py)
+
+Priority cascade:
+```
+1. LSTM prob ≥ 0.65 AND class != normal  →  LSTM wins
+   (confidence boosted +5% if rule engine agrees)
+2. Rule engine fired  →  Rule wins
+   (confidence boosted +7% if AE also sees anomaly)
+3. AE error ≥ 0.10 (2× threshold, rule silent)  →  "unusual_movement"
+4. All clear  →  "normal_activity"
+```
+
+Source tag in response: `rule_engine` / `lstm` / `lstm+rule` / `rule_engine+ae` / `autoencoder`
+
+---
+
+### Stage 7 — Intelligence Layer (Phase 3)
+**File:** [`decision_explainer.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/decision_explainer.py)
+
+Every event now includes a full explanation:
+
+```json
+{
+  "explanation": {
+    "reason": "Fall detected: torso tilted 72° from vertical; body centre dropped to 78% of frame; confirmed across 4 frames; LSTM corroborated (p=0.93)",
+    "contributing_factors": {
+      "torso_tilt_score": 0.91,
+      "pose_drop_score": 0.87,
+      "horizontal_posture": 0.82,
+      "temporal_confirmation": 4,
+      "lstm_probability": 0.93,
+      "ae_reconstruction_error": 0.047
+    },
+    "signal_breakdown": {
+      "rule_engine": 0.87,
+      "temporal": 0.80,
+      "lstm": 0.93,
+      "autoencoder": 0.72
+    }
+  }
+}
+```
+
+Uses sigmoid-scaled factor strengths (0–1) for each contributing signal.
+
+---
+
+### Stage 8 — Prediction Smoothing (Phase 2)
+**File:** [`prediction_smoother.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/ml_services/inference/prediction_smoother.py)
+
+- **8-frame rolling majority vote** per person
+- Per-class minimum vote requirements (fall=3, inactivity_warning=5)
+- Confidence is weighted-average of matching frames (recent frames count more)
+- Eliminates single-frame false positives / flickering
+
+---
+
+### Stage 9 — Alert Service (Phase 2)
+**File:** [`alert_service.py`](file:///c:/Secure-Eldercare-Project/anomaly-detection/backend/app/services/alert_service.py)
+
+- **8-second cooldown deduplication** per `person_id:event_type` — eliminates spam
+- Structured JSON format with `timestamp`, `confidence`, `evidence`, `session_id`
+- **3 persistence layers:** MongoDB `anomaly_alerts` + `anomaly_logs`, in-memory ring buffer (200 alerts), session JSONL file (`logs/session_alerts.jsonl`)
+- Console dispatch for `critical`/`high` severity with full alert details
+
+---
+
+## 🌐 API Endpoints (FastAPI, port 8003)
+
+### Core Detection
+| Method | Endpoint | Description |
+|---|---|---|
+| `WS` | `/api/anomaly/ws/process` | Primary real-time stream — receives frames, returns events |
+| `POST` | `/api/anomaly/process` | Single-frame REST fallback |
+| `GET` | `/api/anomaly/health` | Service health check |
+
+### Data & Status
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/anomaly/history` | Last 100 anomaly events from MongoDB |
+| `GET` | `/api/anomaly/model-status` | LSTM/AE weights status + pipeline config |
+| `GET` | `/api/anomaly/session-logs` | File + memory alert logs (JSON) |
+| `GET` | `/api/anomaly/metrics` | **Research metrics** (FPS, latency, event distribution) |
+
+### Simulation (Phase 3)
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/anomaly/simulate/fall` | Inject synthetic fall event |
+| `POST` | `/api/anomaly/simulate/aggression` | Inject synthetic aggression event |
+| `POST` | `/api/anomaly/simulate/inactivity` | Inject synthetic inactivity event |
+| `POST` | `/api/anomaly/simulate/normal` | Inject synthetic normal event |
+
+### Session Management
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/anomaly/reset-session` | Clear metrics + alert cooldowns |
+| `GET` | `/api/anomaly/camera-snapshot` | IP camera JPEG proxy |
+| `POST` | `/api/anomaly/camera-process` | IP camera full detection |
+
+---
+
+## 💻 Frontend Dashboard (React/Vite, port 5176)
+
+**File:** [`AnomalyDashboard.jsx`](file:///c:/Secure-Eldercare-Project/anomaly-detection/frontend/src/pages/AnomalyDashboard.jsx)
+
+### 3-Tab Layout
+
+#### 🖥️ Monitor Tab
+| Panel | Features |
+|---|---|
+| **Live Video Feed** | Webcam or IP Camera, MediaPipe skeleton canvas overlay, movement trail, bounding box with corner accents |
+| **Detection Status** | Color-coded anomaly badge with pulse animation (red=fall, orange=aggression, yellow=inactivity) |
+| **Patient Status Card** | Patient ID, risk level badge (CRITICAL/HIGH/MEDIUM/SAFE), pose validity, last event time |
+| **Decision Reasoning** | Plain-English WHY explanation + contributing factor bars (Phase 3) |
+| **Signal Metrics** | Confidence bar (red>80%, yellow>60%, green<60%), Motion Energy, Wrist Velocity bars |
+| **System Health** | WebSocket status (LIVE/OFFLINE/ERROR), FPS, real-time latency |
+| **Event Timeline** | Last 20 anomaly events with type, severity badge, confidence, detection source, timestamp |
+| **Scenario Mode** | 4 demo buttons: 🚨 Fall / ⚠️ Aggression / 😴 Inactivity / ✅ Normal |
+
+#### 📊 Analytics Tab
+| Chart | Content |
+|---|---|
+| Event Distribution | Horizontal bar chart of all 7 event types (count + percent) |
+| Anomaly Timeline | Numbered list of events with reasons clipped to 120 chars |
+| Severity Breakdown | Critical/High/Medium/Low proportional bars |
+| Detection Sources | Rule Engine / LSTM / Hybrid / Autoencoder split |
+
+#### 🔬 Research Tab
+| Section | Content |
+|---|---|
+| Metric Cards | System accuracy proxy, false-positive rate, avg response time, FPS |
+| Latency Analysis | Average / P95 / P99 in ms |
+| System Architecture | Full pipeline config table (feature dims, window size, model dims, smoothing params) |
+| Session Statistics | Total frames, total anomalies, session uptime |
+
+### Other Pages
+- [`DetectionHistory.jsx`](file:///c:/Secure-Eldercare-Project/anomaly-detection/frontend/src/pages/DetectionHistory.jsx) — Paginated log table with filters
+- [`ModelStatus.jsx`](file:///c:/Secure-Eldercare-Project/anomaly-detection/frontend/src/pages/ModelStatus.jsx) — Weights status, pipeline health, threshold display
+
+---
+
+## 📁 File Tree
+
+```
+anomaly-detection/
+├── backend/
+│   ├── run.py                          Entry point (sets PYTHONPATH)
+│   ├── requirements.txt
+│   ├── app/
+│   │   ├── main.py                     FastAPI app init
+│   │   ├── routes/
+│   │   │   └── anomaly_routes.py       All API + WebSocket endpoints
+│   │   ├── controllers/
+│   │   │   └── anomaly_controller.py   Route → Service bridge
+│   │   ├── services/
+│   │   │   ├── anomaly_service.py      Pipeline orchestrator (hardened)
+│   │   │   ├── alert_service.py        Dedup + persist + dispatch
+│   │   │   ├── metrics_service.py      Research metrics tracker
+│   │   │   ├── simulation_service.py   Demo scenario generator
+│   │   │   └── camera_service.py       IP camera RTSP/MJPEG proxy
+│   │   ├── ml_services/
+│   │   │   ├── inference/
+│   │   │   │   ├── extract_pose.py         MediaPipe BlazePose
+│   │   │   │   ├── feature_engineer.py     40-dim feature extraction
+│   │   │   │   ├── sequence_buffer.py      30-frame rolling window
+│   │   │   │   ├── rule_engine.py          Rule-based detector
+│   │   │   │   ├── detect_anomaly.py       Hybrid fusion + explainer
+│   │   │   │   ├── decision_explainer.py   WHY + contributing factors
+│   │   │   │   └── prediction_smoother.py  8-frame majority vote
+│   │   │   ├── models/
+│   │   │   │   ├── lstm_model.py           PyTorch LSTM wrapper
+│   │   │   │   └── autoencoder_model.py    PyTorch AE wrapper
+│   │   │   ├── trained_models/
+│   │   │   │   ├── lstm_weights.pt         893 KB — trained weights
+│   │   │   │   └── ae_weights.pt           2.7 MB — trained weights
+│   │   │   ├── scripts/
+│   │   │   │   ├── train_lstm.py           Synthetic dataset LSTM trainer
+│   │   │   │   └── train_ae.py             Synthetic dataset AE trainer
+│   │   │   └── utils/
+│   │   │       └── thresholds.py           All detection thresholds
+│   │   ├── schemas/
+│   │   │   └── anomaly_schema.py       Pydantic request models
+│   │   └── middleware/
+│   │       └── verify_token.py         JWT auth middleware
+│   └── logs/
+│       └── session_alerts.jsonl        Persistent alert log
+└── frontend/
+    └── src/
+        ├── pages/
+        │   ├── AnomalyDashboard.jsx    Main 3-tab dashboard
+        │   ├── DetectionHistory.jsx    Alert history page
+        │   └── ModelStatus.jsx         Model health page
+        └── services/
+            └── anomalyApi.js           Axios API client
+```
+
+---
+
+## 📊 Detection Classes & Severity
+
+| Class | Severity | Trigger | Source |
+|---|---|---|---|
+| `fall_detected` | 🔴 Critical | Torso tilt + body drop + aspect ratio + 3+ frames | Rule / LSTM / Hybrid |
+| `aggression_detected` | 🟠 High | High wrist velocity + body energy + 2+ frames | Rule / LSTM / Hybrid |
+| `prolonged_inactivity` | 🟠 High / 🔴 Critical | No motion for 60–120 sec | Rule / LSTM |
+| `inactivity_warning` | 🟡 Medium | No motion for 30 sec | Rule |
+| `unusual_movement` | 🔵 Low | AE reconstruction error only | Autoencoder |
+| `normal_activity` | ✅ None | All checks clear | All |
+| `no_person` | — | No pose detected | Pose extractor |
+
+---
+
+## ⚙️ System Performance Specs
+
+| Parameter | Value |
+|---|---|
+| Frame rate | ~5 FPS (POLL_MS = 200ms) |
+| Feature vector | 40 dimensions |
+| Sequence window | 30 frames (~6 seconds) |
+| Smoothing window | 8 frames majority vote |
+| Alert cooldown | 8 seconds per person+event |
+| Avg backend latency | 30–80 ms per frame |
+| WebSocket protocol | JSON over ws:// |
+| Model training | Synthetic dataset (4-class) |
+| Skeleton landmarks | 33 × [x, y, z, visibility] |
+
+---
+
+## 🎓 Viva Talking Points
+
+### "How does your system detect a fall?"
+> "When a frame arrives, MediaPipe extracts 33 body landmarks. We compute a 40-dimensional feature vector including the 3D body tilt angle, head drop speed, and aspect ratio. If the torso angle exceeds 45°, the body centre is low in frame, and this persists for 3 or more consecutive frames, the rule engine fires `fall_detected`. This is then confirmed by the LSTM classifier which independently analyses the full 30-frame sequence and outputs a probability. If both agree, confidence is boosted. Finally, our 8-frame majority vote smoother prevents single-frame false positives."
+
+### "What makes it more than just rule-based?"
+> "We have 3 detection layers. The rule engine always runs with zero latency. The LSTM sees the temporal sequence of 30 frames and can detect patterns the rules miss. The Autoencoder is trained only on normal activity — if the reconstruction error spikes, it flags unusual movement that even the rule engine would miss. The decision fusion layer combines all three with source tagging."
+
+### "Why did you add the Intelligence Layer?"
+> "Every anomaly now includes a plain-English reason explaining which signals triggered it — torso angle, velocity, temporal confirmation count. This makes the system auditable and trustworthy, which is essential in a healthcare context. Caregivers can see exactly why an alert fired."
+
+### "How do you handle false positives?"
+> "Three mechanisms: (1) The rule engine requires events to persist across multiple frames before firing. (2) The prediction smoother requires a majority vote across 8 frames. (3) The alert service has an 8-second cooldown per patient-event pair, so repeated triggers during the same event are deduplicated."
+
+### "Can you demonstrate fall detection live?"
+> "Yes — I can use the Scenario Mode. The system provides four demo simulation buttons. Pressing Fall injects a fully-formed synthetic event with a fallen-body skeleton rendered on the canvas, complete with explaining factors, confidence score, and event timeline entry. This allows safe, repeatable demonstrations."
+
+---
+
+## 🚦 Current Status
+
+| Component | Status |
+|---|---|
+| MediaPipe pose extraction | ✅ Live |
+| Feature Engineering (40-dim) | ✅ Enhanced (Phase 3) |
+| Rule Engine | ✅ All 3 anomaly classes |
+| LSTM Model | ✅ Loaded (893 KB weights) |
+| Autoencoder | ✅ Loaded (2.7 MB weights) |
+| Hybrid Decision Fusion | ✅ Active |
+| Intelligence / Explanation Layer | ✅ Phase 3 |
+| Prediction Smoother | ✅ 8-frame window |
+| Alert System | ✅ Dedup + 3-layer persistence |
+| WebSocket Streaming | ✅ Hardened |
+| Research Metrics API | ✅ `/api/anomaly/metrics` |
+| Scenario Mode | ✅ 4 demo scenarios |
+| 3-Tab Dashboard | ✅ Monitor / Analytics / Research |
