@@ -1,5 +1,6 @@
 """
 anomaly-detection/backend/app/routes/anomaly_routes.py
+Phase 2: hardened WebSocket handler + session-logs route.
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.controllers.anomaly_controller import (
@@ -15,57 +16,118 @@ from app.schemas.anomaly_schema import AnomalyProcessRequest, CameraProcessReque
 router = APIRouter()
 
 
+# ── WebSocket endpoint ────────────────────────────────────────────────────────
+
 @router.websocket("/ws/process")
 async def websocket_process(websocket: WebSocket):
+    """
+    Persistent WebSocket stream for real-time anomaly detection.
+    Phase 2 hardening:
+      - Per-frame try/catch: a single bad frame NEVER kills the connection.
+      - Graceful disconnect: buffers flushed, session logged.
+      - Source-aware: supports both "webcam" and "ip_camera" payloads.
+    """
     await websocket.accept()
-    person_id = None
+    person_id    = None
+    frame_count  = 0
+    error_count  = 0
+
     try:
         while True:
-            data = await websocket.receive_json()
-            frame = data.get("live_frame")
-            source = data.get("source")
-            pid = data.get("person_id") or "default"
+            # ── Receive ───────────────────────────────────────────────────────
+            try:
+                data = await websocket.receive_json()
+            except Exception as recv_err:
+                print(f"[websocket] receive error: {repr(recv_err)}")
+                break
+
+            frame_count += 1
+            source    = data.get("source", "webcam")
+            pid       = data.get("person_id") or "default"
             person_id = pid
-            
+
+            # ── Frame acquisition ─────────────────────────────────────────────
+            frame = data.get("live_frame")
+
             if source == "ip_camera":
-                from app.services.camera_service import get_camera_snapshot as _fetch_snapshot
                 try:
-                    frame = _fetch_snapshot()
-                except Exception as ce:
-                    await websocket.send_json({
-                        "anomaly_type": "no_person",
-                        "confidence": 0.0,
-                        "severity": "none",
-                        "error": f"Camera offline: {str(ce)}"
+                    from app.services.camera_service import get_camera_snapshot as _snap
+                    frame = _snap()
+                except Exception as cam_err:
+                    error_count += 1
+                    await _safe_send(websocket, {
+                        "anomaly_type": "no_person", "confidence": 0.0,
+                        "severity": "none", "pose_valid": False,
+                        "error": f"Camera offline: {type(cam_err).__name__}",
+                        "person_id": pid, "timestamp": _now_iso(),
                     })
                     continue
-            
+
             if not frame:
-                await websocket.send_json({
-                    "anomaly_type": "no_person",
-                    "confidence": 0.0,
-                    "severity": "none",
-                    "error": "No live frame provided"
+                await _safe_send(websocket, {
+                    "anomaly_type": "no_person", "confidence": 0.0,
+                    "severity": "none", "pose_valid": False,
+                    "error": "no_frame_received",
+                    "person_id": pid, "timestamp": _now_iso(),
                 })
                 continue
 
-            payload = AnomalyProcessRequest(
-                live_frame=frame,
-                person_id=pid,
-                caregiver_id=data.get("caregiver_id"),
-                session_id=data.get("session_id"),
-                timestamp=data.get("timestamp")
-            )
-            result = await process_frame(payload)
-            await websocket.send_json(result)
-    except WebSocketDisconnect:
-        if person_id:
-            from app.ml_services.inference.sequence_buffer import flush
-            flush(person_id)
-            print(f"[websocket] Client disconnected. Cleared buffer for {person_id}")
-    except Exception as e:
-        print(f"[websocket] Error: {repr(e)}")
+            # ── Pipeline processing — isolated per frame ───────────────────────
+            try:
+                payload = AnomalyProcessRequest(
+                    live_frame   = frame,
+                    person_id    = pid,
+                    caregiver_id = data.get("caregiver_id"),
+                    session_id   = data.get("session_id"),
+                    timestamp    = data.get("timestamp"),
+                )
+                result = await process_frame(payload)
+                await _safe_send(websocket, result)
 
+            except Exception as proc_err:
+                error_count += 1
+                print(f"[websocket] frame #{frame_count} processing error "
+                      f"for {pid}: {repr(proc_err)} — skipping")
+                # Send a safe fallback payload so the frontend doesn't hang
+                await _safe_send(websocket, {
+                    "anomaly_type": "no_person", "confidence": 0.0,
+                    "severity": "none", "pose_valid": False,
+                    "error": f"processing_error: {type(proc_err).__name__}",
+                    "person_id": pid, "timestamp": _now_iso(),
+                })
+
+    except WebSocketDisconnect:
+        pass   # normal close
+
+    except Exception as fatal_err:
+        print(f"[websocket] fatal error for {person_id}: {repr(fatal_err)}")
+
+    finally:
+        # ── Cleanup on any disconnect ─────────────────────────────────────────
+        if person_id:
+            try:
+                from app.ml_services.inference.sequence_buffer import flush
+                flush(person_id)
+            except Exception:
+                pass
+            print(f"[websocket] session ended for {person_id} | "
+                  f"frames={frame_count} errors={error_count}")
+
+
+async def _safe_send(ws: WebSocket, payload: dict) -> None:
+    """Send JSON, silently ignoring send failures (client may have closed)."""
+    try:
+        await ws.send_json(payload)
+    except Exception:
+        pass
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ── REST endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/process", summary="Run full anomaly detection pipeline on a live frame")
 async def _process(payload: AnomalyProcessRequest):
@@ -87,7 +149,16 @@ def _health():
     return {"status": "ok", "service": "anomaly-detection"}
 
 
-# ── IP Camera routes ──────────────────────────────────────────────────────────
+@router.get("/session-logs", summary="Retrieve structured JSON session alert logs")
+def _session_logs():
+    from app.services.alert_service import get_session_logs, get_memory_alerts
+    return {
+        "file_logs":   get_session_logs(),
+        "memory_alerts": get_memory_alerts(50),
+    }
+
+
+# ── IP Camera routes ───────────────────────────────────────────────────────────
 
 @router.get("/camera-snapshot", summary="Proxy one JPEG snapshot from the IP camera as base64")
 def _camera_snapshot():
@@ -102,4 +173,3 @@ async def _camera_process(payload: CameraProcessRequest):
 @router.get("/camera-probe", summary="Diagnostic: probe all known snapshot URLs and report which work")
 def _camera_probe():
     return probe_camera()
-
