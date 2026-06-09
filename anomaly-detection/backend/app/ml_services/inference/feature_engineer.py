@@ -160,6 +160,7 @@ def engineer_features(raw: list, prev_raw: list = None) -> np.ndarray:
         lm(_L_WRIST)[0],    lm(_L_WRIST)[1],
         lm(_R_WRIST)[0],    lm(_R_WRIST)[1],
         hip_cx,             hip_cy,
+        (wrist_l_vel + wrist_r_vel) / 2.0,  # 40th element to resolve dimension mismatch
     ], dtype=np.float32)
 
     return np.clip(features, -5.0, 5.0)   # clip to prevent outlier explosion

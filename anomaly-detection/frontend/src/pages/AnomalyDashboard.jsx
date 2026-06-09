@@ -70,6 +70,7 @@ export default function AnomalyDashboard() {
   const canvasRef = useRef(null);
   const wrapperRef = useRef(null);
   const pollRef = useRef(null);
+  const wsRef = useRef(null);
   const inFlight = useRef(false);
   const trailRef = useRef([]);
   const isOnRef = useRef(false);
@@ -208,71 +209,94 @@ export default function AnomalyDashboard() {
     return () => { active = false; clearInterval(timer); };
   }, [cameraSource, isOn]);
 
-  // ── Polling ───────────────────────────────────────────────────────────────
-  const pollTick = useCallback(async () => {
-    if (inFlight.current || !isOnRef.current) return;
+  // ── WebSocket Frame Sender ───────────────────────────────────────────────
+  const sendFrame = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-    inFlight.current = true;
-    try {
-      let data;
-      if (sourceRef.current === "ip_camera") {
-        // Backend fetches frame from camera — no webcamRef needed
-        const resp = await axios.post(`${ANOMALY_API}/camera-process`, {
-          person_id: personId,
-          caregiver_id: null,
-          session_id: null,
-        });
-        data = resp.data;
-      } else {
-        if (!webcamRef.current) { inFlight.current = false; return; }
-        const frame = webcamRef.current.getScreenshot();
-        if (!frame) { inFlight.current = false; return; }
-        const resp = await axios.post(`${ANOMALY_API}/process`, {
-          live_frame: frame,
-          person_id: personId,
-          caregiver_id: null,
-          session_id: null,
-        });
-        data = resp.data;
-      }
-
-      setAnomalyType(data.anomaly_type || "no_person");
-      setConfidence(data.confidence || 0);
-      setSeverity(data.severity || "none");
-      setPoseValid(data.pose_valid || false);
-      setBbox(data.bbox || null);
-      setKeypoints(data.keypoints || null);
-      setEvidence(data.evidence || {});
-      setLastPoll(new Date());
-      setError("");
-
-      if (data.bbox) {
-        const cx = data.bbox.x + data.bbox.w / 2;
-        const cy = data.bbox.y + data.bbox.h / 2;
-        trailRef.current = [...trailRef.current.slice(-(TRAIL_LEN - 1)), { x: cx, y: cy }];
-      }
-
-      if (data.anomaly_type && data.anomaly_type !== "normal_activity" && data.anomaly_type !== "no_person") {
-        setAlertLog(prev => [{
-          type: data.anomaly_type,
-          conf: data.confidence,
-          sev: data.severity,
-          time: new Date().toLocaleTimeString(),
-        }, ...prev].slice(0, 5));
-      }
-
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || "API unreachable");
-    } finally {
-      inFlight.current = false;
+    if (sourceRef.current === "ip_camera") {
+      ws.send(JSON.stringify({
+        source: "ip_camera",
+        person_id: personId,
+      }));
+    } else {
+      if (!webcamRef.current) return;
+      const frame = webcamRef.current.getScreenshot();
+      if (!frame) return;
+      ws.send(JSON.stringify({
+        live_frame: frame,
+        person_id: personId,
+        source: "webcam",
+      }));
     }
   }, [personId]);
 
   useEffect(() => {
     if (isOn) {
-      pollTick();
-      pollRef.current = setInterval(pollTick, POLL_MS);
+      // Connect WebSocket
+      const wsUrl = ANOMALY_API.replace(/^http/, "ws") + "/ws/process";
+      console.log("[websocket] Connecting:", wsUrl);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("[websocket] Connected ✓");
+        setError("");
+        pollRef.current = setInterval(sendFrame, POLL_MS);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.error) {
+            setError(data.error);
+          }
+
+          setAnomalyType(data.anomaly_type || "no_person");
+          setConfidence(data.confidence || 0);
+          setSeverity(data.severity || "none");
+          setPoseValid(data.pose_valid || false);
+          setBbox(data.bbox || null);
+          setKeypoints(data.keypoints || null);
+          setEvidence(data.evidence || {});
+          setLastPoll(new Date());
+          if (!data.error) setError("");
+
+          if (data.bbox) {
+            const cx = data.bbox.x + data.bbox.w / 2;
+            const cy = data.bbox.y + data.bbox.h / 2;
+            trailRef.current = [...trailRef.current.slice(-(TRAIL_LEN - 1)), { x: cx, y: cy }];
+          }
+
+          if (data.anomaly_type && data.anomaly_type !== "normal_activity" && data.anomaly_type !== "no_person") {
+            setAlertLog(prev => [{
+              type: data.anomaly_type,
+              conf: data.confidence,
+              sev: data.severity,
+              time: new Date().toLocaleTimeString(),
+            }, ...prev].slice(0, 5));
+          }
+        } catch (err) {
+          console.error("[websocket] Parse error:", err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error("[websocket] Error:", err);
+        setError("WebSocket connection failed");
+      };
+
+      ws.onclose = () => {
+        console.log("[websocket] Closed");
+        clearInterval(pollRef.current);
+      };
+
     } else {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
       clearInterval(pollRef.current);
       setAnomalyType("no_person");
       setBbox(null);
@@ -280,8 +304,14 @@ export default function AnomalyDashboard() {
       setConfidence(0);
       setPoseValid(false);
     }
-    return () => clearInterval(pollRef.current);
-  }, [isOn, pollTick]);
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      clearInterval(pollRef.current);
+    };
+  }, [isOn, sendFrame]);
 
   useEffect(() => {
     const obs = new ResizeObserver(() => {

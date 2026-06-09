@@ -32,5 +32,25 @@ def log_alert(event: dict, person_id: str, caregiver_id: str, session_id: str, e
         # Also write to general anomaly_logs for history page
         db["anomaly_logs"].insert_one({**doc, "anomaly_detected": event.get("anomaly_type") != "normal_activity"})
 
+        # Dispatch urgent caregiver alert if severity is high/critical
+        if doc["severity"] in ("critical", "high"):
+            _dispatch_caregiver_alert(doc)
+
     except Exception as e:
         print(f"[ERROR] alert_service.log_alert: {repr(e)}")
+
+
+def _dispatch_caregiver_alert(alert_doc: dict):
+    """
+    Simulate an urgent alert notification system (e.g. SMS, Email, or Web Push).
+    In production, this hooks into Twilio (SMS) or SendGrid (Email).
+    """
+    print("\n" + "="*80)
+    print("🚨 URGENT CAREGIVER NOTIFICATION DISPATCHED")
+    print(f"   Patient ID:   {alert_doc['person_id']}")
+    print(f"   Event Type:   {alert_doc['anomaly_type'].upper().replace('_', ' ')}")
+    print(f"   Severity:     {alert_doc['severity'].upper()}")
+    print(f"   Confidence:   {alert_doc['confidence'] * 100:.1f}%")
+    print(f"   Timestamp:    {alert_doc['timestamp']}")
+    print(f"   Details:      {alert_doc['evidence']}")
+    print("="*80 + "\n")
