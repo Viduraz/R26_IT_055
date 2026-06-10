@@ -1,0 +1,62 @@
+# ============================================================
+# Secure Elder Care — Cloudflare Tunnel Configuration
+# ============================================================
+#
+# HOW TO USE:
+# 1. Run .\cloudflare\setup-tunnel.ps1 to get your Tunnel ID
+# 2. Replace ALL occurrences of:
+#    - <TUNNEL_ID>       → your actual tunnel ID (UUID format)
+#    - <YOUR_USERNAME>   → your Windows username (e.g., vidur)
+#    - yourdomain.com    → your actual domain (e.g., vidura.me)
+# 3. Create CNAME DNS records per dns-setup.md
+# 4. Update all frontend .env.tunnel files with your actual domain
+# 5. Run .\cloudflare\start-tunnel.ps1
+
+tunnel: <TUNNEL_ID>
+credentials-file: C:\Users\<YOUR_USERNAME>\.cloudflared\<TUNNEL_ID>.json
+
+ingress:
+  # ── Frontend UIs ──────────────────────────────────────────────────────────
+  # Main dashboard — share THIS URL with teammates as the entry point
+  - hostname: eldercare.yourdomain.com
+    service: http://localhost:5178
+
+  - hostname: auth.yourdomain.com
+    service: http://localhost:5173
+
+  - hostname: face.yourdomain.com
+    service: http://localhost:5174
+
+  - hostname: tracking.yourdomain.com
+    service: http://localhost:5175
+
+  - hostname: anomaly.yourdomain.com
+    service: http://localhost:5176
+
+  - hostname: schedule.yourdomain.com
+    service: http://localhost:5177
+
+  # ── Backend APIs (REST + WebSocket) ───────────────────────────────────────
+  # WebSockets are automatically supported — wss:// works via these routes
+
+  - hostname: api-auth.yourdomain.com
+    service: http://localhost:8000
+
+  - hostname: api-face.yourdomain.com
+    service: http://localhost:8001
+
+  - hostname: api-tracking.yourdomain.com
+    service: http://localhost:8002
+
+  # Anomaly backend — also serves wss://api-anomaly.yourdomain.com/api/anomaly/ws/process
+  - hostname: api-anomaly.yourdomain.com
+    service: http://localhost:8003
+
+  - hostname: api-schedule.yourdomain.com
+    service: http://localhost:8004
+
+  - hostname: api-gateway.yourdomain.com
+    service: http://localhost:8005
+
+  # Required catch-all — must be last
+  - service: http_status:404

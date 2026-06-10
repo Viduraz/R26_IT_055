@@ -5,7 +5,7 @@
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 
-const ANOMALY_API = "http://localhost:8003/api/anomaly";
+const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
 
 const SEV_STYLE = {
   critical: "bg-red-900/40 border-red-600/50 text-red-300",

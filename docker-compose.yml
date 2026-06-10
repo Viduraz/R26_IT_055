@@ -7,6 +7,9 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      # Override face service URL to use Docker-internal DNS (not localhost)
+      - FACE_SERVICE_URL=http://face-backend:8001
     restart: unless-stopped
 
   auth-frontend:
@@ -87,6 +90,13 @@ services:
     ports:
       - "8005:8005"
     env_file: .env
+    environment:
+      # Use Docker-internal DNS names so containers can call each other
+      - AUTH_SERVICE_URL=http://auth-backend:8000
+      - FACE_SERVICE_URL=http://face-backend:8001
+      - TRACKING_SERVICE_URL=http://tracking-backend:8002
+      - ANOMALY_SERVICE_URL=http://anomaly-backend:8003
+      - SCHEDULE_SERVICE_URL=http://schedule-backend:8004
     depends_on:
       - auth-backend
       - face-backend

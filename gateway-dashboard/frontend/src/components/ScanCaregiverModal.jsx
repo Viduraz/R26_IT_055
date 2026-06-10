@@ -18,7 +18,8 @@ export default function ScanCaregiverModal({ isOpen, onClose }) {
     setResult(null);
 
     try {
-      const { data } = await axios.post("http://localhost:8001/api/face/verify-caregiver", {
+      const faceBase = import.meta.env.VITE_FACE_BACKEND_URL || "http://localhost:8001/api/face";
+      const { data } = await axios.post(`${faceBase}/verify-caregiver`, {
         live_sample: imageSrc
       });
       setResult(data);

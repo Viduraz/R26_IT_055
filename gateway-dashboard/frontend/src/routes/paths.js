@@ -13,4 +13,4 @@ export const PATHS = {
 };
 
 // Assuming auth-service frontend runs on Vite's default 5173
-export const EXTERNAL_AUTH_URL = 'http://localhost:5173';
+export const EXTERNAL_AUTH_URL = import.meta.env.VITE_AUTH_FRONTEND_URL || 'http://localhost:5173';

@@ -18,7 +18,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Webcam from "react-webcam";
 import axios from "axios";
 
-const ANOMALY_API  = "http://localhost:8003/api/anomaly";
+const ANOMALY_API  = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
 const POLL_MS      = 200;
 const SNAPSHOT_MS  = 500;
 const TRAIL_LEN    = 25;

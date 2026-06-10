@@ -21,7 +21,8 @@ export default function Login() {
       const data = await loginUser(form.email, form.password);
       // Validated instantly (admin or family)
       localStorage.setItem("access_token", data.access_token);
-      window.location.href = `http://localhost:5178/auth-callback?token=${data.access_token}`;
+      const _gatewayUrl = import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178";
+      window.location.href = `${_gatewayUrl}/auth-callback?token=${data.access_token}`;
     } catch (err) {
       const errorMsg = err.response?.data?.detail;
       if (errorMsg === "Caregivers must use the face verification login endpoint.") {
@@ -41,7 +42,8 @@ export default function Login() {
     try {
       const data = await loginWithFace(form.email, form.password, liveFaceSample, liveSkeletonSample);
       localStorage.setItem("access_token", data.access_token);
-      window.location.href = `http://localhost:5178/auth-callback?token=${data.access_token}`;
+      const _gatewayUrl = import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178";
+      window.location.href = `${_gatewayUrl}/auth-callback?token=${data.access_token}`;
     } catch (err) {
       setError(err.response?.data?.detail || "Biometric verification failed. Please try again.");
     } finally {
