@@ -7,7 +7,7 @@ import LiveTracking from "./pages/LiveTracking";
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         <Route path="/" element={<TrackingDashboard />} />
         <Route path="/live-tracking" element={<LiveTracking />} />

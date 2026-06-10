@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import Webcam from "react-webcam";
 import axios from "axios";
 
-const FACE_API = "http://localhost:8001/api/face";
+const FACE_API = import.meta.env.VITE_FACE_BACKEND_URL || "http://localhost:8001/api/face";
 const SNAPSHOT_INTERVAL_MS = 1200; // IP camera preview refresh rate
 
 export default function FamilyScanCaregiver() {
