@@ -1,0 +1,304 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-dark-900 text-slate-100 font-sans antialiased;
+    background-image:
+      radial-gradient(at 40% 20%, hsla(210, 100%, 56%, 0.06) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, hsla(189, 100%, 56%, 0.05) 0px, transparent 50%),
+      radial-gradient(at 0% 50%, hsla(270, 100%, 60%, 0.04) 0px, transparent 50%);
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-800;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-400 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-dark-300;
+  }
+}
+
+@layer components {
+  /* Glass card */
+  .glass-card {
+    @apply bg-dark-700/60 backdrop-blur-sm border border-white/5 rounded-xl shadow-card;
+  }
+
+  /* Form inputs */
+  .form-input {
+    @apply w-full bg-dark-800 border border-white/10 rounded-lg px-3 py-2.5
+           text-slate-100 text-sm placeholder-slate-500
+           focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20
+           transition-all duration-200;
+  }
+
+  .form-select {
+    @apply w-full bg-dark-800 border border-white/10 rounded-lg px-3 py-2.5
+           text-slate-100 text-sm
+           focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20
+           transition-all duration-200;
+  }
+
+  .form-label {
+    @apply block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+           transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-dark-800
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-cyan-500 hover:bg-cyan-400 text-dark-900 focus:ring-cyan-500
+           shadow-glow-cyan hover:shadow-glow-cyan;
+  }
+
+  .btn-secondary {
+    @apply btn bg-dark-500 hover:bg-dark-400 text-slate-200 border border-white/10 focus:ring-slate-500;
+  }
+
+  .btn-danger {
+    @apply btn bg-rose-500 hover:bg-rose-400 text-white focus:ring-rose-500;
+  }
+
+  .btn-accent {
+    @apply btn bg-violet-600 hover:bg-violet-500 text-white focus:ring-violet-500;
+  }
+
+  .btn-outline {
+    @apply btn bg-transparent hover:bg-dark-500 text-slate-300 border border-white/15 focus:ring-slate-500;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs rounded-md;
+  }
+
+  .btn-block {
+    @apply w-full justify-center;
+  }
+
+  /* Status dots */
+  .status-dot {
+    @apply w-2.5 h-2.5 rounded-full flex-shrink-0;
+  }
+
+  .status-dot-online {
+    @apply bg-emerald-500 shadow-glow-emerald;
+    animation: pulse-ring 2s ease-in-out infinite;
+  }
+
+  .status-dot-offline {
+    @apply bg-slate-600;
+  }
+
+  .status-dot-connecting {
+    @apply bg-amber-500;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  /* Stat value */
+  .stat-value {
+    @apply font-mono text-sm text-cyan-400 font-medium;
+  }
+
+  /* Confidence bar */
+  .confidence-bar-track {
+    @apply w-full bg-dark-800 rounded-full h-2 overflow-hidden;
+  }
+
+  .confidence-bar-fill {
+    @apply h-full rounded-full transition-all duration-500;
+  }
+
+  /* Nav item */
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 text-sm font-medium
+           transition-all duration-200 cursor-pointer w-full text-left
+           hover:text-slate-200 hover:bg-white/5;
+  }
+
+  .nav-item-active {
+    @apply text-cyan-400 bg-cyan-500/10 border border-cyan-500/20;
+  }
+
+  /* Table */
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table th {
+    @apply text-left text-xs font-medium text-slate-400 uppercase tracking-wider
+           px-4 py-3 border-b border-white/5;
+  }
+
+  .data-table td {
+    @apply px-4 py-3 border-b border-white/5 text-slate-300;
+  }
+
+  .data-table tr:last-child td {
+    @apply border-0;
+  }
+
+  .data-table tbody tr {
+    @apply hover:bg-white/2 transition-colors;
+  }
+}
+
+@layer utilities {
+  .text-gradient-cyan {
+    @apply bg-gradient-to-r from-cyan-400 to-cyan-200 bg-clip-text text-transparent;
+  }
+
+  .text-gradient-violet {
+    @apply bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent;
+  }
+
+  .bg-white\/2 {
+    background-color: rgba(255, 255, 255, 0.02);
+  }
+}
+
+/* Pulse ring animation for online status */
+@keyframes pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+  }
+}
+
+/* Canvas overlay fix */
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+/* --- Light Mode Overrides --- */
+body.light-mode {
+  @apply bg-slate-50 text-slate-800;
+  background-image: none;
+}
+
+body.light-mode ::-webkit-scrollbar-track {
+  @apply bg-slate-200;
+}
+
+body.light-mode ::-webkit-scrollbar-thumb {
+  @apply bg-slate-400;
+}
+
+body.light-mode ::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-500;
+}
+
+.light-mode aside {
+  @apply bg-white/80 border-slate-200;
+}
+
+.light-mode .glass-card {
+  @apply bg-white border-slate-200 shadow-md backdrop-blur-none text-slate-800;
+}
+
+.light-mode .form-input, .light-mode .form-select {
+  @apply bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-500/80 focus:ring-cyan-500/30;
+}
+
+.light-mode .form-label {
+  @apply text-slate-600;
+}
+
+.light-mode .nav-item {
+  @apply text-slate-600 hover:bg-slate-100 hover:text-slate-800;
+}
+
+.light-mode .nav-item-active {
+  @apply bg-cyan-50 border-cyan-200 text-cyan-700;
+}
+
+.light-mode .text-slate-400, .light-mode .text-slate-500 {
+  @apply text-slate-600;
+}
+
+.light-mode .text-slate-300, .light-mode .text-slate-200, .light-mode .text-slate-100 {
+  @apply text-slate-800;
+}
+
+.light-mode .btn-secondary {
+  @apply bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300;
+}
+
+.light-mode .btn-outline {
+  @apply hover:bg-slate-100 text-slate-700 border-slate-300;
+}
+
+.light-mode .bg-dark-600, .light-mode .bg-dark-800 {
+  @apply bg-slate-100;
+}
+
+.light-mode .border-white\/5, .light-mode .border-white\/10 {
+  @apply border-slate-200;
+}
+
+.light-mode .data-table th {
+  @apply text-slate-600 border-slate-200 bg-slate-50;
+}
+
+.light-mode .data-table td {
+  @apply border-slate-200 text-slate-700;
+}
+
+.light-mode .data-table tbody tr {
+  @apply hover:bg-slate-50;
+}
+
+.light-mode .confidence-bar-track {
+  @apply bg-slate-200;
+}
+
+.light-mode .bg-white\/2 {
+  @apply bg-black/5;
+}
+
+.light-mode .text-gradient-cyan {
+  @apply bg-gradient-to-r from-cyan-600 to-cyan-500 bg-clip-text text-transparent;
+}
+
+.light-mode .text-gradient-violet {
+  @apply bg-gradient-to-r from-violet-600 to-cyan-600 bg-clip-text text-transparent;
+}
+
+.light-mode .shadow-glow-cyan {
+  box-shadow: 0 4px 14px 0 rgba(0, 212, 255, 0.39);
+}

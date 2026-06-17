@@ -12,8 +12,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    # Wildcard allows Cloudflare tunnel domains and local dev.
+    # JWT is in Authorization headers — credentials=False is correct.
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(tracking_router, prefix="/api/tracking", tags=["Tracking & Geofencing"])

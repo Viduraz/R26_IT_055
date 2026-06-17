@@ -1,0 +1,1108 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  Skeleton ID Dashboard — Client-Side JavaScript
+ *  Handles: WebSocket streaming, camera, enrollment, API calls, UI updates
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+const API_BASE = window.location.origin;
+const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/stream`;
+const WS_IP_URL = `${WS_PROTOCOL}//${window.location.host}/ws/ip-stream`;
+
+// ── State ────────────────────────────────────────────────────────────────────
+const state = {
+    ws: null,
+    cameraStream: null,
+    isStreaming: false,
+    frameLoopTimer: null,
+    isEnrolling: false,
+    enrollUserId: null,
+    enrollFrameCount: 0,
+    fps: 0,
+    frameCount: 0,
+    lastFpsTime: Date.now(),
+    usePhoneCamera: false,
+    phoneCameraUrl: "",
+    // Back-pressure: don't send next frame until server responds
+    waitingForResponse: false,
+    _lastSendTime: 0,
+    // Camera source: 'webcam' | 'ipcam'
+    cameraSource: "webcam",
+};
+
+// ── DOM References ───────────────────────────────────────────────────────────
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+// ── Initialize ───────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+    initTabs();
+    initLiveFeed();
+    initEnrollment();
+    initTraining();
+    initReportDownload();
+    loadUsers();
+    loadStats();
+    checkHealth();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAB NAVIGATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function initTabs() {
+    $$(".nav-item").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const tab = btn.dataset.tab;
+
+            // Update nav
+            $$(".nav-item").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+
+            // Update panels
+            $$(".tab-panel").forEach((p) => p.classList.remove("active"));
+            $(`#tab-${tab}`).classList.add("active");
+
+            // Load data for certain tabs
+            if (tab === "users") loadUsers();
+            if (tab === "stats") loadStats();
+            if (tab === "training") loadModelStatus();
+        });
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  LIVE FEED
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function initLiveFeed() {
+    $("#btn-start-camera").addEventListener("click", startCamera);
+    $("#btn-stop-camera").addEventListener("click", stopCamera);
+
+    // ── Camera source toggle ──
+    const btnWebcam = $("#btn-src-webcam");
+    const btnIpcam  = $("#btn-src-ipcam");
+    const ipcamBar  = $("#ipcam-config-bar");
+
+    btnWebcam.addEventListener("click", () => {
+        if (state.isStreaming) return; // don't switch mid-stream
+        state.cameraSource = "webcam";
+        btnWebcam.classList.add("active");
+        btnIpcam.classList.remove("active");
+        ipcamBar.classList.add("hidden");
+        $("#btn-start-camera").textContent = " Start Camera";
+        $("#btn-start-camera").prepend(Object.assign(document.createElement("span"), {textContent: "📷 "}));
+    });
+
+    btnIpcam.addEventListener("click", () => {
+        if (state.isStreaming) return; // don't switch mid-stream
+        state.cameraSource = "ipcam";
+        btnIpcam.classList.add("active");
+        btnWebcam.classList.remove("active");
+        ipcamBar.classList.remove("hidden");
+        $("#btn-start-camera").innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start IP Camera`;
+    });
+}
+
+
+async function startCamera() {
+    if (state.cameraSource === "ipcam") {
+        startIpCamera();
+        return;
+    }
+
+    // ── Webcam mode ──
+    try {
+        state.cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480, facingMode: "user" },
+            audio: false,
+        });
+
+        const video = $("#webcam-video");
+        video.srcObject = state.cameraStream;
+        await video.play();
+
+        // Show webcam video, hide ip cam img
+        video.classList.remove("hidden");
+        $("#ipcam-frame").classList.add("hidden");
+
+        // Set canvas size
+        const canvas = $("#skeleton-canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+
+        // UI updates
+        $("#video-overlay").classList.add("hidden");
+        $("#btn-start-camera").classList.add("hidden");
+        $("#btn-stop-camera").classList.remove("hidden");
+
+        // Connect WebSocket and start sending frames
+        connectWebSocket();
+        state.isStreaming = true;
+        scheduleFrameLoop();
+
+        toast("Webcam started", "success");
+    } catch (err) {
+        toast(`Camera error: ${err.message}`, "error");
+    }
+}
+
+function startIpCamera() {
+    // ── IP Camera mode — server reads RTSP, pushes frames to us ──
+    const rtspUrl = $("#ipcam-rtsp-input").value.trim();
+
+    // Show IP cam img, hide webcam video
+    $("#webcam-video").classList.add("hidden");
+    const ipcamImg = $("#ipcam-frame");
+    ipcamImg.classList.remove("hidden");
+
+    // Canvas on top of img
+    const canvas = $("#skeleton-canvas");
+    canvas.width = 640;
+    canvas.height = 480;
+
+    $("#video-overlay").classList.add("hidden");
+    $("#btn-start-camera").classList.add("hidden");
+    $("#btn-stop-camera").classList.remove("hidden");
+
+    // Update IP status dot to connecting
+    setIpcamDot("connecting");
+
+    // Connect to the server-side IP stream WebSocket
+    if (state.ws) state.ws.close();
+    state.ws = new WebSocket(WS_IP_URL);
+    state.isStreaming = true;
+
+    state.ws.onopen = () => {
+        updateStatus(true);
+        toast("Connecting to IP camera via server…", "info");
+        // Override RTSP URL in .env at runtime by sending config message
+        if (rtspUrl) {
+            state.ws.send(JSON.stringify({ cmd: "set_rtsp", url: rtspUrl }));
+        }
+    };
+
+    state.ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        // Handle status/error messages from server
+        if (data.status === "discovering") {
+            $("#video-overlay-msg").textContent = data.msg || "Discovering RTSP path…";
+            $("#video-overlay").classList.remove("hidden");
+            setIpcamDot("connecting");
+            return;
+        }
+        if (data.status === "connected") {
+            $("#video-overlay").classList.add("hidden");
+            setIpcamDot("connected");
+            toast(`📡 ${data.msg}`, "success");
+            return;
+        }
+        if (data.error) {
+            setIpcamDot("error");
+            toast(`IP Camera error: ${data.error}`, "error");
+            $("#video-overlay-msg").textContent = data.error;
+            $("#video-overlay").classList.remove("hidden");
+            return;
+        }
+
+        // Display the server-pushed camera frame
+        if (data.camera_frame) {
+            ipcamImg.src = `data:image/jpeg;base64,${data.camera_frame}`;
+        }
+
+        // FPS counter
+        state.frameCount++;
+        const now = Date.now();
+        if (now - state.lastFpsTime >= 1000) {
+            state.fps = state.frameCount;
+            state.frameCount = 0;
+            state.lastFpsTime = now;
+            $("#fps-badge").textContent = `${state.fps} FPS`;
+        }
+
+        // Render skeleton and identification result (reuse existing handler)
+        handleStreamResult(data);
+    };
+
+    state.ws.onclose = () => {
+        updateStatus(false);
+        setIpcamDot("disconnected");
+        state.isStreaming = false;
+    };
+
+    state.ws.onerror = () => {
+        setIpcamDot("error");
+        toast("IP camera connection failed", "error");
+    };
+}
+
+function setIpcamDot(status) {
+    const dot = $("#ipcam-status-dot");
+    if (!dot) return;
+    dot.className = `ipcam-dot ${status}`;
+}
+
+
+
+function stopCamera() {
+    state.isStreaming = false;
+    state.waitingForResponse = false;
+
+    if (state.cameraStream) {
+        state.cameraStream.getTracks().forEach((t) => t.stop());
+        state.cameraStream = null;
+    }
+
+    if (state.ws) {
+        state.ws.close();
+        state.ws = null;
+    }
+
+    if (state.frameLoopTimer) {
+        cancelAnimationFrame(state.frameLoopTimer);
+        clearTimeout(state.frameLoopTimer);
+        state.frameLoopTimer = null;
+    }
+
+    const video = $("#webcam-video");
+    video.srcObject = null;
+    video.classList.remove("hidden"); // always restore visibility
+
+    // Hide IP cam frame and reset its state
+    $("#ipcam-frame").classList.add("hidden");
+    $("#ipcam-frame").src = "";
+    setIpcamDot("disconnected");
+
+    // Clear canvas
+    const canvas = $("#skeleton-canvas");
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // UI
+    $("#video-overlay").classList.remove("hidden");
+    $("#video-overlay-msg").textContent = "Click \"Start Camera\" to begin";
+    $("#btn-start-camera").classList.remove("hidden");
+    $("#btn-stop-camera").classList.add("hidden");
+    $("#id-badge").classList.add("hidden");
+
+    toast("Camera stopped", "info");
+}
+
+function connectWebSocket() {
+    if (state.ws) state.ws.close();
+
+    state.ws = new WebSocket(WS_URL);
+
+    state.ws.onopen = () => {
+        updateStatus(true);
+        toast("Connected to server pipeline ✅", "success");
+
+        if (state.isStreaming) {
+            state.waitingForResponse = false;
+            scheduleFrameLoop();
+        }
+    };
+
+    state.ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        // Clear in-flight flag BEFORE handling result so next frame can be sent
+        state.waitingForResponse = false;
+        handleStreamResult(data);
+        // Trigger next frame immediately — this is the back-pressure gate
+        if (state.isStreaming) {
+            scheduleFrameLoop(0);
+        }
+    };
+
+    state.ws.onclose = () => {
+        updateStatus(false);
+        toast("Pipeline disconnected ❌", "error");
+    };
+
+    state.ws.onerror = (err) => {
+        updateStatus(false);
+        console.error("WS error", err);
+        toast("Connection error — is the server running?", "error");
+    };
+}
+
+// Reusable offscreen canvas (avoid per-frame allocation)
+const _offscreenCanvas = document.createElement("canvas");
+_offscreenCanvas.width = 480;
+_offscreenCanvas.height = 360;
+const _offscreenCtx = _offscreenCanvas.getContext("2d");
+
+function sendFrameLoop() {
+    state.frameLoopTimer = null;
+
+    if (!state.isStreaming || !state.ws) {
+        return;
+    }
+
+    if (state.ws.readyState !== WebSocket.OPEN) {
+        scheduleFrameLoop(100);
+        return;
+    }
+
+    // Back-pressure: only one frame in-flight at a time
+    if (state.waitingForResponse) {
+        return;
+    }
+
+    // Hard buffer limit safety net
+    if (state.ws.bufferedAmount > 15000) {
+        scheduleFrameLoop(50);
+        return;
+    }
+
+    // Use the correct video element based on current mode
+    let source;
+    if (state.isEnrolling && state.usePhoneCamera) {
+        if (!state.phoneImage || !state.phoneImage.complete) return;
+        source = state.phoneImage;
+    } else {
+        source = state.isEnrolling ? $("#enroll-video") : $("#webcam-video");
+    }
+
+    if (!source || (source.tagName === "VIDEO" && source.readyState < 2)) {
+        // Source not ready yet, try again shortly
+        scheduleFrameLoop(100);
+        return;
+    }
+
+    try {
+        _offscreenCtx.drawImage(source, 0, 0, 480, 360);
+
+        // Get frame as base64 JPEG (quality 0.4 keeps payload small)
+        const dataUrl = _offscreenCanvas.toDataURL("image/jpeg", 0.4);
+        const base64 = dataUrl.split(",")[1];
+
+        const msg = {
+            frame: base64,
+            mode: state.isEnrolling ? "enroll" : "identify",
+            user_id: state.isEnrolling ? state.enrollUserId : null
+        };
+
+        state.ws.send(JSON.stringify(msg));
+        state.waitingForResponse = true;  // gate: wait for server ack
+        state._lastSendTime = Date.now();
+
+        // If it's a phone camera "shot" URL, refresh source for next loop
+        if (state.isEnrolling && state.usePhoneCamera && state.phoneImage) {
+            const baseUrl = state.phoneCameraUrl.split("?")[0];
+            state.phoneImage.src = `${baseUrl}?t=${Date.now()}`;
+        }
+    } catch (e) {
+        console.warn("Frame capture error (likely CORS):", e);
+        state.waitingForResponse = false;
+    }
+
+    // FPS counter
+    state.frameCount++;
+    const now = Date.now();
+    if (now - state.lastFpsTime >= 1000) {
+        state.fps = state.frameCount;
+        state.frameCount = 0;
+        state.lastFpsTime = now;
+        $("#fps-badge").textContent = `${state.fps} FPS`;
+    }
+    // NOTE: Next frame is triggered by onmessage, not here
+}
+
+function scheduleFrameLoop(delay = 0) {
+    if (!state.isStreaming || state.frameLoopTimer) {
+        return;
+    }
+
+    if (delay === 0) {
+        state.frameLoopTimer = requestAnimationFrame(() => {
+            state.frameLoopTimer = null;
+            sendFrameLoop();
+        });
+    } else {
+        state.frameLoopTimer = setTimeout(() => {
+            state.frameLoopTimer = null;
+            sendFrameLoop();
+        }, delay);
+    }
+}
+
+function handleStreamResult(data) {
+    if (!data.detected) {
+        $("#id-name").textContent = "No person detected";
+        $("#id-method").textContent = "—";
+        $("#id-avatar").textContent = "?";
+        $("#id-badge").classList.add("hidden");
+        clearCanvas(state.isEnrolling ? "#enroll-canvas" : "#skeleton-canvas");
+        
+        // Update overlay status
+        if (state.isEnrolling) {
+            $("#enroll-overlay").classList.remove("hidden");
+            $("#enroll-overlay p").textContent = data.status_msg || "No person detected";
+        }
+        return;
+    }
+
+    // Draw skeleton on the correct canvas (enrollment or live feed)
+    if (data.keypoints) {
+        if (state.isEnrolling) {
+            drawSkeleton(data.keypoints, "#enroll-canvas");
+        } else {
+            drawSkeleton(data.keypoints, "#skeleton-canvas");
+        }
+    }
+
+    // Display status message in overlay
+    if (state.isEnrolling) {
+        if (data.status_msg) {
+            $("#enroll-overlay").classList.remove("hidden");
+            $("#enroll-overlay p").textContent = data.status_msg;
+        }
+        
+        // Hide overlay if everything is okay
+        if (data.features_ok) {
+            $("#enroll-overlay").classList.add("hidden");
+        }
+    }
+
+    // Handle enrollment sample collection (uses data from WebSocket response)
+    if (state.isEnrolling && data.mode === "enroll" && data.features_ok) {
+        enrollFrame(data);
+    }
+
+    // Update pipeline stats
+    $("#stat-latency").textContent = `${data.latency_ms} ms`;
+    $("#stat-features").textContent = data.num_features || "--";
+    $("#stat-gait").textContent = `${data.gait_buffer || 0} / 30`;
+
+    // Exit early for ID processing if features aren't perfect
+    if (!data.features_ok) return;
+
+    const id = data.identification || {};
+    const user = id.user || "unknown";
+    const conf = id.confidence || 0;
+    const isKnown = id.is_known || false;
+    const method = id.method || "none";
+
+    // Update identification display
+    $("#id-name").textContent = isKnown ? user : "Unknown Person";
+    $("#id-method").textContent = method === "none" ? "No model loaded" : `Method: ${method}`;
+    $("#id-avatar").textContent = isKnown ? user.charAt(0).toUpperCase() : "?";
+    $("#stat-method").textContent = method;
+
+    // Confidence bar
+    const confPct = Math.round(conf * 100);
+    const bar = $("#confidence-bar");
+    bar.style.width = `${confPct}%`;
+    bar.className = "confidence-bar";
+    if (confPct >= 75) bar.classList.add("high");
+    else if (confPct >= 50) bar.classList.add("low");
+    else bar.classList.add("very-low");
+    $("#confidence-label").textContent = `Confidence: ${confPct}%`;
+
+    // ID badge on video
+    const badge = $("#id-badge");
+    if (isKnown) {
+        badge.classList.remove("hidden");
+        $("#id-badge-name").textContent = user;
+        $("#id-badge-conf").textContent = `${confPct}%`;
+    } else {
+        badge.classList.add("hidden");
+    }
+
+    // Top candidates: show only the current identified person
+    const list = $("#candidates-list");
+    const displayName = isKnown ? user : "Unknown Person";
+    list.innerHTML = `
+        <div class="candidate-row">
+            <span class="candidate-name">${displayName}</span>
+            <span class="candidate-score">${confPct}%</span>
+        </div>
+    `;
+
+    // Enrollment is already handled above (single call per frame)
+
+    // Display status message in overlay
+    if (state.isEnrolling && data.status_msg) {
+        $("#enroll-overlay").classList.remove("hidden");
+        $("#enroll-overlay p").textContent = data.status_msg;
+    } else if (state.isEnrolling && data.features_ok) {
+        $("#enroll-overlay").classList.add("hidden");
+    }
+}
+
+// ── Skeleton Drawing ─────────────────────────────────────────────────────────
+
+const SKELETON_CONNECTIONS = [
+    [11, 13], [13, 15], [12, 14], [14, 16], // Arms
+    [11, 12], [23, 24],                       // Shoulders, Hips
+    [11, 23], [12, 24],                       // Torso
+    [23, 25], [25, 27], [24, 26], [26, 28],  // Legs
+    [0, 11], [0, 12],                         // Head to shoulders
+];
+
+function drawSkeleton(keypoints, canvasSelector = "#skeleton-canvas") {
+    const canvas = $(canvasSelector);
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Draw connections
+    ctx.strokeStyle = "rgba(0, 200, 255, 0.7)";
+    ctx.lineWidth = 2;
+    SKELETON_CONNECTIONS.forEach(([i, j]) => {
+        const a = keypoints[i];
+        const b = keypoints[j];
+        if (a && b && a.visibility > 0.2 && b.visibility > 0.2) {
+            ctx.beginPath();
+            ctx.moveTo(a.x * w, a.y * h);
+            ctx.lineTo(b.x * w, b.y * h);
+            ctx.stroke();
+        }
+    });
+
+    // Draw keypoints
+    keypoints.forEach((kp, idx) => {
+        if (kp.visibility > 0.2) {
+            ctx.beginPath();
+            ctx.arc(kp.x * w, kp.y * h, 4, 0, Math.PI * 2);
+            ctx.fillStyle =
+                idx >= 11 ? "rgba(99, 255, 132, 0.9)" : "rgba(99, 200, 255, 0.7)";
+            ctx.fill();
+        }
+    });
+}
+
+function clearCanvas(canvasSelector = "#skeleton-canvas") {
+    const canvas = $(canvasSelector);
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ENROLLMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function initEnrollment() {
+    $("#btn-create-user").addEventListener("click", createUser);
+    $("#btn-start-enrollment").addEventListener("click", startEnrollment);
+    $("#btn-stop-enrollment").addEventListener("click", stopEnrollment);
+    $("#enroll-select").addEventListener("change", (e) => {
+        $("#btn-start-enrollment").disabled = !e.target.value;
+    });
+
+    // Camera source toggling (Webcam vs Phone)
+    const btnWebcam = $("#btn-cam-webcam");
+    const btnPhone = $("#btn-cam-phone");
+    const phoneConfig = $("#phone-camera-config");
+
+    if (btnWebcam && btnPhone) {
+        btnWebcam.addEventListener("click", () => {
+            state.usePhoneCamera = false;
+            btnWebcam.classList.add("active");
+            btnWebcam.classList.remove("btn-outline");
+            btnWebcam.classList.add("btn-secondary");
+            btnPhone.classList.remove("active");
+            btnPhone.classList.add("btn-outline");
+            btnPhone.classList.remove("btn-secondary");
+            phoneConfig.style.display = "none";
+        });
+
+        btnPhone.addEventListener("click", () => {
+            state.usePhoneCamera = true;
+            btnPhone.classList.add("active");
+            btnPhone.classList.remove("btn-outline");
+            btnPhone.classList.add("btn-secondary");
+            btnWebcam.classList.remove("active");
+            btnWebcam.classList.add("btn-outline");
+            btnWebcam.classList.remove("btn-secondary");
+            phoneConfig.style.display = "block";
+        });
+    }
+}
+
+async function createUser() {
+    const name = $("#enroll-name").value.trim();
+    const email = $("#enroll-email").value.trim();
+
+    if (!name) {
+        toast("Please enter a name", "error");
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/api/users/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, email: email || null }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            toast(err.detail || "Failed to create user", "error");
+            return;
+        }
+
+        const user = await res.json();
+        toast(`User "${user.name}" created!`, "success");
+
+        // Clear form
+        $("#enroll-name").value = "";
+        $("#enroll-email").value = "";
+
+        // Refresh user list in dropdown
+        await loadEnrollDropdown();
+    } catch (err) {
+        toast(`Error: ${err.message}`, "error");
+    }
+}
+
+async function loadEnrollDropdown() {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/`);
+        const users = await res.json();
+
+        const select = $("#enroll-select");
+        select.innerHTML = '<option value="">-- Select User --</option>';
+        users.forEach((u) => {
+            const opt = document.createElement("option");
+            opt.value = u.user_id;
+            opt.textContent = `${u.name} (${u.enrollment_status})`;
+            select.appendChild(opt);
+        });
+    } catch (err) {
+        console.error("Failed to load users for dropdown", err);
+    }
+}
+
+async function startEnrollment() {
+    const userId = $("#enroll-select").value;
+    if (!userId) return;
+
+    state.isEnrolling = true;
+    state.enrollUserId = userId;
+    state.enrollFrameCount = 0;
+
+    const enrollVideo = $("#enroll-video");
+    const enrollCanvas = $("#enroll-canvas");
+    
+    // Stop any existing camera stream first
+    if (state.cameraStream) {
+        state.cameraStream.getTracks().forEach((t) => t.stop());
+        state.cameraStream = null;
+    }
+
+    try {
+        if (state.usePhoneCamera) {
+            // PHONE CAMERA MODE
+            const url = $("#phone-camera-url").value;
+            if (!url) {
+                toast("Please enter your Phone Camera URL", "error");
+                $("#enroll-overlay").classList.remove("hidden");
+                $("#enroll-overlay p").textContent = "Enter your phone camera URL before starting enrollment";
+                state.isEnrolling = false;
+                return;
+            }
+            state.phoneCameraUrl = url;
+            
+            // Show a visual indicator that we're connecting
+            $("#enroll-overlay p").textContent = "Connecting to phone camera...";
+            
+            // Create an image object to poll the IP camera (works better for MJPEG than <video>)
+            state.phoneImage = new Image();
+            state.phoneImage.crossOrigin = "anonymous";
+            state.phoneImage.src = url;
+            
+            // Start the send loop once the WebSocket connects
+        } else {
+            // WEBCAM MODE
+            state.cameraStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 640, height: 480, facingMode: "user" },
+                audio: false,
+            });
+
+            enrollVideo.srcObject = state.cameraStream;
+            await enrollVideo.play();
+        }
+
+        // Set the enrollment canvas size
+        enrollCanvas.width = 640;
+        enrollCanvas.height = 480;
+
+        // Hide the overlay text
+        $("#enroll-overlay").classList.add("hidden");
+
+        // Connect WebSocket for processing
+        connectWebSocket();
+        state.isStreaming = true;
+        scheduleFrameLoop();
+        
+        toast(`Enrollment started using ${state.usePhoneCamera ? "Phone" : "Webcam"}`, "info");
+    } catch (err) {
+        toast(`Camera error: ${err.message}`, "error");
+        state.isEnrolling = false;
+        $("#enroll-overlay").classList.remove("hidden");
+        $("#enroll-overlay p").textContent = "Select a user and start enrollment";
+        return;
+    }
+
+    // UI
+    $("#btn-start-enrollment").classList.add("hidden");
+    $("#btn-stop-enrollment").classList.remove("hidden");
+}
+
+function stopEnrollment() {
+    state.isEnrolling = false;
+    state.enrollUserId = null;
+    state.isStreaming = false;
+    state.waitingForResponse = false;
+    if (state.frameLoopTimer) {
+        cancelAnimationFrame(state.frameLoopTimer);
+        clearTimeout(state.frameLoopTimer);
+        state.frameLoopTimer = null;
+    }
+
+    // Stop the camera stream
+    if (state.cameraStream) {
+        state.cameraStream.getTracks().forEach((t) => t.stop());
+        state.cameraStream = null;
+    }
+
+    // Close WebSocket
+    if (state.ws) {
+        state.ws.close();
+        state.ws = null;
+    }
+
+    // Reset enrollment video
+    const enrollVideo = $("#enroll-video");
+    enrollVideo.srcObject = null;
+    $("#enroll-overlay").classList.remove("hidden");
+
+    // Clear the enrollment canvas
+    clearCanvas("#enroll-canvas");
+
+    // Reset UI
+    $("#btn-start-enrollment").classList.remove("hidden");
+    $("#btn-stop-enrollment").classList.add("hidden");
+
+    toast(
+        `Enrollment stopped. ${state.enrollFrameCount} frames collected.`,
+        "success"
+    );
+}
+
+function enrollFrame(data) {
+    if (!state.enrollUserId) return;
+
+    // The WebSocket pipeline already saves enrollment data server-side
+    // (stream.py mode=="enroll") and returns progress in the response.
+    // No separate REST call needed — just read the WS response fields.
+
+    const framesCollected = data.frames_collected;
+    const progress = data.progress;
+    const enrollStatus = data.enrollment_status;
+
+    // If the server didn't return enrollment fields, skip (frame may have been skipped)
+    if (framesCollected == null) return;
+
+    state.enrollFrameCount = framesCollected;
+
+    // Update progress bar
+    const pct = Math.min(progress || 0, 100);
+    $("#enroll-progress-bar").style.width = `${pct}%`;
+    $("#enroll-progress-text").textContent = `${framesCollected} frames (${Math.round(pct)}%)`;
+
+    if (enrollStatus === "completed") {
+        toast("Enrollment complete! ✅", "success");
+        stopEnrollment();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  USERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadUsers() {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/`);
+        const users = await res.json();
+
+        const grid = $("#users-grid");
+
+        if (users.length === 0) {
+            grid.innerHTML = `
+                <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                    </svg>
+                    <p>No users enrolled yet. Go to Enroll tab to add users.</p>
+                </div>`;
+            return;
+        }
+
+        grid.innerHTML = users
+            .map(
+                (u) => `
+            <div class="user-card glass-card">
+                <div class="user-card-header">
+                    <div class="user-avatar">${u.name.charAt(0).toUpperCase()}</div>
+                    <div>
+                        <div class="user-name">${u.name}</div>
+                        <div class="user-id">${u.user_id.substring(0, 8)}...</div>
+                    </div>
+                </div>
+                <span class="user-status-badge ${u.enrollment_status}">${u.enrollment_status}</span>
+                <div class="user-card-meta">
+                    <span class="user-frames">${u.enrollment_frames_count} frames</span>
+                    <button class="btn-delete-user" onclick="deleteUser('${u.user_id}')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>`
+            )
+            .join("");
+
+        // Also update enrollment dropdown
+        await loadEnrollDropdown();
+    } catch (err) {
+        toast(`Failed to load users: ${err.message}`, "error");
+    }
+}
+
+async function deleteUser(userId) {
+    if (!confirm("Delete this user and all their data?")) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}`, {
+            method: "DELETE",
+        });
+        if (res.ok) {
+            toast("User deleted", "success");
+            loadUsers();
+        } else {
+            toast("Failed to delete user", "error");
+        }
+    } catch (err) {
+        toast(`Error: ${err.message}`, "error");
+    }
+}
+
+// Make deleteUser accessible from inline onclick
+window.deleteUser = deleteUser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TRAINING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function initTraining() {
+    $("#btn-train").addEventListener("click", trainModel);
+    loadModelStatus();
+}
+
+async function trainModel() {
+    const type = $("#train-type").value;
+    const epochs = parseInt($("#train-epochs").value) || 100;
+
+    $("#training-status").classList.remove("hidden");
+    $("#btn-train").disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/train`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model_type: type,
+                epochs,
+                batch_size: 32,
+            }),
+        });
+
+        const result = await res.json();
+
+        if (result.success) {
+            toast("Training complete! ✅", "success");
+
+            // Show results
+            const card = $("#training-results-card");
+            card.style.display = "block";
+            $("#training-results").textContent = JSON.stringify(result, null, 2);
+        } else {
+            toast(`Training failed: ${result.detail || "Unknown error"}`, "error");
+        }
+    } catch (err) {
+        toast(`Training error: ${err.message}`, "error");
+    } finally {
+        $("#training-status").classList.add("hidden");
+        $("#btn-train").disabled = false;
+        loadModelStatus();
+    }
+}
+
+async function loadModelStatus() {
+    try {
+        const res = await fetch(`${API_BASE}/health`);
+        const health = await res.json();
+
+        const models = health.models || {};
+
+        // SVM
+        if (models.svm) {
+            $("#svm-state").textContent = "Trained ✅";
+            $("#svm-state").style.color = "var(--success)";
+        } else {
+            $("#svm-state").textContent = "Not Trained";
+            $("#svm-state").style.color = "var(--text-muted)";
+        }
+
+        // LSTM
+        if (models.lstm) {
+            $("#lstm-state").textContent = "Trained ✅";
+            $("#lstm-state").style.color = "var(--success)";
+        } else {
+            $("#lstm-state").textContent = "Not Trained";
+            $("#lstm-state").style.color = "var(--text-muted)";
+        }
+    } catch (err) {
+        // Server might not be running
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  STATISTICS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadStats() {
+    try {
+        const res = await fetch(`${API_BASE}/api/stats`);
+        const data = await res.json();
+
+        $("#stat-total-users").textContent = data.total_users || 0;
+
+        const stats = data.identification_stats || {};
+        $("#stat-total-ids").textContent = stats.total_identifications || 0;
+        $("#stat-avg-conf").textContent = `${Math.round(
+            (stats.avg_confidence || 0) * 100
+        )}%`;
+        $("#stat-avg-latency").textContent = `${Math.round(
+            stats.avg_latency_ms || 0
+        )}ms`;
+
+        // Recent identifications
+        const recent = data.recent_identifications || [];
+        const tbody = $("#recent-tbody");
+
+        if (recent.length === 0) {
+            tbody.innerHTML =
+                '<tr><td colspan="5" class="text-center text-muted">No data yet</td></tr>';
+        } else {
+            tbody.innerHTML = recent
+                .map(
+                    (r) => `
+                <tr>
+                    <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
+                    <td>${r.predicted_user_id || "Unknown"}</td>
+                    <td>${Math.round((r.confidence || 0) * 100)}%</td>
+                    <td>${Math.round(r.latency_ms || 0)}ms</td>
+                    <td>${r.model_version || "—"}</td>
+                </tr>`
+                )
+                .join("");
+        }
+    } catch (err) {
+        // Stats endpoint may not be available
+    }
+}
+
+// Refresh button
+document.addEventListener("DOMContentLoaded", () => {
+    const btnRefreshUsers = $("#btn-refresh-users");
+    if (btnRefreshUsers) btnRefreshUsers.addEventListener("click", loadUsers);
+
+    const btnRefreshStats = $("#btn-refresh-stats");
+    if (btnRefreshStats) btnRefreshStats.addEventListener("click", loadStats);
+});
+
+function initReportDownload() {
+    const btnDownloadReport = $("#btn-download-report");
+    if (btnDownloadReport) {
+        btnDownloadReport.addEventListener("click", downloadReportPdf);
+    }
+}
+
+async function downloadReportPdf() {
+    const button = $("#btn-download-report");
+    if (button) button.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/report/pdf`);
+        if (!res.ok) {
+            throw new Error(`Report request failed (${res.status})`);
+        }
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `identification-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        toast("PDF report downloaded", "success");
+    } catch (err) {
+        toast(`Failed to download report: ${err.message}`, "error");
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  HEALTH CHECK & UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function checkHealth() {
+    try {
+        const res = await fetch(`${API_BASE}/health`);
+        const data = await res.json();
+        updateStatus(data.status === "healthy");
+    } catch {
+        updateStatus(false);
+    }
+}
+
+function updateStatus(online) {
+    const status = $("#system-status");
+    const dot = status.querySelector(".status-dot");
+    const text = status.querySelector("span");
+
+    if (online) {
+        dot.className = "status-dot online";
+        text.textContent = "Connected";
+    } else {
+        dot.className = "status-dot offline";
+        text.textContent = "Disconnected";
+    }
+}
+
+function toast(message, type = "info") {
+    const container = $("#toast-container");
+    const el = document.createElement("div");
+    el.className = `toast ${type}`;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+}

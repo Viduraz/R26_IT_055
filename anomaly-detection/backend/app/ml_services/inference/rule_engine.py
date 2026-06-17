@@ -36,7 +36,7 @@ _IDX_NOSE_Y         = 24   # raw nose y position
 _IDX_HIP_Y          = 37   # hip_cy raw value
 
 # Approximate polling rate for inactivity timer
-FRAMES_PER_SEC = 2   # we poll ~every 2 seconds (POLL_MS = 2000ms on frontend)
+FRAMES_PER_SEC = 5   # we poll ~every 0.2 seconds (POLL_MS = 200ms on frontend)
 
 
 def check_fall(features: np.ndarray, person_id: str) -> dict | None:
@@ -151,8 +151,7 @@ def check_aggression(features: np.ndarray, person_id: str) -> dict | None:
 
     is_aggression_frame = (
         max_wrist_vel   > AGGRESSION_WRIST_VELOCITY and
-        body_velocity   > AGGRESSION_BODY_VELOCITY  and
-        pose_energy     > AGGRESSION_ENERGY_HIGH
+        (body_velocity > AGGRESSION_BODY_VELOCITY or pose_energy > AGGRESSION_ENERGY_HIGH)
     )
 
     if is_aggression_frame:

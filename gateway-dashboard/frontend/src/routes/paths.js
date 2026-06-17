@@ -7,10 +7,11 @@ export const PATHS = {
   SIGNUP: '/signup',
   AUTH_CALLBACK: '/auth-callback',
   ADMIN_DASHBOARD: '/admin',
+  ADMIN_USERS: '/admin/users',
   CAREGIVER_DASHBOARD: '/caregiver',
   FAMILY_DASHBOARD: '/family',
   NOT_FOUND: '*'
 };
 
 // Assuming auth-service frontend runs on Vite's default 5173
-export const EXTERNAL_AUTH_URL = 'http://localhost:5173';
+export const EXTERNAL_AUTH_URL = import.meta.env.VITE_AUTH_FRONTEND_URL || 'http://localhost:5173';

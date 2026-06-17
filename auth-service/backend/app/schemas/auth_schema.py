@@ -48,6 +48,7 @@ class FaceLoginRequest(BaseModel):
     email: EmailStr
     password: str
     live_face_sample: str  # Base64 image
+    live_skeleton_sample: Optional[str] = None  # Base64 image (optional for now to avoid breaking existing clients)
 
 
 class TokenResponse(BaseModel):

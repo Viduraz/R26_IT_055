@@ -8,11 +8,12 @@ export const loginUser = async (email, password) => {
   return res.data;
 };
 
-export const loginWithFace = async (email, password, liveFaceSample) => {
+export const loginWithFace = async (email, password, liveFaceSample, liveSkeletonSample) => {
   const res = await axios.post(`${AUTH_BASE}/caregiver/verify-face-login`, {
     email,
     password,
     live_face_sample: liveFaceSample,
+    live_skeleton_sample: liveSkeletonSample,
   });
   return res.data;
 };
@@ -28,3 +29,14 @@ export const getProfile = async (token) => {
   });
   return res.data;
 };
+
+/**
+ * Fetch the latest IP camera frame from the auth-service backend.
+ * Returns { frame: "data:image/jpeg;base64,..." }
+ * The auth-service uses a persistent RTSP thread so this resolves in ~1–5 ms.
+ */
+export const getCameraSnapshot = async () => {
+  const res = await axios.get(`${AUTH_BASE}/camera-snapshot`, { timeout: 10000 });
+  return res.data; // { frame: "data:image/jpeg;base64,..." }
+};
+

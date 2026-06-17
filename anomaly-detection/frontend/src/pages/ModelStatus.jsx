@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 
-const ANOMALY_API = "http://localhost:8003/api/anomaly";
+const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
 
 export default function ModelStatus() {
   const [status, setStatus] = useState(null);

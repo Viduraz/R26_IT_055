@@ -21,7 +21,12 @@ export default function Login() {
       const data = await loginUser(form.email, form.password);
       // Validated instantly (admin or family)
       localStorage.setItem("access_token", data.access_token);
-      window.location.href = `http://localhost:5178/auth-callback?token=${data.access_token}`;
+      // In tunnel mode the auth & gateway UIs share the same Cloudflare domain,
+      // so we stay on the current origin. In local dev they're on different ports.
+      const _base = import.meta.env.MODE === "tunnel"
+        ? window.location.origin
+        : (import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178");
+      window.location.href = `${_base}/auth-callback?token=${data.access_token}`;
     } catch (err) {
       const errorMsg = err.response?.data?.detail;
       if (errorMsg === "Caregivers must use the face verification login endpoint.") {
@@ -35,15 +40,18 @@ export default function Login() {
     }
   };
 
-  const handleFaceVerify = async (liveFaceSample) => {
+  const handleFaceVerify = async (liveFaceSample, liveSkeletonSample) => {
     setError("");
     setLoading(true);
     try {
-      const data = await loginWithFace(form.email, form.password, liveFaceSample);
+      const data = await loginWithFace(form.email, form.password, liveFaceSample, liveSkeletonSample);
       localStorage.setItem("access_token", data.access_token);
-      window.location.href = `http://localhost:5178/auth-callback?token=${data.access_token}`;
+      const _base = import.meta.env.MODE === "tunnel"
+        ? window.location.origin
+        : (import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178");
+      window.location.href = `${_base}/auth-callback?token=${data.access_token}`;
     } catch (err) {
-      setError(err.response?.data?.detail || "Face verification failed. Please try again.");
+      setError(err.response?.data?.detail || "Biometric verification failed. Please try again.");
     } finally {
       setLoading(false);
     }

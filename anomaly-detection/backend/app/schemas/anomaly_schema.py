@@ -16,3 +16,14 @@ class AnomalyProcessRequest(BaseModel):
 
 class AnomalyStatusRequest(BaseModel):
     person_id: str
+
+
+class CameraProcessRequest(BaseModel):
+    """
+    Used by /camera-process endpoint — the backend fetches the frame
+    from the IP camera itself; the client only needs to supply context.
+    """
+    person_id:    Optional[str] = None
+    caregiver_id: Optional[str] = None
+    session_id:   Optional[str] = None
+    timestamp:    Optional[str] = None
