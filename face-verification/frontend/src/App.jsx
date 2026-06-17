@@ -9,7 +9,7 @@ import VerificationLogs from "./pages/VerificationLogs";
 const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem("access_token");
   if (!token) {
-    window.location.href = "http://localhost:5173/login";
+    window.location.href = `${import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173"}/login`;
     return null;
   }
   return children;
@@ -21,13 +21,13 @@ const AuthCallback = () => {
     localStorage.setItem("access_token", token);
     return <Navigate to="/" replace />;
   }
-  window.location.href = "http://localhost:5173/login";
+  window.location.href = `${import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173"}/login`;
   return null;
 };
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         <Route path="/auth-callback" element={<AuthCallback />} />
         <Route path="/" element={<ProtectedRoute><FaceDashboard /></ProtectedRoute>} />

@@ -17,7 +17,7 @@ gatewayApi.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem("access_token");
-      window.location.href = "http://localhost:5173/login";
+      window.location.href = `${import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173"}/login`;
     }
     return Promise.reject(err);
   }

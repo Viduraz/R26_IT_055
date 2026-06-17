@@ -11,7 +11,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Webcam from "react-webcam";
 import axios from "axios";
 
-const TRACK_API  = "http://localhost:8002/api/tracking";
+const TRACK_API  = import.meta.env.VITE_TRACKING_BACKEND_URL || "http://localhost:8002/api/tracking";
 const POLL_MS    = 2000;   // 2s — faster for snappy bbox updates
 const TRAIL_LEN  = 30;     // how many centroid positions to keep in movement trail
 
