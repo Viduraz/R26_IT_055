@@ -1,5 +1,11 @@
-// schedule-monitoring/frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
+import Home from "./pages/Home";
+import ScheduleDashboard from "./pages/ScheduleDashboard";
+import RoutineSetup from "./pages/RoutineSetup";
+import Reports from "./pages/Reports";
+import Layout from "./components/Layout";
+
 import { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
 import ScheduleDashboard from "./pages/ScheduleDashboard";
@@ -7,6 +13,7 @@ import RoutineSetup from "./pages/RoutineSetup";
 import NotificationsPanel from "./pages/NotificationsPanel";
 import ActivityLog from "./pages/ActivityLog";
 import { getNotifications } from "./services/scheduleApi";
+
 
 // TODO: Re-enable auth guard once login integration is ready
 const ProtectedRoute = ({ children }) => children;
@@ -37,6 +44,18 @@ function Layout({ children }) {
 
 function App() {
   return (
+
+    <BrowserRouter>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/dashboard" element={<ScheduleDashboard />} />
+          <Route path="/routine-setup" element={<RoutineSetup />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Layout>
+
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         <Route
@@ -81,6 +100,7 @@ function App() {
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+
     </BrowserRouter>
   );
 }

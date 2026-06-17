@@ -1,0 +1,141 @@
+{
+  "schedules": [
+    {
+      "name": "Morning Routine Schedule",
+      "description": "Activities in sequence from 6:00 AM to 8:00 AM",
+      "activities": [
+        {
+          "activity_name": "Standing up",
+          "start_time": "06:00",
+          "end_time": "06:30"
+        },
+        {
+          "activity_name": "Eating",
+          "start_time": "06:30",
+          "end_time": "07:00"
+        },
+        {
+          "activity_name": "Walking",
+          "start_time": "07:00",
+          "end_time": "07:30"
+        },
+        {
+          "activity_name": "Sitting / rest",
+          "start_time": "07:30",
+          "end_time": "08:00"
+        }
+      ]
+    },
+    {
+      "name": "Full Day Schedule",
+      "description": "Realistic daily routine from 7:00 AM to 8:00 PM",
+      "activities": [
+        {
+          "activity_name": "Standing up",
+          "start_time": "07:00",
+          "end_time": "07:30"
+        },
+        {
+          "activity_name": "Eating",
+          "start_time": "07:30",
+          "end_time": "08:00"
+        },
+        {
+          "activity_name": "Walking",
+          "start_time": "08:00",
+          "end_time": "09:00"
+        },
+        {
+          "activity_name": "Sitting / rest",
+          "start_time": "09:00",
+          "end_time": "12:00"
+        },
+        {
+          "activity_name": "Eating",
+          "start_time": "12:00",
+          "end_time": "12:30"
+        },
+        {
+          "activity_name": "Walking",
+          "start_time": "12:30",
+          "end_time": "13:00"
+        },
+        {
+          "activity_name": "Sitting / rest",
+          "start_time": "13:00",
+          "end_time": "17:00"
+        },
+        {
+          "activity_name": "Eating",
+          "start_time": "17:00",
+          "end_time": "17:30"
+        },
+        {
+          "activity_name": "Walking",
+          "start_time": "17:30",
+          "end_time": "18:00"
+        },
+        {
+          "activity_name": "Sitting / rest",
+          "start_time": "18:00",
+          "end_time": "20:00"
+        },
+        {
+          "activity_name": "Sleep",
+          "start_time": "20:00",
+          "end_time": "07:00"
+        }
+      ]
+    },
+    {
+      "name": "Activity Testing Schedule",
+      "description": "All 5 activities with short 15-minute durations for testing",
+      "activities": [
+        {
+          "activity_name": "Standing up",
+          "start_time": "08:00",
+          "end_time": "08:15"
+        },
+        {
+          "activity_name": "Eating",
+          "start_time": "08:15",
+          "end_time": "08:30"
+        },
+        {
+          "activity_name": "Walking",
+          "start_time": "08:30",
+          "end_time": "08:45"
+        },
+        {
+          "activity_name": "Sitting / rest",
+          "start_time": "08:45",
+          "end_time": "09:00"
+        },
+        {
+          "activity_name": "Sleep",
+          "start_time": "09:00",
+          "end_time": "09:15"
+        }
+      ]
+    }
+  ],
+  "testing_guide": {
+    "how_to_use": "Choose one schedule above and submit it via the web interface",
+    "activities_to_perform": {
+      "Standing up": "Stand up from a seated or lying position with visible upward movement (3-5 seconds)",
+      "Eating": "Sit down and bring your hand to your mouth repeatedly (fork/spoon motion) (3-5 seconds)",
+      "Drinking": "Raise a cup/glass to your lips with your elbow elevated — single arm lift (3-5 seconds)",
+      "Talking": "Gesture with your hand near your face/chin while sitting or standing still (3-5 seconds)",
+      "Walking": "Walk around the room with visible movement (3-5 seconds)",
+      "Sitting / rest": "Sit down and stay still with minimal movement (3-5 seconds)",
+      "Sleep": "Lie down on a bed/couch/floor (3-5 seconds)"
+    },
+    "tips": [
+      "Good lighting is essential",
+      "Stay 2-3 feet away from camera (optimal distance)",
+      "Keep full body in frame",
+      "Hold each activity for 3-5 seconds",
+      "Exaggerate movements initially to test detection"
+    ]
+  }
+}

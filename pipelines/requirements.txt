@@ -1,0 +1,17 @@
+# SecureElderCare — ML Pipeline Dependencies
+# ==========================================
+# Install with: pip install -r requirements.txt
+
+# Core ML
+tensorflow>=2.15.0
+tensorflow-hub>=0.16.0
+tensorflowjs>=4.17.0
+
+# Data processing
+numpy>=1.24.0
+opencv-python-headless>=4.9.0
+scikit-learn>=1.4.0
+tqdm>=4.66.0
+
+# Visualisation (training curves)
+matplotlib>=3.8.0

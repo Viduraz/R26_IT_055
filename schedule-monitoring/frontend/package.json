@@ -1,9 +1,33 @@
 {
   "name": "schedule-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "scripts": { "dev": "vite --port 5177", "build": "vite build", "preview": "vite preview" },
-  "dependencies": { "axios": "^1.7.2", "react": "^18.3.1", "react-dom": "^18.3.1", "react-router-dom": "^6.23.1" },
-  "devDependencies": { "@vitejs/plugin-react": "^4.3.0", "autoprefixer": "^10.4.19", "postcss": "^8.4.39", "tailwindcss": "^3.4.4", "vite": "^5.3.1" }
+  "scripts": {
+    "dev": "vite --port 5177",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mediapipe/face_mesh": "^0.4.1633559619",
+    "@mediapipe/pose": "^0.5.1675469404",
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow-models/face-landmarks-detection": "^1.0.6",
+    "@tensorflow-models/pose-detection": "^2.0.5",
+    "@tensorflow/tfjs": "^4.11.0",
+    "@tensorflow/tfjs-backend-webgl": "^4.11.0",
+    "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
+    "axios": "^1.7.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hot-toast": "^2.6.0",
+    "react-router-dom": "^6.23.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "vite": "^5.3.1"
+  }
 }

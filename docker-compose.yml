@@ -1,15 +1,30 @@
 version: "3.9"
 
 services:
+  # ─── MongoDB ─────────────────────────────────────────────
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: secure_elder_care
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+
   # ─── Auth Service ───────────────────────────────────────
   auth-backend:
     build: ./auth-service/backend
     ports:
       - "8000:8000"
     env_file: .env
+
+    depends_on:
+      - mongodb
     environment:
       # Override face service URL to use Docker-internal DNS (not localhost)
       - FACE_SERVICE_URL=http://face-backend:8001
+
     restart: unless-stopped
 
   auth-frontend:
@@ -26,6 +41,8 @@ services:
     ports:
       - "8001:8001"
     env_file: .env
+    depends_on:
+      - mongodb
     restart: unless-stopped
 
   face-frontend:
@@ -42,6 +59,8 @@ services:
     ports:
       - "8002:8002"
     env_file: .env
+    depends_on:
+      - mongodb
     restart: unless-stopped
 
   tracking-frontend:
@@ -58,6 +77,8 @@ services:
     ports:
       - "8003:8003"
     env_file: .env
+    depends_on:
+      - mongodb
     restart: unless-stopped
 
   anomaly-frontend:
@@ -74,6 +95,8 @@ services:
     ports:
       - "8004:8004"
     env_file: .env
+    depends_on:
+      - mongodb
     restart: unless-stopped
 
   schedule-frontend:
@@ -98,6 +121,7 @@ services:
       - ANOMALY_SERVICE_URL=http://anomaly-backend:8003
       - SCHEDULE_SERVICE_URL=http://schedule-backend:8004
     depends_on:
+      - mongodb
       - auth-backend
       - face-backend
       - tracking-backend
@@ -112,3 +136,6 @@ services:
     depends_on:
       - gateway-backend
     restart: unless-stopped
+
+volumes:
+  mongodb_data:
