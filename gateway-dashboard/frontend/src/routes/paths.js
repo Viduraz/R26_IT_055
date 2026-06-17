@@ -7,6 +7,7 @@ export const PATHS = {
   SIGNUP: '/signup',
   AUTH_CALLBACK: '/auth-callback',
   ADMIN_DASHBOARD: '/admin',
+  ADMIN_USERS: '/admin/users',
   CAREGIVER_DASHBOARD: '/caregiver',
   FAMILY_DASHBOARD: '/family',
   NOT_FOUND: '*'

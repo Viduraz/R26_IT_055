@@ -138,4 +138,15 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  - /api/gate   -> http://localhost:8005  (Gateway Backend)`);
   console.log(`  - /* (Root)   -> http://localhost:5178  (Gateway UI)`);
   console.log(`================================================================\n`);
+
+  // ── Keepalive ping ──────────────────────────────────────────────────────
+  // Cloudflare QUIC tunnels drop idle connections after ~9 minutes.
+  // Pinging ourselves every 30s keeps the connection alive and prevents 530 errors.
+  setInterval(() => {
+    const req = http.get(`http://127.0.0.1:${PORT}/_proxy_keepalive`, (res) => {
+      res.resume(); // Drain the response to free memory
+    });
+    req.on('error', () => {}); // Silently ignore — proxy might be momentarily busy
+    req.end();
+  }, 30_000);
 });

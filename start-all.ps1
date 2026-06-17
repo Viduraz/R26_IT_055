@@ -89,7 +89,9 @@ Write-Host "[INFO] Starting Cloudflare Quick Tunnel..." -ForegroundColor Yellow
 Write-Host "Waiting for Cloudflare to generate your public link (takes ~5-10 seconds)..." -ForegroundColor Gray
 
 # Run cloudflared in the background and redirect logs to a temp file
-$tunnelProcess = Start-Process -FilePath $cloudflared -ArgumentList "tunnel --url http://localhost:8080" -RedirectStandardError $tunnelLog -NoNewWindow -PassThru
+# --protocol http2  : Use HTTP/2 over TLS instead of QUIC — avoids QUIC idle-timeout 530 errors
+# --no-autoupdate   : Don't auto-restart cloudflared mid-session
+$tunnelProcess = Start-Process -FilePath $cloudflared -ArgumentList "tunnel --url http://localhost:8080 --protocol http2 --no-autoupdate" -RedirectStandardError $tunnelLog -NoNewWindow -PassThru
 
 try {
     $linkFound = $false

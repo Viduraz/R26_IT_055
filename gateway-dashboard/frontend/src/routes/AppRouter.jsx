@@ -15,6 +15,7 @@ import AlertsCenter from '../pages/AlertsCenter';
 import AuthRedirect from '../pages/AuthRedirect';
 import AuthCallback from '../pages/AuthCallback';
 import AdminDashboard from '../pages/AdminDashboard';
+import AdminUsers from '../pages/AdminUsers';
 import CaregiverDashboard from '../pages/CaregiverDashboard';
 import FamilyDashboard from '../pages/FamilyDashboard';
 import NotFound from '../pages/NotFound';
@@ -31,6 +32,7 @@ const AppRouter = () => {
           
           {/* Role Based Dashboards */}
           <Route path={PATHS.ADMIN_DASHBOARD} element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+          <Route path={PATHS.ADMIN_USERS} element={<ProtectedRoute><AdminUsers /></ProtectedRoute>} />
           <Route path={PATHS.CAREGIVER_DASHBOARD} element={<ProtectedRoute><CaregiverDashboard /></ProtectedRoute>} />
           <Route path={PATHS.FAMILY_DASHBOARD} element={<ProtectedRoute><FamilyDashboard /></ProtectedRoute>} />
         </Route>
