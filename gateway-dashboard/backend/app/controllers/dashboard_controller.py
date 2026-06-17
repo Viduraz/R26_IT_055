@@ -2,8 +2,9 @@
 gateway-dashboard/backend/app/controllers/dashboard_controller.py
 Handles aggregated data queries for the dashboards.
 """
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from bson import ObjectId
 from shared.backend.auth.jwt_handler import decode_access_token
 from shared.backend.config.database import get_db
 
@@ -50,6 +51,58 @@ async def get_admin_summary(credentials: HTTPAuthorizationCredentials = Depends(
         },
         "recent_alerts": recent_alerts
     }
+
+async def get_all_users(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
+    """Admin only — list all users with optional role filter."""
+    token = decode_access_token(credentials.credentials)
+    if token.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    db = get_db()
+    users_cursor = db["users"].find(
+        {},
+        {"password_hash": 0, "face_embeddings": 0}  # exclude sensitive fields
+    ).sort("created_at", -1)
+
+    users = []
+    for u in users_cursor:
+        u["id"] = str(u.pop("_id"))
+        # Normalise datetime to ISO string for JSON serialization
+        for field in ("created_at", "updated_at"):
+            if field in u and hasattr(u[field], "isoformat"):
+                u[field] = u[field].isoformat()
+        users.append(u)
+
+    return {"users": users}
+
+async def update_user_status(
+    user_id: str,
+    body: dict = Body(...),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer)
+):
+    """Admin only — update a user's approval_status field."""
+    token = decode_access_token(credentials.credentials)
+    if token.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    new_status = body.get("status")
+    if new_status not in ("pending", "approved", "rejected"):
+        raise HTTPException(status_code=422, detail="status must be pending | approved | rejected")
+
+    db = get_db()
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid user_id format")
+
+    result = db["users"].update_one(
+        {"_id": oid},
+        {"$set": {"approval_status": new_status}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": f"User status updated to {new_status}"}
 
 async def get_caregiver_profile(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     token = decode_access_token(credentials.credentials)
