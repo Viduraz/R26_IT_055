@@ -1,21 +1,20 @@
-"""
-tracking-geofencing/backend/app/middleware/verify_token.py
-"""
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
-from shared.backend.auth.jwt_handler import decode_access_token
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import jwt, os
+from dotenv import load_dotenv
 
-_bearer = HTTPBearer()
+load_dotenv("../../.env")
+load_dotenv(".env")
 
+security = HTTPBearer()
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
-) -> dict:
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    secret = os.getenv("JWT_SECRET_KEY", "fallback_secret")
     try:
-        return decode_access_token(token)
-    except ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired.")
-    except InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
