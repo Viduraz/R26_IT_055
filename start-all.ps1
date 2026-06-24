@@ -23,7 +23,8 @@ $backends = @(
     @{ Path = "tracking-geofencing\backend"; Name = "Tracking Backend" },
     @{ Path = "anomaly-detection\backend"; Name = "Anomaly Backend" },
     @{ Path = "schedule-monitoring\backend"; Name = "Schedule Backend" },
-    @{ Path = "gateway-dashboard\backend"; Name = "Gateway Backend" }
+    @{ Path = "gateway-dashboard\backend"; Name = "Gateway Backend" },
+    @{ Path = "caregiver-marketplace\backend"; Name = "Marketplace Backend" }
 )
 
 $frontends = @(
@@ -32,11 +33,13 @@ $frontends = @(
     @{ Path = "face-verification\frontend"; Name = "Face UI (5174)" },
     @{ Path = "tracking-geofencing\frontend"; Name = "Tracking UI (5175)" },
     @{ Path = "anomaly-detection\frontend"; Name = "Anomaly UI (5176)" },
-    @{ Path = "schedule-monitoring\frontend"; Name = "Schedule UI (5177)" }
+    @{ Path = "schedule-monitoring\frontend"; Name = "Schedule UI (5177)" },
+    @{ Path = "caregiver-marketplace\frontend"; Name = "Marketplace UI (5179)" }
 )
 
+
 # ── 1. Start Backends ──────────────────────────────────────────────────
-Write-Host "[INFO] Starting 6 FastAPI Backends (minimized)..." -ForegroundColor Yellow
+Write-Host "[INFO] Starting 7 FastAPI Backends (minimized)..." -ForegroundColor Yellow
 foreach ($be in $backends) {
     $fullPath = Join-Path $PSScriptRoot $be.Path
     $proc = Start-Process -FilePath "python" -ArgumentList "run.py" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
@@ -47,7 +50,8 @@ Write-Host "[SUCCESS] Backends started." -ForegroundColor Green
 Write-Host ""
 
 # ── 2. Start Frontends ─────────────────────────────────────────────────
-Write-Host "[INFO] Starting 6 React Frontends in tunnel mode (minimized)..." -ForegroundColor Yellow
+Write-Host "[INFO] Starting 7 React Frontends in tunnel mode (minimized)..." -ForegroundColor Yellow
+
 foreach ($fe in $frontends) {
     $fullPath = Join-Path $PSScriptRoot $fe.Path
     $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", "npm run dev -- --host 127.0.0.1 --mode tunnel" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru

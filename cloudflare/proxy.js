@@ -25,6 +25,9 @@ function getRouteTarget(url) {
   if (url.startsWith('/schedule/')) {
     return { host: '127.0.0.1', port: 5177 }; // Schedule Frontend
   }
+  if (url.startsWith('/marketplace/')) {
+    return { host: '127.0.0.1', port: 5179 }; // Caregiver Marketplace Frontend
+  }
 
   // APIs
   if (url.startsWith('/api/auth')) {
@@ -45,6 +48,10 @@ function getRouteTarget(url) {
   if (url.startsWith('/api/gateway') || url.startsWith('/api/dashboard')) {
     return { host: '127.0.0.1', port: 8005 }; // Gateway Backend
   }
+  if (url.startsWith('/api/marketplace')) {
+    return { host: '127.0.0.1', port: 8006 }; // Caregiver Marketplace Backend
+  }
+
 
   // Fallback to Gateway Frontend (served at root /)
   return { host: '127.0.0.1', port: 5178 };
@@ -130,13 +137,16 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  - /tracking/* -> http://localhost:5175  (Tracking UI)`);
   console.log(`  - /anomaly/*  -> http://localhost:5176  (Anomaly UI)`);
   console.log(`  - /schedule/* -> http://localhost:5177  (Schedule UI)`);
+  console.log(`  - /marketplace/* -> http://localhost:5179  (Marketplace UI)`);
   console.log(`  - /api/auth   -> http://localhost:8000  (Auth Backend)`);
   console.log(`  - /api/face   -> http://localhost:8001  (Face Backend)`);
   console.log(`  - /api/track  -> http://localhost:8002  (Tracking Backend)`);
   console.log(`  - /api/anom   -> http://localhost:8003  (Anomaly Backend)`);
   console.log(`  - /api/sched  -> http://localhost:8004  (Schedule Backend)`);
   console.log(`  - /api/gate   -> http://localhost:8005  (Gateway Backend)`);
+  console.log(`  - /api/marketplace -> http://localhost:8006 (Marketplace Backend)`);
   console.log(`  - /* (Root)   -> http://localhost:5178  (Gateway UI)`);
+
   console.log(`================================================================\n`);
 
   // ── Keepalive ping ──────────────────────────────────────────────────────
