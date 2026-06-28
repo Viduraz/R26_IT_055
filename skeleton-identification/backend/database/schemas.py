@@ -34,7 +34,7 @@ class UserResponse(BaseModel):
 
 
 class UserInDB(BaseModel):
-    """Full user document as stored in MongoDB."""
+    """Full user document as stored in MongoDB."""#universaly unique id
     user_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: Optional[str] = None
