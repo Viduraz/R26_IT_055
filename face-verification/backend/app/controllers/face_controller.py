@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.schemas.face_schema import EnrollFaceRequest, EnrollFaceResponse, VerifyFaceRequest, VerifyFaceResponse, VerifyCaregiverRequest, VerifyCaregiverResponse
 from app.services.face_service import FaceService
+from app.services.camera_service import get_camera_snapshot as _fetch_snapshot
 from app.models.face_log_model import face_log_collection
 
 _face_service = FaceService()
@@ -27,3 +28,27 @@ def get_verification_logs() -> list:
     for log in logs:
         log["_id"] = str(log["_id"])
     return logs
+
+# ── IP Camera controllers ──────────────────────────────────────────────────────────
+
+def get_camera_snapshot() -> dict:
+    """
+    GET /api/face/camera-snapshot
+    Proxy one JPEG snapshot from the IP camera.  The frontend uses this
+    to display a live preview img tag (polling every ~1 s).
+    """
+    frame_b64 = _fetch_snapshot()
+    return {"frame": frame_b64}
+
+
+def verify_from_camera() -> VerifyCaregiverResponse:
+    """
+    POST /api/face/camera-verify
+    Fetch one frame from the IP camera and immediately run caregiver
+    verification — same pipeline as /verify-caregiver but the frame
+    comes from the network camera, not the browser.
+    """
+    frame_b64 = _fetch_snapshot()
+    payload   = VerifyCaregiverRequest(live_sample=frame_b64)
+    result    = _face_service.verify_caregiver_search(payload)
+    return VerifyCaregiverResponse(**result)
