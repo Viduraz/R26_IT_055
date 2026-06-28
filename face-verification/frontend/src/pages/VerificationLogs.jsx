@@ -8,7 +8,8 @@ export default function VerificationLogs() {
   useEffect(() => {
     async function fetchLogs() {
       try {
-        const { data } = await axios.get("http://localhost:8001/api/face/verification-logs");
+        const faceBase = import.meta.env.VITE_FACE_BACKEND_URL || "http://localhost:8001/api/face";
+        const { data } = await axios.get(`${faceBase}/verification-logs`);
         setLogs(data);
       } catch (err) {
         console.error("Failed to load logs:", err);

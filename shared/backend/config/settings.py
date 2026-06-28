@@ -28,6 +28,8 @@ class Settings:
     ANOMALY_SERVICE_URL: str = os.getenv("ANOMALY_SERVICE_URL", "http://localhost:8003")
     SCHEDULE_SERVICE_URL: str = os.getenv("SCHEDULE_SERVICE_URL", "http://localhost:8004")
     GATEWAY_SERVICE_URL: str = os.getenv("GATEWAY_SERVICE_URL", "http://localhost:8005")
+    MARKETPLACE_SERVICE_URL: str = os.getenv("MARKETPLACE_SERVICE_URL", "http://localhost:8006")
 
 
 settings = Settings()
+

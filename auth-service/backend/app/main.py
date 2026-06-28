@@ -13,11 +13,12 @@ app = FastAPI(
     description="Handles user registration, login, and JWT issuance.",
 )
 
-# CORS — restrict origins in production
+# CORS — allow any origin for Cloudflare tunnel + local dev
+# JWT auth uses Authorization headers, not cookies — allow_credentials=False is correct.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

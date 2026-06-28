@@ -14,7 +14,7 @@ Secure Elder Care integrates six independent microservices:
 | **Face Verification** | MTCNN + FaceNet real-time face recognition |
 | **Tracking & Geofencing** | YOLOv8 + ByteTrack person tracking with zone alerts |
 | **Anomaly Detection** | MediaPipe + LSTM/Autoencoder pose-based fall/anomaly detection |
-| **Schedule Monitoring** | Activity classification and routine deviation detection |
+| **Schedule Monitoring** | TensorFlow.js MoveNet + ML-based activity detection with real-time schedule validation |
 | **Gateway Dashboard** | Central aggregator dashboard for all modules |
 
 ---

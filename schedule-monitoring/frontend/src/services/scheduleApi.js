@@ -15,6 +15,32 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// ========== Schedule Management ==========
+export const getSchedule = () => scheduleApi.get("/");
+export const createSchedule = (activities, description = "") =>
+  scheduleApi.post("/", { activities, description });
+export const deleteSchedule = (scheduleId) => scheduleApi.delete(`/${scheduleId}`);
+
+// ========== Activity Logs ==========
+export const getActivityLogs = () => scheduleApi.get("/logs");
+export const logDetectedActivity = (scheduleId, activity) =>
+  scheduleApi.post(`/logs/${scheduleId}/detect`, activity);
+
+// ========== Activity Validation (NEW - Phase 1) ==========
+// Validates activity with adaptive thresholds and returns status info
+export const validateActivityWithAdaptive = (scheduleId, activity) =>
+  scheduleApi.post(`/logs/${scheduleId}/validate`, activity);
+
+// ========== Notifications ==========
+export const getNotifications = (unreadOnly = false) =>
+  scheduleApi.get(`/notifications?unread_only=${unreadOnly}`);
+export const markNotificationRead = (notificationId) =>
+  scheduleApi.post(`/notifications/${notificationId}/read`);
+
+// ========== Reports & Deviations ==========
+export const getReports = () => scheduleApi.get("/reports");
+export const getDeviations = () => scheduleApi.get("/deviations");
+
 // ── Schedule CRUD ─────────────────────────────────────────────────────────
 export const getAllSchedules       = ()             => api.get("/api/schedule/");
 export const getSchedulesByPatient = (patientId)   => api.get(`/api/schedule/patient/${patientId}`);
@@ -37,5 +63,6 @@ export const triggerMissedEval     = (patientId)   => api.post(`/api/monitoring/
 export const getSchedule           = ()            => api.get("/api/schedule/");
 export const getReports            = ()            => api.get("/api/schedule/reports");
 export const getDeviations         = ()            => api.get("/api/schedule/deviations");
+
 
 export default api;
