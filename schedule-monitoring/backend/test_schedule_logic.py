@@ -70,18 +70,18 @@ def run_tests():
         "activities": [
             {
                 "activity_name": "Eating",
-                "start_time": (now - timedelta(minutes=10)).strftime("%H:%M"),
-                "end_time": (now + timedelta(minutes=20)).strftime("%H:%M")
+                "start_time": now.strftime("%H:%M"),
+                "end_time": (now + timedelta(minutes=3)).strftime("%H:%M")
             },
             {
                 "activity_name": "Walking",
-                "start_time": (now - timedelta(minutes=60)).strftime("%H:%M"),
-                "end_time": (now - timedelta(minutes=30)).strftime("%H:%M") # Missed!
+                "start_time": (now - timedelta(minutes=10)).strftime("%H:%M"),
+                "end_time": (now - timedelta(minutes=7)).strftime("%H:%M") # Missed (Not Done)!
             }
         ]
     })
     
-    # 2. Test "Done" (within 20 mins)
+    # 2. Test "Done" (within 1.5 mins)
     res = svc.log_activity_detection(
         schedule_id="test_schedule_1",
         activity_name="Eating",
@@ -93,25 +93,25 @@ def run_tests():
     assert len(mock_db['notifications'].data) == 0, "Should not create notification for Done"
     print("✅ 'Done' logic passed")
 
-    # 3. Test "Late" (after 20 mins)
+    # 3. Test "Late" (between 1.5 and 3 mins)
     start_time_obj = datetime.strptime(mock_db['schedules'].data[0]['activities'][0]['start_time'], "%H:%M").time()
     expected_start = datetime.combine(now.date(), start_time_obj)
     
-    status_info = svc.check_activity_status(expected_start, expected_start + timedelta(minutes=25))
+    status_info = svc.check_activity_status("test_user", "Eating", expected_start, expected_start + timedelta(minutes=2))
     assert status_info['status'] == 'Late', f"Expected Late, got {status_info['status']}"
     print("✅ 'Late' logic passed")
     
-    # 4. Test "Missed" (background task)
+    # 4. Test "Not Done" (background task)
     svc.check_missed_activities()
     logs = mock_db['activity_logs'].data
     missed_logs = [l for l in logs if l['activity_name'] == 'Walking']
-    assert len(missed_logs) == 1, "Should have created a missed log for Walking"
-    assert missed_logs[0]['status'] == 'Missed', "Log should have status Missed"
+    assert len(missed_logs) == 1, "Should have created a missed/not done log for Walking"
+    assert missed_logs[0]['status'] == 'Not Done', f"Log should have status Not Done, got {missed_logs[0]['status']}"
     
     notifs = mock_db['notifications'].data
-    assert len(notifs) == 1, "Should have created a notification for Missed activity"
-    assert notifs[0]['status'] == 'Missed', "Notification should be for Missed"
-    print("✅ 'Missed' background job logic passed")
+    assert len(notifs) == 1, "Should have created a notification for Not Done activity"
+    assert notifs[0]['status'] == 'Not Done', f"Notification should be for Not Done, got {notifs[0]['status']}"
+    print("✅ 'Not Done' background job logic passed")
 
 if __name__ == "__main__":
     run_tests()

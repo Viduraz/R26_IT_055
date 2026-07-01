@@ -4,8 +4,8 @@ import { createSchedule } from "../services/scheduleApi";
 import { useNavigate } from "react-router-dom";
 
 const ACTIVITY_TYPES = [
-  "Standing up", "Eating", "Drinking", "Taking Medications",
-  "Talking", "Walking", "Sitting / rest", "Sleep"
+  "Eating", "Drinking", "Taking Medications",
+  "Walking", "Sitting / rest", "Sleep"
 ];
 
 const ACTIVITY_COLORS = {
@@ -14,8 +14,6 @@ const ACTIVITY_COLORS = {
   "Taking Medications": { dot: "#a855f7", badge: "rgba(168,85,247,0.15)", text: "#c084fc", border: "rgba(168,85,247,0.4)", icon: "💊" },
   "Walking": { dot: "#22c55e", badge: "rgba(34,197,94,0.15)", text: "#4ade80", border: "rgba(34,197,94,0.4)", icon: "🚶" },
   "Sleep": { dot: "#6366f1", badge: "rgba(99,102,241,0.15)", text: "#818cf8", border: "rgba(99,102,241,0.4)", icon: "🌙" },
-  "Standing up": { dot: "#06b6d4", badge: "rgba(6,182,212,0.15)", text: "#22d3ee", border: "rgba(6,182,212,0.4)", icon: "🧍" },
-  "Talking": { dot: "#f43f5e", badge: "rgba(244,63,94,0.15)", text: "#fb7185", border: "rgba(244,63,94,0.4)", icon: "💬" },
   "Sitting / rest": { dot: "#94a3b8", badge: "rgba(148,163,184,0.1)", text: "#cbd5e1", border: "rgba(148,163,184,0.3)", icon: "🪑" },
 };
 
@@ -25,10 +23,9 @@ const TEMPLATES = {
     bg: "linear-gradient(135deg, rgba(180,83,9,0.55) 0%, rgba(124,45,18,0.35) 100%)",
     border: "rgba(251,146,60,0.45)", glow: "rgba(251,146,60,0.2)",
     activities: [
-      { activity_name: "Standing up", start_time: "06:00", end_time: "06:15" },
-      { activity_name: "Eating", start_time: "06:15", end_time: "06:30" },
-      { activity_name: "Walking", start_time: "06:30", end_time: "06:45" },
-      { activity_name: "Sitting / rest", start_time: "06:45", end_time: "07:00" }
+      { activity_name: "Eating", start_time: "06:00", end_time: "06:20" },
+      { activity_name: "Walking", start_time: "06:20", end_time: "06:40" },
+      { activity_name: "Sitting / rest", start_time: "06:40", end_time: "07:10" }
     ]
   },
   fullday: {
@@ -36,10 +33,9 @@ const TEMPLATES = {
     bg: "linear-gradient(135deg, rgba(29,78,216,0.55) 0%, rgba(30,27,75,0.4) 100%)",
     border: "rgba(96,165,250,0.45)", glow: "rgba(59,130,246,0.2)",
     activities: [
-      { activity_name: "Standing up", start_time: "07:00", end_time: "07:30" },
-      { activity_name: "Eating", start_time: "07:30", end_time: "08:00" },
-      { activity_name: "Walking", start_time: "08:00", end_time: "09:00" },
-      { activity_name: "Sitting / rest", start_time: "09:00", end_time: "12:00" },
+      { activity_name: "Eating", start_time: "07:00", end_time: "07:30" },
+      { activity_name: "Walking", start_time: "07:30", end_time: "08:30" },
+      { activity_name: "Sitting / rest", start_time: "08:30", end_time: "12:00" },
       { activity_name: "Eating", start_time: "12:00", end_time: "12:30" },
       { activity_name: "Walking", start_time: "12:30", end_time: "13:00" },
       { activity_name: "Sitting / rest", start_time: "13:00", end_time: "17:00" },
@@ -104,16 +100,16 @@ export default function RoutineSetup() {
       const fmt = (d) => d.toTimeString().substring(0, 5);
       template.activities = ACTIVITY_TYPES.map((name, i) => ({
         activity_name: name,
-        start_time: fmt(new Date(now.getTime() + i * 60000)),
-        end_time: fmt(new Date(now.getTime() + (i + 1) * 60000))
+        start_time: fmt(new Date(now.getTime() + (2 + i * 3) * 60000)),
+        end_time: fmt(new Date(now.getTime() + (2 + (i + 1) * 3) * 60000))
       }));
     } else if (key === "demo") {
       const now = new Date();
       const fmt = (d) => d.toTimeString().substring(0, 5);
       template.activities = ACTIVITY_TYPES.slice(0, 5).map((name, i) => ({
         activity_name: name,
-        start_time: fmt(new Date(now.getTime() + i * 60000)),
-        end_time: fmt(new Date(now.getTime() + (i + 1) * 60000))
+        start_time: fmt(new Date(now.getTime() + (2 + i * 3) * 60000)),
+        end_time: fmt(new Date(now.getTime() + (2 + (i + 1) * 3) * 60000))
       }));
     }
     setActivities(template.activities);
