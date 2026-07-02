@@ -2,62 +2,30 @@
 schedule-monitoring/backend/app/main.py
 """
 
-from contextlib import asynccontextmanager
-
+"""
+schedule-monitoring/backend/app/main.py
+"""
 import time
 import threading
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from apscheduler.schedulers.background import BackgroundScheduler
+
 from app.routes.schedule_routes import router as schedule_router
-
-from app.services.schedule_service import ScheduleService
-
-scheduler = BackgroundScheduler()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    service = ScheduleService()
-    # Start background scheduler for checking missed activities (TEST MODE: 1 min)
-    scheduler.add_job(service.check_missed_activities, 'interval', minutes=1)
-    scheduler.start()
-    yield
-    scheduler.shutdown()
-
-app = FastAPI(
-    title="Secure Elder Care — Schedule Monitoring Service",
-    version="1.0.0",
-    lifespan=lifespan,
-
 from app.routes.monitoring_routes import router as monitoring_router
+from app.services.monitoring_service import MonitoringService
 
 app = FastAPI(
     title="Secure Elder Care — Schedule Monitoring Service",
     version="2.0.0",
-
 )
 
 app.add_middleware(
     CORSMiddleware,
-
-    allow_origins=[
-        "http://localhost:5173", 
-        "http://localhost:5174", 
-        "http://localhost:5177", 
-        "http://localhost:5178", 
-        "http://localhost:3000"
-    ],
-    allow_origin_regex=r"https?://localhost:\d+",
-    allow_credentials=True,
-    allow_methods=["*"], 
-
     # Wildcard allows Cloudflare tunnel domains and local dev.
     # JWT is in Authorization headers — credentials=False is correct.
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
-
     allow_headers=["*"],
 )
 
@@ -68,7 +36,6 @@ app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitorin
 # ── Background sweep thread ────────────────────────────────────────────────
 def _missed_task_sweep():
     """Runs every 60 s; marks tasks MISSED once their time window closes."""
-    from app.services.monitoring_service import MonitoringService
     svc = MonitoringService()
     while True:
         try:
