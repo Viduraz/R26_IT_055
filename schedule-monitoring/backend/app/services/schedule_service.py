@@ -172,6 +172,33 @@ class ScheduleService:
         )
 
         log_entry = {
+            "schedule_id": schedule_id,
+            "user_id": schedule["user_id"],
+            "activity_name": activity_name,
+            "expected_start": target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time,
+            "expected_end": target_activity.get("end_time") if isinstance(target_activity, dict) else target_activity.end_time,
+            "detected_at": detected_at,
+            "status": status_info["status"],
+            "adaptive_grace_minutes": status_info["grace_minutes"],
+            "delay_minutes": status_info["delay_minutes"],
+            "detection_confidence": confidence,
+            "signals": signals,
+            "created_at": datetime.utcnow()
+        }
+
+        result = _activity_logs().insert_one(log_entry)
+
+        if status_info["status"] in ["Late", "Missed"]:
+            self.create_notification(
+                schedule["user_id"],
+                activity_name,
+                status_info["status"],
+                f"{activity_name} was detected {status_info['status'].lower()} "
+                f"(Delay: {status_info['delay_minutes']} min. Grace limit: {status_info['grace_minutes']} min)."
+            )
+
+        log_entry["_id"] = str(result.inserted_id)
+        return log_entry
 
 
     # ── CRUD ───────────────────────────────────────────────────────────
@@ -222,34 +249,11 @@ class ScheduleService:
 
     async def log_deviation(self, schedule_id: str, observed: str, expected: str):
         _deviations().insert_one({
-
             "schedule_id": schedule_id,
-            "user_id": schedule["user_id"],
-            "activity_name": activity_name,
-            "expected_start": target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time,
-            "expected_end": target_activity.get("end_time") if isinstance(target_activity, dict) else target_activity.end_time,
-            "detected_at": detected_at,
-            "status": status_info["status"],
-            "adaptive_grace_minutes": status_info["grace_minutes"],
-            "delay_minutes": status_info["delay_minutes"],
-            "detection_confidence": confidence,
-            "signals": signals,
-            "created_at": datetime.utcnow()
-        }
-
-        result = _activity_logs().insert_one(log_entry)
-
-        if status_info["status"] in ["Late", "Missed"]:
-            self.create_notification(
-                schedule["user_id"],
-                activity_name,
-                status_info["status"],
-                f"{activity_name} was detected {status_info['status'].lower()} "
-                f"(Delay: {status_info['delay_minutes']} min. Grace limit: {status_info['grace_minutes']} min)."
-            )
-
-        log_entry["_id"] = str(result.inserted_id)
-        return log_entry
+            "observed": observed,
+            "expected": expected,
+            "created_at": datetime.utcnow(),
+        })
 
     # ====================== BACKGROUND TASKS ======================
 
