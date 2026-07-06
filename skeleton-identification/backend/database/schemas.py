@@ -27,10 +27,10 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     role: Optional[str] = None
     notes: Optional[str] = None
-    enrollment_status: str
+    enrollment_status: str = "pending"
     enrollment_frames_count: int = 0
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class UserInDB(BaseModel):

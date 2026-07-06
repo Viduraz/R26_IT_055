@@ -14,8 +14,8 @@ class Settings(BaseSettings):
 
     # ── MongoDB ───────────────────────────────────────────────────────────────
     mongodb_uri: str = "mongodb://localhost:27017"
-    mongodb_db: str = "skeleton_id"
-    use_local_db: bool = True
+    mongodb_db: str = Field(default="skeleton_id", validation_alias="mongodb_db_name")
+    use_local_db: bool = False
     local_db_path: str = "./data/local_db.json"
 
     # ── Service Ports ─────────────────────────────────────────────────────────

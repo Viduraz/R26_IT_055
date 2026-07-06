@@ -17,10 +17,16 @@ project_root = Path(__file__).resolve().parent   # → research-skeleton/backend
 sys.path.insert(0, str(project_root))
 os.chdir(str(project_root))
 
-# Load .env from research-skeleton/ root (one level above backend/)
+# Load .env from workspace root (two levels above backend/) or fall back to project root
 from dotenv import load_dotenv
-_env_file = project_root.parent / ".env"         # → research-skeleton/.env
-load_dotenv(dotenv_path=str(_env_file))
+_env_file = project_root.parent.parent / ".env"  # → workspace root .env
+if _env_file.exists():
+    print(f"Loading environment from root .env: {_env_file}")
+    load_dotenv(dotenv_path=str(_env_file))
+else:
+    _env_file = project_root.parent / ".env"      # → research-skeleton/.env
+    print(f"Loading environment from local .env: {_env_file}")
+    load_dotenv(dotenv_path=str(_env_file))
 
 from config import settings
 
