@@ -101,6 +101,7 @@ export default function FaceRecognitionPage() {
   const streamStateRef = useRef({
     isStreaming: false, isEnrolling: false, enrollUserId: null,
     cameraSource: 'webcam', usePhoneCamera: false, phoneImage: null, phoneCameraUrl: '',
+    enrollType: 'face',
   });
 
   useEffect(() => {

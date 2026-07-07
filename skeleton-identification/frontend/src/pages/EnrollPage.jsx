@@ -36,6 +36,7 @@ export default function EnrollPage() {
     usePhoneCamera: false,
     phoneImage: null,
     phoneCameraUrl: '',
+    enrollType: 'skeleton',
   });
 
   // Load users on mount
