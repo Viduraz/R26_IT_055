@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta
 import numpy as np
 import uuid
@@ -33,6 +32,45 @@ TIMING_CONFIG = {
 }
 
 
+def _local_now() -> datetime:
+    return datetime.now()
+
+
+def _parse_time_value(time_value):
+    if isinstance(time_value, datetime):
+        return time_value.time()
+    if hasattr(time_value, "hour") and hasattr(time_value, "minute") and not isinstance(time_value, str):
+        return time_value
+    if isinstance(time_value, str):
+        return datetime.strptime(time_value, "%H:%M").time()
+    raise ValueError(f"Unsupported time value: {time_value!r}")
+
+
+def _normalize_schedule_activities(activities: list, anchor: datetime | None = None) -> list:
+    normalized = []
+    base_start = (anchor or _local_now()).replace(second=0, microsecond=0)
+    base_start += timedelta(minutes=TIMING_CONFIG["START_OFFSET_MINUTES"])
+
+    duration = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
+    spacing = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
+
+    for index, activity in enumerate(activities or []):
+        if hasattr(activity, "model_dump"):
+            activity = activity.model_dump()
+        elif not isinstance(activity, dict):
+            activity = dict(activity)
+
+        start_dt = base_start + (spacing * index)
+        end_dt = start_dt + duration
+
+        normalized_activity = dict(activity)
+        normalized_activity["start_time"] = start_dt.strftime("%H:%M")
+        normalized_activity["end_time"] = end_dt.strftime("%H:%M")
+        normalized.append(normalized_activity)
+
+    return normalized
+
+
 class ScheduleService:
 
     """
@@ -43,13 +81,11 @@ class ScheduleService:
 
     def get_adaptive_grace_period(self, user_id: str, activity_name: str) -> float:
         """Learns personalized grace period from past behavior using ML/statistics"""
-        # Retrieve last 50 logs of this activity
         logs = list(_activity_logs().find({
             "user_id": user_id,
             "activity_name": {"$regex": f"^{activity_name}$", "$options": "i"}
         }).sort("detected_at", -1).limit(50))
 
-        # Fallback to the default late threshold if there is not enough historical data
         fallback_threshold = TIMING_CONFIG["LATE_THRESHOLD_MINUTES"]
         if len(logs) < 8:
             return fallback_threshold
@@ -68,14 +104,11 @@ class ScheduleService:
                     continue
 
             try:
-                # Combine detected_at date with the expected start time
                 expected_time_obj = datetime.strptime(expected_start_str, "%H:%M").time()
                 expected_dt = datetime.combine(detected_at_dt.date(), expected_time_obj)
-                
-                # Difference in minutes
+
                 delay_min = (detected_at_dt.replace(tzinfo=None) - expected_dt.replace(tzinfo=None)).total_seconds() / 60.0
-                
-                # Filter out extreme delay outliers dynamically based on current duration scale
+
                 duration = TIMING_CONFIG["DURATION_MINUTES"]
                 if -2.0 * duration < delay_min < 5.0 * duration:
                     delays.append(delay_min)
@@ -85,14 +118,12 @@ class ScheduleService:
         if len(delays) < 6:
             return fallback_threshold
 
-        # Statistical grace period calculation: Mean + 1.8 * Standard Deviation
         delays_arr = np.array(delays)
         mean_delay = float(np.mean(delays_arr))
         std_delay = float(np.std(delays_arr))
 
         grace = mean_delay + (1.8 * std_delay)
-        
-        # Keep learned grace period bounded to a safe/reasonable range relative to current scale
+
         min_grace = 0.6 * TIMING_CONFIG["DURATION_MINUTES"]
         max_grace = 1.5 * TIMING_CONFIG["DURATION_MINUTES"]
         grace = max(min_grace, min(max_grace, grace))
@@ -100,19 +131,15 @@ class ScheduleService:
 
     def check_activity_status(self, user_id: str, activity_name: str, expected_start: datetime, detected_at: datetime) -> dict:
         """Determines activity status using statistical adaptive thresholds"""
-        # Get adaptive grace period from ML (statistical learning)
         grace_minutes = self.get_adaptive_grace_period(user_id, activity_name)
         duration_minutes = TIMING_CONFIG["DURATION_MINUTES"]
-        
+
         detected_naive = detected_at.replace(tzinfo=None)
         expected_naive = expected_start.replace(tzinfo=None)
-        
-        # Late deadline: expected_start + grace_minutes
+
         deadline = expected_naive + timedelta(minutes=grace_minutes)
-        # Missed boundary: expected_start + duration_minutes
         missed_boundary = expected_naive + timedelta(minutes=duration_minutes)
-        
-        # Calculate time difference in minutes
+
         diff_seconds = (detected_naive - expected_naive).total_seconds()
         delay_minutes = round(diff_seconds / 60, 1)
 
@@ -120,10 +147,10 @@ class ScheduleService:
             status = "Early"
             confidence = 0.90
         elif detected_naive <= deadline:
-            status = "Done"  # Renders as "Completed" or "Done" in frontend
+            status = "Completed"
             confidence = 0.92
         elif detected_naive <= missed_boundary:
-            status = "Late"  # Completed but Late
+            status = "Late"
             confidence = 0.65
         else:
             status = "Missed"
@@ -131,6 +158,7 @@ class ScheduleService:
 
         return {
             "status": status,
+            "completion_state": "completed" if status in {"Early", "Completed", "Late"} else "not_completed",
             "grace_minutes": grace_minutes,
             "delay_minutes": delay_minutes,
             "confidence": confidence,
@@ -149,7 +177,7 @@ class ScheduleService:
 
         target_activity = None
         activities = schedule.get("activities", []) if isinstance(schedule, dict) else getattr(schedule, "activities", [])
-        
+
         for act in activities:
             act_name = act.get("activity_name", "") if isinstance(act, dict) else getattr(act, "activity_name", "")
             if act_name.lower() == activity_name.lower():
@@ -159,10 +187,9 @@ class ScheduleService:
         if not target_activity:
             return {"error": f"Activity '{activity_name}' not found in schedule"}
 
-        # Expected time today
         target_start = target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time
-        start_time = datetime.strptime(target_start, "%H:%M").time()
-        expected_start = datetime.combine(datetime.now().date(), start_time)
+        start_time = _parse_time_value(target_start)
+        expected_start = datetime.combine(_local_now().date(), start_time)
 
         status_info = self.check_activity_status(
             user_id=schedule["user_id"],
@@ -179,6 +206,7 @@ class ScheduleService:
             "expected_end": target_activity.get("end_time") if isinstance(target_activity, dict) else target_activity.end_time,
             "detected_at": detected_at,
             "status": status_info["status"],
+            "completion_state": status_info["completion_state"],
             "adaptive_grace_minutes": status_info["grace_minutes"],
             "delay_minutes": status_info["delay_minutes"],
             "detection_confidence": confidence,
@@ -194,14 +222,13 @@ class ScheduleService:
                 activity_name,
                 status_info["status"],
                 f"{activity_name} was detected {status_info['status'].lower()} "
-                f"(Delay: {status_info['delay_minutes']} min. Grace limit: {status_info['grace_minutes']} min)."
+                f"(Delay: {status_info['delay_minutes']} min. Completion limit: {status_info['grace_minutes']} min)."
             )
 
         log_entry["_id"] = str(result.inserted_id)
         return log_entry
 
-
-    # ── CRUD ───────────────────────────────────────────────────────────
+    # ── CRUD (legacy async versions — DEAD CODE, see note below) ──────
 
     async def get_all_schedules(self) -> list:
         docs = list(_schedules().find({}, {"_id": 0}))
@@ -211,15 +238,14 @@ class ScheduleService:
         docs = list(_schedules().find({"patient_id": patient_id}, {"_id": 0}))
         return docs
 
-    async def create_schedule(self, data: dict) -> dict:
-        data["schedule_id"] = str(uuid.uuid4())
-        data["created_at"] = datetime.utcnow()
-        data["today_status"] = "pending"
-        _schedules().insert_one(data)
-        return {"success": True, "schedule_id": data["schedule_id"]}
+    # NOTE: Python only keeps the LAST method with a given name in a class
+    # body. The sync create_schedule/delete_schedule/get_schedule/get_reports/
+    # get_deviations defined further down in this file override the ones
+    # that used to live here. This comment marks where that dead code was
+    # removed to avoid confusion; the real, active implementations are in
+    # the "ACTIVE METHODS" section below.
 
     async def update_schedule(self, schedule_id: str, data: dict) -> dict:
-        # Remove None values so we don't accidentally overwrite fields
         update_data = {k: v for k, v in data.items() if v is not None}
         update_data["updated_at"] = datetime.utcnow()
         res = _schedules().update_one(
@@ -227,25 +253,6 @@ class ScheduleService:
             {"$set": update_data},
         )
         return {"success": res.matched_count > 0}
-
-    async def delete_schedule(self, schedule_id: str) -> dict:
-        res = _schedules().delete_one({"schedule_id": schedule_id})
-        return {"success": res.deleted_count > 0}
-
-    # ── Legacy helpers (kept for compatibility) ────────────────────────
-
-    async def get_schedule(self) -> list:
-        return await self.get_all_schedules()
-
-    async def get_reports(self) -> list:
-        return list(
-            _reports().find({}, {"_id": 0}).sort("generated_at", -1).limit(30)
-        )
-
-    async def get_deviations(self) -> list:
-        return list(
-            _deviations().find({}, {"_id": 0}).sort("detected_at", -1).limit(50)
-        )
 
     async def log_deviation(self, schedule_id: str, observed: str, expected: str):
         _deviations().insert_one({
@@ -260,8 +267,8 @@ class ScheduleService:
     def check_missed_activities(self):
         """Background task to check for missed/not done activities."""
         schedules = list(_schedules().find({}))
-        local_now = datetime.now()
-        
+        local_now = _local_now()
+
         for schedule in schedules:
             user_id = schedule.get("user_id")
             schedule_id = schedule.get("schedule_id")
@@ -271,27 +278,24 @@ class ScheduleService:
                 end_time_str = activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None)
                 if not end_time_str:
                     continue
-                
+
                 try:
                     end_time_obj = datetime.strptime(end_time_str, "%H:%M").time()
                     expected_end = datetime.combine(local_now.date(), end_time_obj)
                 except ValueError:
                     continue
-                
-                # Check if current time is past the end_time
+
                 if local_now > expected_end:
-                    # Check if there is any log for this activity today
                     start_of_day = datetime.combine(local_now.date(), datetime.min.time())
                     end_of_day = datetime.combine(local_now.date(), datetime.max.time())
-                    
+
                     log = _activity_logs().find_one({
                         "schedule_id": schedule_id,
                         "activity_name": activity_name,
                         "created_at": {"$gte": start_of_day, "$lte": end_of_day}
                     })
-                    
+
                     if not log:
-                        # Mark as "Not Done" because it was never detected all day
                         log_entry = {
                             "schedule_id": schedule_id,
                             "user_id": user_id,
@@ -307,7 +311,7 @@ class ScheduleService:
                             "created_at": datetime.utcnow()
                         }
                         _activity_logs().insert_one(log_entry)
-                        
+
                         self.create_notification(
                             user_id,
                             activity_name,
@@ -315,34 +319,60 @@ class ScheduleService:
                             f"{activity_name} was not done throughout the scheduled time."
                         )
 
-
-    # ====================== YOUR OTHER EXISTING METHODS ======================
-    # Add all your other methods here (create_schedule, get_schedule, etc.)
+    # ====================== ACTIVE METHODS ======================
 
     def create_schedule(self, user_id: str, activities: list, description: str = None):
-        """Create a new schedule for a user"""
+        """Create a new schedule for a user.
+
+        FIX: previously this always did a plain insert_one(), so every
+        "Save Routine" click left the OLD schedule(s) sitting in Mongo
+        alongside the new one. The dashboard only ever displays schedule[0]
+        from the returned list, so old routines could silently reappear
+        later — including making "Delete Routine" look broken, when really
+        it deleted one document while a stale duplicate remained.
+
+        Now we delete any existing schedule(s) + their logs/notifications
+        for this user BEFORE inserting the new one, enforcing "one active
+        routine per user" to match what the UI already assumes.
+        """
+        existing = list(_schedules().find({"user_id": user_id}))
+        for old in existing:
+            _activity_logs().delete_many({"schedule_id": old["schedule_id"]})
+        _notifications().delete_many({"user_id": user_id})
+        _schedules().delete_many({"user_id": user_id})
+
         schedule_id = str(uuid.uuid4())
+        normalized_activities = _normalize_schedule_activities(activities)
         schedule = {
             "schedule_id": schedule_id,
             "user_id": user_id,
-            "activities": activities,
+            "activities": normalized_activities,
             "description": description or "",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "created_at": _local_now(),
+            "updated_at": _local_now()
         }
         result = _schedules().insert_one(schedule)
         schedule["_id"] = str(result.inserted_id)
         return schedule
 
     def delete_schedule(self, user_id: str, schedule_id: str):
-        """Delete a schedule and all associated logs/notifications"""
-        # Delete the schedule
-        result = _schedules().delete_one({"schedule_id": schedule_id, "user_id": user_id})
-        if result.deleted_count > 0:
-            # Delete associated logs
-            _activity_logs().delete_many({"schedule_id": schedule_id})
-            return {"message": "Schedule deleted successfully", "deleted": True}
-        return {"error": "Schedule not found or you don't have permission to delete it", "deleted": False}
+        """Delete a schedule and all associated logs/notifications.
+
+        FIX: now deletes ALL schedules for this user_id (not just the one
+        matching schedule_id) as a safety net against any duplicate/stale
+        documents left over from before the create_schedule fix above.
+        Also clears notifications, which the old version never touched.
+        """
+        matching = list(_schedules().find({"user_id": user_id}))
+        if not matching:
+            return {"error": "Schedule not found or you don't have permission to delete it", "deleted": False}
+
+        result = _schedules().delete_many({"user_id": user_id})
+        for sched in matching:
+            _activity_logs().delete_many({"schedule_id": sched["schedule_id"]})
+        _notifications().delete_many({"user_id": user_id})
+
+        return {"message": "Schedule deleted successfully", "deleted": result.deleted_count > 0}
 
     def get_schedule(self, user_id: str = None):
         """Get all schedules for a user"""
@@ -353,7 +383,6 @@ class ScheduleService:
 
         for s in schedules:
             s["_id"] = str(s["_id"])
-            # Defensively convert any Pydantic model objects → plain dicts
             if "activities" in s and isinstance(s["activities"], list):
                 s["activities"] = [
                     a.model_dump() if hasattr(a, "model_dump") else
@@ -407,9 +436,11 @@ class ScheduleService:
         """Get activity reports"""
         logs = self.get_activity_logs(user_id)
         stats = {
-            "On Time": 0,
-            "Slightly Late": 0,
+            "Early": 0,
+            "Completed": 0,
             "Late": 0,
+            "Missed": 0,
+            "Not Done": 0,
             "total": len(logs)
         }
         for log in logs:

@@ -1,7 +1,6 @@
-
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule } from "../services/scheduleApi";
+import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule, createSchedule } from "../services/scheduleApi";
 import ActivityDetectorMonitor from "../components/ActivityDetectorMonitor";
 import AlertModal from "../components/AlertModal";
 import toast from "react-hot-toast";
@@ -106,16 +105,33 @@ export default function ScheduleDashboard() {
 
   const fetchData = async () => {
     try {
-      const [devRes, schedRes, notifRes, logsRes] = await Promise.all([
+      // Promise.allSettled (not Promise.all): if one endpoint 404s or errors,
+      // the others still populate instead of the whole dashboard staying blank.
+      const [devRes, schedRes, notifRes, logsRes] = await Promise.allSettled([
         getDeviations(),
         getSchedule(),
         getNotifications(),
         getActivityLogs()
       ]);
-      setDeviations(devRes.data || []);
-      setSchedule(schedRes.data || []);
 
-      const newNotifs = normalizeNotifications(notifRes.data);
+      if (devRes.status === "fulfilled") {
+        setDeviations(devRes.value.data || []);
+      } else {
+        console.error("Failed to fetch deviations:", devRes.reason);
+      }
+
+      if (schedRes.status === "fulfilled") {
+        setSchedule(schedRes.value.data || []);
+      } else {
+        console.error("Failed to fetch schedule:", schedRes.reason);
+      }
+
+      const newNotifs = notifRes.status === "fulfilled"
+        ? normalizeNotifications(notifRes.value.data)
+        : [];
+      if (notifRes.status === "rejected") {
+        console.error("Failed to fetch notifications:", notifRes.reason);
+      }
       setNotifications(newNotifs);
 
       const newUnreadCount = newNotifs.filter(n => !n.read).length;
@@ -145,9 +161,13 @@ export default function ScheduleDashboard() {
       }
       prevUnreadCount.current = newUnreadCount;
 
-      const logs = logsRes.data || [];
-      setTotalLogs(logs.length);
-      setRecentLogs(logs.slice(0, 5));
+      if (logsRes.status === "fulfilled") {
+        const logs = logsRes.value.data || [];
+        setTotalLogs(logs.length);
+        setRecentLogs(logs.slice(0, 5));
+      } else {
+        console.error("Failed to fetch activity logs:", logsRes.reason);
+      }
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
     } finally {
@@ -183,14 +203,20 @@ export default function ScheduleDashboard() {
     if (!schedule.length) return;
     if (window.confirm("Are you sure you want to delete the current routine? All associated logs will be cleared.")) {
       try {
-        await deleteSchedule(schedule[0].schedule_id);
+        const res = await deleteSchedule(schedule[0].schedule_id);
+        // Trust the actual backend response instead of assuming success —
+        // the service can return {deleted: false} with a 200 status.
+        if (res.data && res.data.deleted === false) {
+          toast.error(res.data.error || "Failed to delete routine on the server.");
+          return;
+        }
         toast.success("Routine deleted successfully", { icon: "🗑" });
-        setSchedule([]);
-        setRecentLogs([]);
-        setTotalLogs(0);
-        setDeviations([]);
-        setNotifications([]);
+        // Refetch from the server rather than just clearing local state,
+        // so any leftover/duplicate schedule documents show up immediately
+        // instead of silently reappearing on the next 5s poll.
+        await fetchData();
       } catch (err) {
+        console.error("Failed to delete routine:", err);
         toast.error("Failed to delete routine");
       }
     }

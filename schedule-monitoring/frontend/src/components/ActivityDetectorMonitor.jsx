@@ -15,9 +15,10 @@ const DETECTION_DEBOUNCE = 2000;
 const CONFIDENCE_THRESHOLD = 0.50;
 
 const STATUS_DISPLAY = {
-  "Done":         { color: "bg-green-900/20 border-green-700 text-green-300",   icon: "✓", label: "Done" },
+  "Completed":    { color: "bg-green-900/20 border-green-700 text-green-300",   icon: "✓", label: "Completed" },
   "Early":        { color: "bg-cyan-900/20 border-cyan-700 text-cyan-300",      icon: "🕒", label: "Early" },
   "Late":         { color: "bg-red-900/20 border-red-700 text-red-300",         icon: "✕", label: "Late" },
+  "Missed":       { color: "bg-rose-900/20 border-rose-700 text-rose-300",      icon: "⚠", label: "Missed" },
   "Not Done":     { color: "bg-orange-900/20 border-orange-700 text-orange-300",icon: "⚠", label: "Not Done" },
   "Unexpected":   { color: "bg-gray-900/20 border-gray-700 text-gray-300",      icon: "?", label: "Not Scheduled" },
 };
@@ -36,7 +37,7 @@ export default function ActivityDetectorMonitor() {
   const [detectionLogs,   setDetectionLogs]   = useState([]);
   const [debugInfo,       setDebugInfo]       = useState("");
   const [liveFeatures,    setLiveFeatures]    = useState(null);
-  const [stats, setStats] = useState({ detected: 0, logged: 0, onTime: 0, late: 0 });
+  const [stats, setStats] = useState({ detected: 0, logged: 0, completed: 0, late: 0, missed: 0 });
 
   const lastLogTimeRef = useRef({});
 
@@ -219,8 +220,11 @@ export default function ActivityDetectorMonitor() {
 
         setStats((prev) => {
           const updated = { ...prev, logged: prev.logged + 1 };
-          if (adaptiveData.status === "Done")  updated.onTime++;
-          if (adaptiveData.status === "Late")  updated.late++;
+          if (adaptiveData.status === "Completed" || adaptiveData.status === "Early" || adaptiveData.status === "Late") {
+            updated.completed++;
+          }
+          if (adaptiveData.status === "Late") updated.late++;
+          if (adaptiveData.status === "Missed") updated.missed++;
           return updated;
         });
       } else {
@@ -428,8 +432,8 @@ export default function ActivityDetectorMonitor() {
             <p className="text-lg font-bold text-blue-300">{stats.detected}</p>
           </div>
           <div className="bg-green-900/30 rounded p-2 text-center">
-            <p className="text-xs text-gray-400">On Time</p>
-            <p className="text-lg font-bold text-green-300">{stats.onTime}</p>
+            <p className="text-xs text-gray-400">Completed</p>
+            <p className="text-lg font-bold text-green-300">{stats.completed}</p>
           </div>
           <div className="bg-red-900/30 rounded p-2 text-center">
             <p className="text-xs text-gray-400">Late</p>

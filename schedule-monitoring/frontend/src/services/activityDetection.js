@@ -70,11 +70,19 @@ const LSTM_MODEL_PATH = '/lstm_har_model/model.json';
 const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
 
 const LSTM_ACTIVITY_NAMES = [
-  'Sleep', 'Eating', 'Drinking', 'Taking Medications',
+  'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
   'Walking', 'Sitting / rest', 'Movement'
 ];
 
 const CONFIDENCE_THRESHOLD = 0.50;
+
+function normalizeActivityLabel(activity) {
+  if (!activity) return activity;
+
+  const label = String(activity).trim();
+  if (label === 'Sleep') return 'Sleeping';
+  return label;
+}
 
 // ── Initialize ─────────────────────────────────────────────────────────────────
 export async function initializePoseDetection(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
@@ -542,7 +550,7 @@ function classifyWithLSTM(history) {
   inputTensor.dispose();
   probsTensor.dispose();
   const maxIdx = probs.indexOf(Math.max(...probs));
-  const activity = LSTM_ACTIVITY_NAMES[maxIdx];
+  const activity = normalizeActivityLabel(LSTM_ACTIVITY_NAMES[maxIdx]);
   const confidence = probs[maxIdx];
   const signals = {
     source: 'lstm',
@@ -617,7 +625,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     (torsoAlignment > 1.1 && velocity < 0.04) ||
     (lowerBodyVisible && hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02)
   ) {
-    activity = "Sleep";
+    activity = "Sleeping";
     confidence = torsoAlignment > 1.3 ? 0.90 : 0.82;
     signals = {
       posture: "lying",

@@ -5,27 +5,51 @@ import { createSchedule } from "../services/scheduleApi";
 const ACTIVITY_TYPES = [
   "Eating",
   "Drinking",
-  "Taking Medications",
+  "Sleeping",
   "Walking",
   "Sitting / rest",
-  "Sleep",
 ];
+
+const START_OFFSET_MINUTES = 2;
+const ACTIVITY_WINDOW_MINUTES = 3;
+
+const formatTime = (date) => date.toTimeString().slice(0, 5);
+
+const autoArrangeActivities = (items, anchor = new Date()) => {
+  const normalizedAnchor = new Date(anchor);
+  normalizedAnchor.setSeconds(0, 0);
+
+  return items.map((activity, index) => {
+    const start = new Date(normalizedAnchor);
+    start.setMinutes(start.getMinutes() + START_OFFSET_MINUTES + (index * ACTIVITY_WINDOW_MINUTES));
+
+    const end = new Date(start);
+    end.setMinutes(end.getMinutes() + ACTIVITY_WINDOW_MINUTES);
+
+    return {
+      ...activity,
+      start_time: formatTime(start),
+      end_time: formatTime(end),
+    };
+  });
+};
 
 const TEMPLATES = {
   morning: [
-    { activity_name: "Eating", start_time: "06:30", end_time: "07:00" },
+    { activity_name: "Sleeping", start_time: "06:30", end_time: "07:00" },
     { activity_name: "Walking", start_time: "07:00", end_time: "07:20" },
-    { activity_name: "Taking Medications", start_time: "08:00", end_time: "08:15" },
+    { activity_name: "Eating", start_time: "08:00", end_time: "08:15" },
   ],
   daytime: [
     { activity_name: "Eating", start_time: "12:00", end_time: "12:30" },
+    { activity_name: "Drinking", start_time: "12:30", end_time: "12:45" },
     { activity_name: "Sitting / rest", start_time: "13:00", end_time: "14:00" },
     { activity_name: "Walking", start_time: "16:00", end_time: "16:30" },
   ],
   evening: [
     { activity_name: "Eating", start_time: "18:00", end_time: "18:30" },
-    { activity_name: "Taking Medications", start_time: "20:00", end_time: "20:15" },
-    { activity_name: "Sleep", start_time: "21:00", end_time: "22:00" },
+    { activity_name: "Drinking", start_time: "20:00", end_time: "20:15" },
+    { activity_name: "Sleeping", start_time: "21:00", end_time: "22:00" },
   ],
 };
 
@@ -39,6 +63,7 @@ export default function RoutineSetup() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const previewActivities = useMemo(() => autoArrangeActivities(activities), [activities]);
 
   const canSubmit = useMemo(() => activities.length > 0 && !loading, [activities.length, loading]);
 
@@ -98,7 +123,7 @@ export default function RoutineSetup() {
     setMessage("");
 
     try {
-      await createSchedule(activities, description);
+      await createSchedule(autoArrangeActivities(activities), description);
       showMessage("Schedule created successfully.");
       window.setTimeout(() => {
         navigate("/dashboard", { state: { fromSetup: true } });
@@ -115,6 +140,7 @@ export default function RoutineSetup() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white">Routine Setup</h1>
         <p className="text-gray-400 mt-2">Create a daily routine and send it to the monitoring dashboard.</p>
+        <p className="text-xs text-sky-300/80 mt-2">Saved routines are auto-arranged from the local clock: the first activity starts 2 minutes after saving, then each activity gets a 3 minute window.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3 mb-6">
@@ -218,7 +244,7 @@ export default function RoutineSetup() {
             </div>
           ) : (
             <div className="space-y-3">
-              {activities.map((activity, index) => (
+              {previewActivities.map((activity, index) => (
                 <div key={`${activity.activity_name}-${index}`} className="flex items-center justify-between rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3">
                   <div>
                     <div className="font-semibold text-white">{activity.activity_name}</div>
