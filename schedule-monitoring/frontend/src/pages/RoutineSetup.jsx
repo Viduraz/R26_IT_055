@@ -38,7 +38,9 @@ const TEMPLATES = {
   morning: [
     { activity_name: "Sleeping", start_time: "06:30", end_time: "07:00" },
     { activity_name: "Walking", start_time: "07:00", end_time: "07:20" },
+    { activity_name: "Drinking", start_time: "07:20", end_time: "07:35" },
     { activity_name: "Eating", start_time: "08:00", end_time: "08:15" },
+    { activity_name: "Sitting / rest", start_time: "08:15", end_time: "09:00" },
   ],
   daytime: [
     { activity_name: "Eating", start_time: "12:00", end_time: "12:30" },
@@ -137,24 +139,62 @@ export default function RoutineSetup() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto fade-in">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white">Routine Setup</h1>
-        <p className="text-gray-400 mt-2">Create a daily routine and send it to the monitoring dashboard.</p>
-        <p className="text-xs text-sky-300/80 mt-2">Saved routines are auto-arranged from the local clock: the first activity starts 2 minutes after saving, then each activity gets a 3 minute window.</p>
+      {/* Hero Banner */}
+      <div className="mb-8 rounded-3xl border border-gray-800 bg-gray-900/40 backdrop-blur-md p-6 relative overflow-hidden">
+        <div className="absolute -top-20 -right-20 w-56 h-56 bg-blue-500/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="flex flex-col lg:flex-row gap-6 items-center relative z-10">
+          <div className="flex-1">
+            <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold rounded-full mb-3 uppercase tracking-widest">
+              Schedule Builder
+            </div>
+            <h1 className="text-3xl font-bold text-white">Routine Setup</h1>
+            <p className="text-gray-400 mt-2">Create a daily routine and send it to the monitoring dashboard.</p>
+            <p className="text-xs text-sky-300/80 mt-2">Saved routines are auto-arranged from the local clock: the first activity starts 2 minutes after saving, then each activity gets a 3 minute window.</p>
+          </div>
+          <div className="w-full lg:w-5/12 flex justify-center">
+            <div className="relative group">
+              <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-emerald-500 rounded-2xl blur opacity-20 group-hover:opacity-35 transition duration-700"></div>
+              <img 
+                src={`${import.meta.env.BASE_URL}routine-setup.png`} 
+                alt="Routine Setup" 
+                className="relative rounded-2xl shadow-2xl border border-gray-700/50 w-full max-w-xs transform transition duration-500 hover:scale-[1.02]"
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3 mb-6">
-        <button onClick={() => loadTemplate("morning")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-blue-500/50">
-          <div className="text-sm text-gray-400">Template</div>
-          <div className="text-lg font-semibold">Morning</div>
+        <button onClick={() => loadTemplate("morning")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-amber-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-amber-900/10 group">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl group-hover:scale-110 transition-transform duration-300">🌅</span>
+            <div>
+              <div className="text-sm text-gray-400">Template</div>
+              <div className="text-lg font-semibold">Morning</div>
+              <div className="text-xs text-gray-500 mt-0.5">5 activities · 06:30 – 09:00</div>
+            </div>
+          </div>
         </button>
-        <button onClick={() => loadTemplate("daytime")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-blue-500/50">
-          <div className="text-sm text-gray-400">Template</div>
-          <div className="text-lg font-semibold">Daytime</div>
+        <button onClick={() => loadTemplate("daytime")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-sky-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-sky-900/10 group">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl group-hover:scale-110 transition-transform duration-300">☀️</span>
+            <div>
+              <div className="text-sm text-gray-400">Template</div>
+              <div className="text-lg font-semibold">Daytime</div>
+              <div className="text-xs text-gray-500 mt-0.5">4 activities · 12:00 – 16:30</div>
+            </div>
+          </div>
         </button>
-        <button onClick={() => loadTemplate("evening")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-blue-500/50">
-          <div className="text-sm text-gray-400">Template</div>
-          <div className="text-lg font-semibold">Evening</div>
+        <button onClick={() => loadTemplate("evening")} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-left text-white hover:border-indigo-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-indigo-900/10 group">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl group-hover:scale-110 transition-transform duration-300">🌙</span>
+            <div>
+              <div className="text-sm text-gray-400">Template</div>
+              <div className="text-lg font-semibold">Evening</div>
+              <div className="text-xs text-gray-500 mt-0.5">3 activities · 18:00 – 22:00</div>
+            </div>
+          </div>
         </button>
       </div>
 

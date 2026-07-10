@@ -51,15 +51,31 @@ export default function Reports() {
 
   return (
     <div className="w-full pb-20 animate-slide-up">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10">
-        <div>
-          <h1 className="text-4xl font-extrabold text-white tracking-tight">Activity Reports</h1>
-          <p className="text-gray-400 mt-2 text-sm">Historical logs and system alerts</p>
+      {/* Hero Banner */}
+      <div className="mb-10 rounded-3xl border border-gray-800 bg-gray-900/40 backdrop-blur-md p-6 relative overflow-hidden">
+        <div className="absolute -top-20 -right-20 w-56 h-56 bg-purple-500/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-rose-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="flex flex-col md:flex-row gap-6 items-center relative z-10">
+          <div className="flex-1">
+            <div className="inline-block px-3 py-1 bg-purple-500/10 border border-purple-500/30 text-purple-400 text-xs font-bold rounded-full mb-3 uppercase tracking-widest">
+              Analytics & Insights
+            </div>
+            <h1 className="text-4xl font-extrabold text-white tracking-tight">Activity Reports</h1>
+            <p className="text-gray-400 mt-2 text-sm">Historical logs and system alerts</p>
+          </div>
+          <img 
+            src={`${import.meta.env.BASE_URL}reports-hero.png`} 
+            alt="Reports" 
+            className="w-32 h-32 rounded-2xl object-cover border border-gray-700/50 shadow-lg"
+          />
         </div>
-        <button onClick={fetchData} className="mt-6 md:mt-0 px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white font-semibold text-sm rounded-xl transition-colors border border-gray-700 shadow-lg">
-          ↻ Refresh Data
-        </button>
+        <div className="mt-4 relative z-10">
+          <button onClick={fetchData} className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white font-semibold text-sm rounded-xl transition-colors border border-gray-700 shadow-lg">
+            ↻ Refresh Data
+          </button>
+        </div>
       </div>
+
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
         <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">

@@ -61,20 +61,32 @@ export default function NotificationsPanel({ patientId = PATIENT_ID }) {
 
   return (
     <div className="p-8 max-w-3xl mx-auto fade-in">
-      {/* Header */}
-      <div className="flex items-start justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            Notifications
-            {data.unread_count > 0 && (
-              <span className="px-2.5 py-0.5 rounded-full bg-rose-500 text-white text-sm font-bold">
-                {data.unread_count}
-              </span>
-            )}
-          </h1>
-          <p className="text-gray-500 text-sm mt-1">Alerts sent to family member for late, missed, or caregiver-absent tasks.</p>
+      {/* Hero Banner */}
+      <div className="mb-8 rounded-3xl border border-gray-800 bg-gray-900/40 backdrop-blur-md p-6 relative overflow-hidden">
+        <div className="absolute -top-20 -right-20 w-56 h-56 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-purple-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="flex flex-col md:flex-row gap-6 items-center relative z-10">
+          <div className="flex-1">
+            <div className="inline-block px-3 py-1 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-bold rounded-full mb-3 uppercase tracking-widest">
+              Alert Center
+            </div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              Notifications
+              {data.unread_count > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-500 text-white text-sm font-bold">
+                  {data.unread_count}
+                </span>
+              )}
+            </h1>
+            <p className="text-gray-500 text-sm mt-1">Alerts sent to family member for late, missed, or caregiver-absent tasks.</p>
+          </div>
+          <img 
+            src={`${import.meta.env.BASE_URL}notifications.png`} 
+            alt="Notifications" 
+            className="w-28 h-28 rounded-2xl object-cover border border-gray-700/50 shadow-lg"
+          />
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 mt-4 relative z-10">
           {data.unread_count > 0 && (
             <button
               onClick={handleMarkAllRead}
@@ -111,8 +123,8 @@ export default function NotificationsPanel({ patientId = PATIENT_ID }) {
       {loading ? (
         <div className="flex justify-center py-16"><div className="spinner" style={{ width: 28, height: 28, borderWidth: 3 }} /></div>
       ) : displayed.length === 0 ? (
-        <div className="text-center py-20">
-          <p className="text-5xl mb-4">🔔</p>
+        <div className="text-center py-16">
+          <img src={`${import.meta.env.BASE_URL}notifications.png`} alt="No notifications" className="w-32 h-32 mx-auto rounded-2xl object-cover mb-6 opacity-60 border border-gray-800" />
           <p className="text-gray-400 font-medium">
             {filter === "unread" ? "No unread notifications" : "No notifications yet"}
           </p>

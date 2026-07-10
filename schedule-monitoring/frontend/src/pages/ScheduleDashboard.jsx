@@ -227,21 +227,35 @@ export default function ScheduleDashboard() {
 
   return (
     <div className="w-full pb-20">
-      {/* Dashboard Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 animate-slide-up">
-        <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
-          <p className="text-gray-400 text-sm mt-1">Real-time health metrics and routine monitoring.</p>
+      {/* Dashboard Hero Banner */}
+      <div className="mb-8 animate-slide-up rounded-3xl border border-gray-800 bg-gray-900/40 backdrop-blur-md p-6 relative overflow-hidden">
+        <div className="absolute -top-20 -right-20 w-56 h-56 bg-blue-500/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="flex flex-col md:flex-row gap-6 items-center relative z-10">
+          <div className="flex-1">
+            <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold rounded-full mb-3 uppercase tracking-widest">
+              Real-Time Monitoring
+            </div>
+            <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
+            <p className="text-gray-400 text-sm mt-1">Real-time health metrics and routine monitoring.</p>
+          </div>
+          <img 
+            src={`${import.meta.env.BASE_URL}dashboard-hero.png`} 
+            alt="Dashboard" 
+            className="w-28 h-28 rounded-2xl object-cover border border-gray-700/50 shadow-lg"
+          />
         </div>
-        <button
-          onClick={handleStartTracking}
-          className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
-              ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
-              : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
-            }`}
-        >
-          {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
-        </button>
+        <div className="mt-4 relative z-10">
+          <button
+            onClick={handleStartTracking}
+            className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
+                ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
+                : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
+              }`}
+          >
+            {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
+          </button>
+        </div>
       </div>
 
       {loading ? (
