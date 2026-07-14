@@ -1,13 +1,10 @@
-from datetime import datetime, timedelta
-import numpy as np
-import uuid
-
 """
 schedule-monitoring/backend/app/services/schedule_service.py
 Full CRUD for patient schedule items.
 """
+from datetime import datetime, timedelta
+from statistics import mean, pstdev
 import uuid
-from datetime import datetime
 
 from shared.backend.config.database import get_db
 
@@ -22,6 +19,20 @@ def _notifications():
 
 def _deviations():
     return get_db()["deviations"]
+
+
+def _delete_many(collection, query: dict):
+    delete_many = getattr(collection, "delete_many", None)
+    if callable(delete_many):
+        return delete_many(query)
+
+    data = getattr(collection, "data", None)
+    if isinstance(data, list):
+        original_len = len(data)
+        collection.data = [doc for doc in data if not all(doc.get(key) == value for key, value in query.items())]
+        return type("DeleteResult", (), {"deleted_count": original_len - len(collection.data)})()
+
+    return type("DeleteResult", (), {"deleted_count": 0})()
 
 
 # Timing Configuration for Presentation & Testing (Easily adjustable)
@@ -118,9 +129,8 @@ class ScheduleService:
         if len(delays) < 6:
             return fallback_threshold
 
-        delays_arr = np.array(delays)
-        mean_delay = float(np.mean(delays_arr))
-        std_delay = float(np.std(delays_arr))
+        mean_delay = float(mean(delays))
+        std_delay = float(pstdev(delays)) if len(delays) > 1 else 0.0
 
         grace = mean_delay + (1.8 * std_delay)
 
@@ -337,9 +347,9 @@ class ScheduleService:
         """
         existing = list(_schedules().find({"user_id": user_id}))
         for old in existing:
-            _activity_logs().delete_many({"schedule_id": old["schedule_id"]})
-        _notifications().delete_many({"user_id": user_id})
-        _schedules().delete_many({"user_id": user_id})
+            _delete_many(_activity_logs(), {"schedule_id": old["schedule_id"]})
+        _delete_many(_notifications(), {"user_id": user_id})
+        _delete_many(_schedules(), {"user_id": user_id})
 
         schedule_id = str(uuid.uuid4())
         normalized_activities = _normalize_schedule_activities(activities)
@@ -367,10 +377,10 @@ class ScheduleService:
         if not matching:
             return {"error": "Schedule not found or you don't have permission to delete it", "deleted": False}
 
-        result = _schedules().delete_many({"user_id": user_id})
+        result = _delete_many(_schedules(), {"user_id": user_id})
         for sched in matching:
-            _activity_logs().delete_many({"schedule_id": sched["schedule_id"]})
-        _notifications().delete_many({"user_id": user_id})
+            _delete_many(_activity_logs(), {"schedule_id": sched["schedule_id"]})
+        _delete_many(_notifications(), {"user_id": user_id})
 
         return {"message": "Schedule deleted successfully", "deleted": result.deleted_count > 0}
 

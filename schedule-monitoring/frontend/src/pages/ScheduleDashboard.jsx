@@ -1,3 +1,4 @@
+
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule, createSchedule } from "../services/scheduleApi";
@@ -61,6 +62,7 @@ const normalizeNotifications = (payload) => {
 export default function ScheduleDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
+  const assetBase = import.meta.env.BASE_URL;
   const fromSetup = location.state?.fromSetup === true;
 
   const [schedule, setSchedule] = useState([]);
@@ -69,11 +71,12 @@ export default function ScheduleDashboard() {
   const [recentLogs, setRecentLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [showDetector, setShowDetector] = useState(false);
+  const [showDetector, setShowDetector] = useState(fromSetup);
   const [activeAlert, setActiveAlert] = useState(null);
-  const [hasAutoOpened, setHasAutoOpened] = useState(false);
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
+
+  const selectedSchedule = schedule[0] || null;
 
   useEffect(() => {
     fetchData();
@@ -81,57 +84,27 @@ export default function ScheduleDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (!loading && schedule.length > 0 && !hasAutoOpened) {
-      setShowDetector(true);
-      setHasAutoOpened(true);
-      if (fromSetup) {
-        toast.success("Routine active! Camera tracking started.", {
-          icon: "📷",
-          duration: 4000,
-        });
-      }
-    }
-  }, [loading, schedule.length, hasAutoOpened, fromSetup]);
-
   const handleStartTracking = () => {
-    if (schedule.length > 0) {
-      setShowDetector(!showDetector);
+    if (selectedSchedule) {
+      setShowDetector((current) => !current);
     } else {
-      toast.error("No active routine! Please set up a schedule first.", { icon: "⚠️", duration: 3000 });
+      toast.error("Please set up a routine before starting live tracking.", { icon: "⚠️", duration: 3000 });
       setTimeout(() => navigate("/routine-setup"), 1500);
     }
   };
 
   const fetchData = async () => {
     try {
-      // Promise.allSettled (not Promise.all): if one endpoint 404s or errors,
-      // the others still populate instead of the whole dashboard staying blank.
-      const [devRes, schedRes, notifRes, logsRes] = await Promise.allSettled([
+      const [devRes, schedRes, notifRes, logsRes] = await Promise.all([
         getDeviations(),
         getSchedule(),
         getNotifications(),
         getActivityLogs()
       ]);
+      setDeviations(devRes.data || []);
+      setSchedule(schedRes.data || []);
 
-      if (devRes.status === "fulfilled") {
-        setDeviations(devRes.value.data || []);
-      } else {
-        console.error("Failed to fetch deviations:", devRes.reason);
-      }
-
-      if (schedRes.status === "fulfilled") {
-        setSchedule(schedRes.value.data || []);
-      } else {
-        console.error("Failed to fetch schedule:", schedRes.reason);
-      }
-
-      const newNotifs = notifRes.status === "fulfilled"
-        ? normalizeNotifications(notifRes.value.data)
-        : [];
-      if (notifRes.status === "rejected") {
-        console.error("Failed to fetch notifications:", notifRes.reason);
-      }
+      const newNotifs = normalizeNotifications(notifRes.data);
       setNotifications(newNotifs);
 
       const newUnreadCount = newNotifs.filter(n => !n.read).length;
@@ -161,13 +134,9 @@ export default function ScheduleDashboard() {
       }
       prevUnreadCount.current = newUnreadCount;
 
-      if (logsRes.status === "fulfilled") {
-        const logs = logsRes.value.data || [];
-        setTotalLogs(logs.length);
-        setRecentLogs(logs.slice(0, 5));
-      } else {
-        console.error("Failed to fetch activity logs:", logsRes.reason);
-      }
+      const logs = logsRes.data || [];
+      setTotalLogs(logs.length);
+      setRecentLogs(logs.slice(0, 5));
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
     } finally {
@@ -177,8 +146,8 @@ export default function ScheduleDashboard() {
 
   const handleDeleteIndividualActivity = async (activityName) => {
     try {
-      if (!schedule || schedule.length === 0) return;
-      const currentSched = schedule[0];
+      if (!selectedSchedule) return;
+      const currentSched = selectedSchedule;
       const updatedActivities = currentSched.activities.filter(
         (act) => act.activity_name !== activityName
       );
@@ -187,6 +156,7 @@ export default function ScheduleDashboard() {
         await deleteSchedule(currentSched.schedule_id);
         toast.success("All activities deleted. Routine cleared!", { icon: "🗑" });
         setSchedule([]);
+        setShowDetector(false);
         return;
       }
 
@@ -200,57 +170,62 @@ export default function ScheduleDashboard() {
   };
 
   const handleDeleteSchedule = async () => {
-    if (!schedule.length) return;
+    if (!selectedSchedule) return;
     if (window.confirm("Are you sure you want to delete the current routine? All associated logs will be cleared.")) {
       try {
-        const res = await deleteSchedule(schedule[0].schedule_id);
-        // Trust the actual backend response instead of assuming success —
-        // the service can return {deleted: false} with a 200 status.
-        if (res.data && res.data.deleted === false) {
-          toast.error(res.data.error || "Failed to delete routine on the server.");
-          return;
-        }
+        await deleteSchedule(selectedSchedule.schedule_id);
         toast.success("Routine deleted successfully", { icon: "🗑" });
-        // Refetch from the server rather than just clearing local state,
-        // so any leftover/duplicate schedule documents show up immediately
-        // instead of silently reappearing on the next 5s poll.
-        await fetchData();
+        setSchedule([]);
+        setShowDetector(false);
+        setRecentLogs([]);
+        setTotalLogs(0);
+        setDeviations([]);
+        setNotifications([]);
       } catch (err) {
-        console.error("Failed to delete routine:", err);
         toast.error("Failed to delete routine");
       }
     }
   };
 
   const unreadCount = notifications.filter((n) => !n.read).length;
-  const todayActivities = schedule.length > 0 ? schedule[0]?.activities?.length || 0 : 0;
+  const todayActivities = selectedSchedule?.activities?.length || 0;
 
   return (
     <div className="w-full pb-20">
-      {/* Dashboard Hero Banner */}
-      <div className="mb-8 animate-slide-up rounded-3xl border border-gray-800 bg-gray-900/40 backdrop-blur-md p-6 relative overflow-hidden">
-        <div className="absolute -top-20 -right-20 w-56 h-56 bg-blue-500/15 rounded-full blur-3xl pointer-events-none"></div>
-        <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
-        <div className="flex flex-col md:flex-row gap-6 items-center relative z-10">
-          <div className="flex-1">
-            <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold rounded-full mb-3 uppercase tracking-widest">
-              Real-Time Monitoring
-            </div>
-            <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
-            <p className="text-gray-400 text-sm mt-1">Real-time health metrics and routine monitoring.</p>
-          </div>
-          <img 
-            src={`${import.meta.env.BASE_URL}dashboard-hero.png`} 
-            alt="Dashboard" 
-            className="w-28 h-28 rounded-2xl object-cover border border-gray-700/50 shadow-lg"
-          />
+      {/* Dashboard Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 animate-slide-up">
+        <div>
+          <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
+          <p className="text-gray-400 text-sm mt-1">Real-time health metrics and routine monitoring.</p>
         </div>
-        <div className="mt-4 relative z-10">
+        <div className="hidden md:flex items-center gap-3 rounded-2xl border border-gray-800 bg-gray-900/40 backdrop-blur-md px-3 py-3 shadow-lg shadow-blue-950/10">
+          <div className="w-14 h-14 rounded-xl overflow-hidden border border-gray-700/60 shrink-0">
+            <img
+              src={`${assetBase}system-overview.png`}
+              alt="System overview"
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="pr-2">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-semibold">Live View</p>
+            <p className="text-sm text-white font-medium">Monitoring pipeline active</p>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <button
+            onClick={() => navigate("/routine-setup")}
+            className="px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 border border-gray-700 bg-gray-900/70 text-white hover:bg-gray-800"
+          >
+            Set up a routine
+          </button>
           <button
             onClick={handleStartTracking}
+            disabled={!selectedSchedule}
             className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
                 ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
-                : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
+                : selectedSchedule
+                  ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
+                  : "bg-gray-700 text-gray-400 cursor-not-allowed"
               }`}
           >
             {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
@@ -265,10 +240,10 @@ export default function ScheduleDashboard() {
       ) : (
         <div className="space-y-8 animate-slide-up" style={{ animationDelay: "0.1s" }}>
 
-          {/* Activity Detector - Conditionally Visible */}
-          {showDetector && (
-            <div className="mb-10 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl">
-              <ActivityDetectorMonitor />
+          {/* Activity Detector - Always visible once a routine exists */}
+          {selectedSchedule && (
+            <div className={`mb-10 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${showDetector ? "" : "opacity-95"}`}>
+              <ActivityDetectorMonitor selectedScheduleId={selectedSchedule.schedule_id} autoStart={showDetector} />
             </div>
           )}
 
@@ -344,7 +319,7 @@ export default function ScheduleDashboard() {
                     <span className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 text-sm">📅</span>
                     Today's Routine
                   </h2>
-                  {schedule.length > 0 && (
+                  {selectedSchedule && (
                     <button
                       onClick={handleDeleteSchedule}
                       className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-semibold rounded-lg border border-rose-500/30 transition-colors flex items-center gap-2"
@@ -354,17 +329,17 @@ export default function ScheduleDashboard() {
                   )}
                 </div>
 
-                {schedule.length === 0 ? (
+                {!selectedSchedule ? (
                   <div className="py-12 text-center text-gray-500 relative z-10">
                     <p className="mb-4 text-4xl">📭</p>
-                    <p>No routine established yet.</p>
+                    <p>{schedule.length === 0 ? "No routine established yet." : "Select a routine above to view tracking and start live monitoring."}</p>
                     <button onClick={() => navigate("/routine-setup")} className="mt-4 text-blue-400 hover:text-blue-300 text-sm font-medium transition">
                       Set up a routine →
                     </button>
                   </div>
                 ) : (
                   <div className="relative border-l-2 border-gray-800/80 sm:ml-20 ml-12 space-y-8 py-2 z-10">
-                    {schedule[0]?.activities?.map((activity, idx) => {
+                    {selectedSchedule?.activities?.map((activity, idx) => {
                       // Find if there is a log for this
                       const log = recentLogs.find(l => l.activity_name === activity.activity_name);
                       const isCurrent = isCurrentActivity(activity.start_time, activity.end_time);

@@ -7,11 +7,28 @@
  *  1. LSTM model (primary) — loaded from /lstm_har_model/model.json when available.
  *  2. Threshold classifier (fallback) — rule-based, always active when LSTM unavailable.
  *
- * KEY FIXES (v3):
- *  - REMOVED vertical line geometry (was causing false negatives)
- *  - REPLACED with simple Euclidean distance + wrist elevation check
- *  - wristIsElevated guard prevents bowl-on-table false positives
- *  - Simplified eating detection to 3 clear tiers
+ * v3: wrist elevation guard for eating (no more bowl-on-table false positives)
+ * v4: fixed sitting/rest vs standing confusion (bent-knee RANGE, not just a lower
+ *     bound), added explicit "Standing" posture, added posture hysteresis so
+ *     losing sight of the legs doesn't default to "sitting".
+ * v5: enhanced Sleeping detection — added an explicit hip-angle check for
+ *     "body forms a straight line" (torso-to-thigh ~180°) combined with a
+ *     COCO-SSD "bed" object-context signal. No pretrained lying-down/sleep
+ *     classifier exists that beats hand-tuned pose geometry (confirmed via
+ *     research — every public fall/lying-down detector uses this same
+ *     keypoint-geometry approach), so this improves the heuristic directly.
+ * v6: FIX — sitting-vs-standing was using the hip→knee→ankle leg angle even
+ *     when the ankle keypoint was occluded (e.g. tucked under a blanket,
+ *     out of frame). MoveNet still emits a low-confidence position guess for
+ *     an occluded ankle, usually extrapolated in a near-straight line from
+ *     the knee, which falsely inflated the leg angle into the "straight leg"
+ *     / Standing range even while the person was clearly seated with bent
+ *     knees. Fix: require BOTH ankle keypoints to individually clear a
+ *     confidence threshold before trusting the leg-angle calculation. When
+ *     ankles are unreliable, fall back to the hip angle (torso→hip→knee,
+ *     already computed for Sleeping) — it only needs hips + knees, which
+ *     remain visible, and it directly captures "is the torso folded over
+ *     the legs" (sitting) vs "in line with the legs" (standing).
  */
 
 import * as tf from '@tensorflow/tfjs';
@@ -48,6 +65,7 @@ const actionMemory = {
   lastEmptyHandToMouth: 0,
   lastCupToMouth: 0,
   lastEatingGestureWithFood: 0,
+  lastBedSeen: 0, // v5 — bed is stable furniture, given a long memory window
   // Object Memory
   detectedFoodObjects: [],
   detectedCups: [],
@@ -58,6 +76,21 @@ const OBJECT_MEMORY_MAX = 10;
 const OBJECT_MEMORY_DURATION = 10000;
 
 let featureHistory = [];
+
+// ── Posture stability tracker (v4) ──────────────────────────────────────────────
+// Tracks sitting/standing streaks and remembers the last full-body-confirmed
+// posture so we have something sane to fall back to when legs leave the frame.
+const postureState = {
+  lastFullBodyPosture: null, // "Sitting / rest" | "Standing" | null
+  sittingStreak: 0,
+  standingStreak: 0,
+  requiredStreak: 5, // consecutive qualifying frames needed before flipping state
+};
+
+// v6: minimum per-keypoint confidence required before an ankle position is
+// trusted for leg-angle geometry. Below this, the ankle is treated as "not
+// visible" even though MoveNet still returns *some* coordinate for it.
+const ANKLE_CONFIDENCE_THRESHOLD = 0.35;
 
 // ── LSTM model state ───────────────────────────────────────────────────────────
 let lstmModel = null;
@@ -71,7 +104,7 @@ const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
 
 const LSTM_ACTIVITY_NAMES = [
   'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
-  'Walking', 'Sitting / rest', 'Movement'
+  'Walking', 'Sitting / rest', 'Standing', 'Movement'
 ];
 
 const CONFIDENCE_THRESHOLD = 0.50;
@@ -164,7 +197,7 @@ async function detectPoseLoop() {
     try {
       poses = await detector.estimatePoses(videoElement);
       faces = await faceDetector.estimateFaces(videoElement);
-      // Run object detection on 50% of frames (up from 20% to catch food more reliably)
+      // Run object detection on 50% of frames (catches food/bed reliably)
       if (Math.random() < 0.5 || lastDetectedObjects.length === 0) {
         objects = await objectDetector.detect(videoElement);
         lastDetectedObjects = objects;
@@ -376,8 +409,7 @@ function extractPoseFeatures(keypoints) {
   const shoulderWidth = Math.abs(kp.leftShoulder.x - kp.rightShoulder.x);
   features.push(shoulderWidth);
 
-  // 6. HAND-TO-MOUTH DISTANCE — Simple Euclidean (vertical line geometry REMOVED)
-  //    Just measure straight-line distance from wrist to nose
+  // 6. HAND-TO-MOUTH DISTANCE — simple Euclidean
   const noseX = kp.nose.x;
   const leftWristDist = euclideanDistance(kp.leftWrist, { x: noseX, y: noseY });
   const rightWristDist = euclideanDistance(kp.rightWrist, { x: noseX, y: noseY });
@@ -396,11 +428,10 @@ function extractPoseFeatures(keypoints) {
   const hipHeight = (kp.leftHip.y + kp.rightHip.y) / 2;
   features.push(hipHeight);
 
-  // 10. WRIST HEIGHT — KEY for elevation check
-  //     Lower y = higher in frame. We store the MINIMUM y (highest wrist).
+  // 10. WRIST HEIGHT
   const leftWristY = (kp.leftWrist && kp.leftWrist.score > 0.3) ? kp.leftWrist.y : 1.0;
   const rightWristY = (kp.rightWrist && kp.rightWrist.score > 0.3) ? kp.rightWrist.y : 1.0;
-  const maxWristHeight = Math.min(leftWristY, rightWristY); // min y = highest position
+  const maxWristHeight = Math.min(leftWristY, rightWristY);
   features.push(maxWristHeight);
 
   // 11. ELBOW ABOVE SHOULDER
@@ -508,6 +539,9 @@ function updateObjectMemory(detectedObjects, currentTime) {
         .filter(o => currentTime - o.timestamp < OBJECT_MEMORY_DURATION)
         .slice(-OBJECT_MEMORY_MAX);
     }
+    // NOTE: "bed" is intentionally NOT stored in the short-lived object memory
+    // arrays above — it's handled separately via actionMemory.lastBedSeen with
+    // a much longer window, since a bed doesn't appear/disappear like food does.
   }
 }
 
@@ -562,14 +596,7 @@ function classifyWithLSTM(history) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// THRESHOLD CLASSIFIER — FIXED v3
-// 
-// KEY CHANGES:
-//   1. Hand-to-mouth: back to simple Euclidean distance (no vertical line)
-//   2. wristIsElevated: wrist must be in UPPER half of frame (y < 0.50)
-//      → eliminates bowl-on-table false positives
-//   3. Sitting guard: won't fire if wrist is elevated near mouth
-//   4. Object detection runs 50% of frames (was 20%)
+// THRESHOLD CLASSIFIER — v6
 // ══════════════════════════════════════════════════════════════════════════════
 function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [], isChewing = false, isSwallowing = false, headTiltRatio = 1.0, chewingCycles = 0) {
   if (!features || features.length < 12) return null;
@@ -581,7 +608,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     torsoAlignment
   ] = features;
 
-  // Lower body visibility check
   const latestPose = poseSequence && poseSequence[poseSequence.length - 1];
   const lowerBodyVisible = latestPose && (() => {
     const lowerIndices = [11, 12, 13, 14, 15, 16];
@@ -589,16 +615,18 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     return visible.length >= 4;
   })();
 
-  // ── CRITICAL FIX: Wrist elevation check ─────────────────────────────────
-  // wristHeight stores the minimum y value of the two wrists (min y = highest position)
-  // y < 0.50 means the wrist is in the upper half of the frame
-  // When a bowl is on a table, the person's wrists stay LOW (y > 0.50)
-  // When actually eating, the wrist is RAISED toward the mouth (y < 0.50)
+  // v6: ankles must be individually confident before the hip-knee-ankle leg
+  // angle is trusted. A hidden/occluded ankle (blanket, out of frame, tucked
+  // under the body) still gets a coordinate from MoveNet — usually a guess
+  // extrapolated near-straight from the knee — which otherwise falsely
+  // reads as a straight, standing leg.
+  const leftAnkleConfident = latestPose && latestPose[15] && latestPose[15].score > ANKLE_CONFIDENCE_THRESHOLD;
+  const rightAnkleConfident = latestPose && latestPose[16] && latestPose[16].score > ANKLE_CONFIDENCE_THRESHOLD;
+  const anklesConfident = leftAnkleConfident && rightAnkleConfident;
+
   const wristIsElevated = wristHeight < 0.50;
 
-  let activity = null;
-  let confidence = 0;
-  let signals = { source: 'threshold' };
+  const now = Date.now();
 
   const hasCup = objects && objects.some(obj => ['cup', 'bottle', 'wine glass'].includes(obj.class));
   const hasFoodOrBowl = objects && objects.some(obj => [
@@ -606,7 +634,28 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     'apple', 'banana', 'orange', 'plate', 'dining table', 'food'
   ].includes(obj.class));
 
-  const now = Date.now();
+  // v5: bed context for Sleeping
+  const hasBed = objects && objects.some(obj => obj.class === 'bed');
+  if (hasBed) actionMemory.lastBedSeen = now;
+  const sawBedRecently = (now - actionMemory.lastBedSeen) < 20000; // beds are stationary — long memory
+
+  // hip angle — "does the torso form a straight ~180° line with the thigh?"
+  // (angle between torso and thigh at the hip: ~180° extended/straight,
+  //  much less than that when folded, as in sitting)
+  // v6: this is now ALSO used as the primary sitting/standing signal
+  // whenever the ankle keypoints are unreliable, since it only depends on
+  // shoulders/hips/knees — all of which stay visible even when the lower
+  // legs are hidden under a blanket or out of frame.
+  const shoulderMidPt = latestPose && latestPose[5] && latestPose[6]
+    ? { x: (latestPose[5].x + latestPose[6].x) / 2, y: (latestPose[5].y + latestPose[6].y) / 2 } : null;
+  const hipMidPt = latestPose && latestPose[11] && latestPose[12]
+    ? { x: (latestPose[11].x + latestPose[12].x) / 2, y: (latestPose[11].y + latestPose[12].y) / 2 } : null;
+  const kneeMidPt = latestPose && latestPose[13] && latestPose[14]
+    ? { x: (latestPose[13].x + latestPose[14].x) / 2, y: (latestPose[13].y + latestPose[14].y) / 2 } : null;
+  const hipAngle = (shoulderMidPt && hipMidPt && kneeMidPt)
+    ? calculateAngle(shoulderMidPt, hipMidPt, kneeMidPt) : null;
+  const bodyIsStraight = hipAngle !== null && hipAngle >= 160;
+
   if (hasCup) actionMemory.lastCupSeen = now;
   if (hasFoodOrBowl) actionMemory.lastFoodSeen = now;
 
@@ -620,17 +669,25 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
 
   const objectMemory = getObjectMemoryStatus();
 
-  // ── SLEEPING ───────────────────────────────────────────────────────────────
+  let activity = null;
+  let confidence = 0;
+  let signals = { source: 'threshold' };
+
+  // ── SLEEPING (v5) ────────────────────────────────────────────────────────
   if (
-    (torsoAlignment > 1.1 && velocity < 0.04) ||
-    (lowerBodyVisible && hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02)
+    (torsoAlignment > 1.1 && velocity < 0.04) ||                                     // torso horizontal
+    (lowerBodyVisible && hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02) || // low-movement fallback
+    (torsoAlignment > 0.9 && bodyIsStraight && sawBedRecently && velocity < 0.05)     // straight body + bed in scene
   ) {
     activity = "Sleeping";
-    confidence = torsoAlignment > 1.3 ? 0.90 : 0.82;
+    confidence = (sawBedRecently && bodyIsStraight) ? 0.94 : (torsoAlignment > 1.3 ? 0.90 : 0.82);
     signals = {
       posture: "lying",
       movement: "minimal",
       torsoAlignment: torsoAlignment.toFixed(2),
+      hipAngle: hipAngle !== null ? hipAngle.toFixed(1) : null,
+      bodyIsStraight,
+      bedInScene: sawBedRecently,
     };
   }
 
@@ -650,7 +707,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   }
 
   // ── DRINKING ───────────────────────────────────────────────────────────────
-  // Requires: hand near mouth + cup visible + wrist ELEVATED
   else if (
     handToMouth < 0.30 &&
     hasCup &&
@@ -669,15 +725,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   }
 
   // ── EATING ─────────────────────────────────────────────────────────────────
-  //
-  // THE KEY FIX:
-  //   All eating tiers now require wristIsElevated = true
-  //   This means the wrist MUST be in the upper half of the frame (y < 0.50)
-  //   A bowl sitting on a table will NOT trigger eating because the
-  //   person's wrist stays low (y > 0.50) even if they're near the bowl.
-  //   Only when the person lifts food to their mouth does wrist go above 0.50.
-  //
-  // TIER 1: Hand near mouth + food visible + wrist elevated (highest confidence)
   else if (
     handToMouth < 0.35 &&
     (hasFoodOrBowl || objectMemory.hasFood) &&
@@ -696,7 +743,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     actionMemory.lastEatingGestureWithFood = now;
   }
 
-  // TIER 2: Hand near mouth + wrist elevated + chewing detected + food seen recently
   else if (
     handToMouth < 0.40 &&
     wristIsElevated &&
@@ -717,7 +763,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     actionMemory.lastEatingGestureWithFood = now;
   }
 
-  // TIER 3: Ongoing eating context — food was detected + wrist elevated + recent eating gesture
   else if (
     handToMouth < 0.45 &&
     wristIsElevated &&
@@ -737,6 +782,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   // ── WALKING ────────────────────────────────────────────────────────────────
   else if (
     lowerBodyVisible &&
+    anklesConfident &&           // v6: gait detection also depends on real ankle motion — don't let a guessed ankle fake it
     velocity > 0.038 &&
     legAsymmetry > 18 &&
     bodyHeight > 0.49 &&
@@ -750,26 +796,79 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       velocity: velocity.toFixed(4),
       legAsymmetry: legAsymmetry.toFixed(1),
     };
+    postureState.lastFullBodyPosture = "Standing";
   }
 
-  // ── SITTING / REST ─────────────────────────────────────────────────────────
-  // GUARD ADDED: Don't classify as sitting if wrist is elevated near mouth
-  // This prevents the fallback from overriding a valid eating detection
+  // ── SITTING / REST / STANDING (v6 fix) ──────────────────────────────────────
   else if (
     velocity < 0.034 &&
-    handToMouth > 0.40 &&       // GUARD: wrist is NOT near mouth
-    (
-      (lowerBodyVisible && leftLegAngle > 63 && rightLegAngle > 63 && bodyHeight > 0.32 && bodyHeight < 0.62) ||
-      (!lowerBodyVisible && velocity < 0.04)
-    )
+    handToMouth > 0.40
   ) {
-    activity = "Sitting / rest";
-    confidence = lowerBodyVisible ? 0.88 : 0.72;
-    signals = {
-      posture: "sitting",
-      movement: "low",
-      upperBodyOnly: !lowerBodyVisible,
-    };
+    // v6: only trust the ankle-based leg angle when both ankles are
+    // confidently visible. Otherwise, derive posture from the hip angle
+    // (torso→hip→knee), which stays reliable when legs/feet are occluded.
+    const kneesBent = anklesConfident
+      ? (
+        lowerBodyVisible &&
+        leftLegAngle >= 60 && leftLegAngle <= 150 &&
+        rightLegAngle >= 60 && rightLegAngle <= 150 &&
+        legAsymmetry < 35
+      )
+      : (hipAngle !== null && hipAngle < 150);
+
+    const legsStraight = anklesConfident
+      ? (
+        lowerBodyVisible &&
+        leftLegAngle > 150 &&
+        rightLegAngle > 150
+      )
+      : (hipAngle !== null && hipAngle >= 160);
+
+    if (kneesBent) {
+      postureState.sittingStreak++;
+      postureState.standingStreak = 0;
+    } else if (legsStraight) {
+      postureState.standingStreak++;
+      postureState.sittingStreak = 0;
+    }
+
+    if (postureState.sittingStreak >= postureState.requiredStreak) {
+      postureState.lastFullBodyPosture = "Sitting / rest";
+    } else if (postureState.standingStreak >= postureState.requiredStreak) {
+      postureState.lastFullBodyPosture = "Standing";
+    }
+
+    if (kneesBent) {
+      activity = "Sitting / rest";
+      confidence = postureState.lastFullBodyPosture === "Sitting / rest" ? 0.90 : 0.80;
+      signals = {
+        posture: "sitting",
+        legAngleAvg: ((leftLegAngle + rightLegAngle) / 2).toFixed(1),
+        hipAngle: hipAngle !== null ? hipAngle.toFixed(1) : null,
+        kneesBent: true,
+        method: anklesConfident ? "leg_angle" : "hip_angle_fallback_ankle_occluded",
+      };
+    } else if (legsStraight) {
+      activity = "Standing";
+      confidence = postureState.lastFullBodyPosture === "Standing" ? 0.85 : 0.75;
+      signals = {
+        posture: "standing",
+        legAngleAvg: ((leftLegAngle + rightLegAngle) / 2).toFixed(1),
+        hipAngle: hipAngle !== null ? hipAngle.toFixed(1) : null,
+        method: anklesConfident ? "leg_angle" : "hip_angle_fallback_ankle_occluded",
+      };
+    } else if (!lowerBodyVisible && hipAngle === null) {
+      activity = postureState.lastFullBodyPosture || "Sitting / rest";
+      confidence = 0.60;
+      signals = {
+        posture: "unclear_legs_hidden",
+        inferredFrom: postureState.lastFullBodyPosture || "default_assumption",
+      };
+    } else {
+      activity = "Movement";
+      confidence = 0.40;
+      signals = { state: "posture_transition" };
+    }
   }
 
   // ── MOVEMENT / UNKNOWN ─────────────────────────────────────────────────────
@@ -822,6 +921,11 @@ export async function stopPoseDetection() {
   actionMemory.detectedFoodObjects = [];
   actionMemory.detectedCups = [];
   actionMemory.detectedUtensils = [];
+  actionMemory.lastBedSeen = 0;
+
+  postureState.lastFullBodyPosture = null;
+  postureState.sittingStreak = 0;
+  postureState.standingStreak = 0;
 
   if (lstmModel) {
     lstmModel.dispose();

@@ -1,11 +1,12 @@
 // schedule-monitoring/frontend/src/components/ActivityDetectorMonitor.jsx
 /**
  * Activity Detector Monitor Component
- * Fixed v3:
- *  - wristIsElevated guard eliminates bowl-on-table false positives
- *  - Simplified eating detection (no vertical line geometry)
- *  - 3-second confirmation before logging
- *  - Object detection runs 50% of frames
+ * v3: wristIsElevated guard, simplified eating detection, 3s confirmation
+ * v4: 1-SECOND confirmation (was 3s) — applies to ALL activities
+ * v4: added green "confirmed" indicators for Sitting/Resting, Standing,
+ *     Sleeping, Walking, Drinking, and Taking Medications, plus fixed
+ *     inactive-badge tint (solid gray instead of translucent black, which
+ *     picked up color from the video behind it)
  */
 import { useEffect, useRef, useState } from "react";
 import { initializePoseDetection, stopPoseDetection } from "../services/activityDetection";
@@ -41,7 +42,7 @@ export default function ActivityDetectorMonitor() {
 
   const lastLogTimeRef = useRef({});
 
-  // ── 3-second activity confirmation ────────────────────────────────────────
+  // ── 1-second activity confirmation (was 3s) — applies to ALL activities ────
   const activityConfirmationRef = useRef({
     activityName:        null,
     startTime:           null,
@@ -117,11 +118,11 @@ export default function ActivityDetectorMonitor() {
     );
   };
 
-  // ── 3-second confirmation logic ────────────────────────────────────────────
+  // ── 1-second confirmation logic (was 3000ms) ───────────────────────────────
   const confirmActivityForLogging = (detectionData) => {
     const confirmation     = activityConfirmationRef.current;
     const now              = Date.now();
-    const CONFIRMATION_TIME = 3000;
+    const CONFIRMATION_TIME = 1000; // was 3000 — every activity confirms after ~1s of stability
 
     if (confirmation.activityName !== detectionData.activity_name) {
       if (confirmation.timeoutId) clearTimeout(confirmation.timeoutId);
@@ -146,7 +147,6 @@ export default function ActivityDetectorMonitor() {
 
   // ── Handle detection callback ──────────────────────────────────────────────
   const handleActivityDetected = async (detectionData) => {
-    // Always show in UI
     if (detectionData.activity_name === "Movement") {
       setCurrentActivity(null);
     } else {
@@ -154,7 +154,6 @@ export default function ActivityDetectorMonitor() {
     }
     setStats((prev) => ({ ...prev, detected: prev.detected + 1 }));
 
-    // Update live feature display
     if (detectionData.features) {
       setLiveFeatures({
         handToMouth:  detectionData.features[7]?.toFixed(3),
@@ -168,23 +167,18 @@ export default function ActivityDetectorMonitor() {
       });
     }
 
-    // ── 3-second confirmation check ──────────────────────────────────────────
     const isActivityConfirmed = confirmActivityForLogging(detectionData);
     if (!isActivityConfirmed) return;
 
-    // ── Debounce ─────────────────────────────────────────────────────────────
     const key      = detectionData.activity_name;
     const now      = Date.now();
     const lastTime = lastLogTimeRef.current[key] || 0;
     if (now - lastTime < DETECTION_DEBOUNCE) return;
 
-    // ── Confidence check ──────────────────────────────────────────────────────
     if (detectionData.confidence < CONFIDENCE_THRESHOLD) return;
 
-    // ── Skip generic movement ─────────────────────────────────────────────────
     if (detectionData.activity_name === "Movement") return;
 
-    // ── Build log entry ───────────────────────────────────────────────────────
     let activityStatus = "Unexpected";
     if (schedule) {
       const scheduledActivity = findScheduledActivity(detectionData.activity_name);
@@ -333,7 +327,7 @@ export default function ActivityDetectorMonitor() {
               <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
                 ${parseFloat(liveFeatures.handToMouth) < 0.35
                   ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-black/40 border-gray-700 text-gray-500"}`}>
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
                 <span className="text-xs">🍽️</span> HAND NEAR FACE
               </div>
 
@@ -341,15 +335,15 @@ export default function ActivityDetectorMonitor() {
               <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
                 ${parseFloat(liveFeatures.velocity) < 0.03
                   ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-black/40 border-gray-700 text-gray-500"}`}>
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
 
-              {/* WRIST ELEVATED — KEY new indicator */}
+              {/* WRIST ELEVATED */}
               <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
                 ${liveFeatures.wristElev === "YES"
                   ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-black/40 border-gray-700 text-gray-500"}`}>
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
                 <span className="text-xs">🖐️</span> WRIST ELEVATED
               </div>
 
@@ -357,8 +351,56 @@ export default function ActivityDetectorMonitor() {
               <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
                 ${parseFloat(liveFeatures.torsoAlign) > 1.1
                   ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-black/40 border-gray-700 text-gray-500"}`}>
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
                 <span className="text-xs">🛏️</span> LYING DOWN
+              </div>
+
+              {/* SITTING / RESTING — confirmed-activity indicator (green light) */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Sitting / rest"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">🪑</span> SITTING / RESTING
+              </div>
+
+              {/* STANDING — confirmed-activity indicator */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Standing"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">🧍</span> STANDING
+              </div>
+
+              {/* SLEEPING — confirmed-activity indicator */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Sleeping"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">😴</span> SLEEPING
+              </div>
+
+              {/* WALKING — confirmed-activity indicator */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Walking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">🚶</span> WALKING
+              </div>
+
+              {/* DRINKING — confirmed-activity indicator */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Drinking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">🥤</span> DRINKING
+              </div>
+
+              {/* TAKING MEDICATIONS — confirmed-activity indicator */}
+              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${currentActivity?.activity_name === "Taking Medications"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+                <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
             </div>
           )}
@@ -379,7 +421,6 @@ export default function ActivityDetectorMonitor() {
               <p className="text-[10px] text-gray-500 mt-1 text-right font-mono">
                 {(currentActivity.confidence * 100).toFixed(0)}% CONFIDENCE
               </p>
-              {/* Wrist elevation status shown in card */}
               {liveFeatures && (
                 <p className={`text-[9px] mt-1 font-bold ${liveFeatures.wristElev === "YES" ? "text-green-400" : "text-red-400"}`}>
                   WRIST {liveFeatures.wristElev === "YES" ? "✓ ELEVATED" : "✗ LOW"}
@@ -482,8 +523,10 @@ export default function ActivityDetectorMonitor() {
       {/* ── Info box ── */}
       <div className="bg-blue-900/20 border border-blue-700/50 rounded-xl p-4 text-sm">
         <p className="text-blue-200">
-          💡 <strong>v3 Fix:</strong> Eating detection now requires the wrist to be <strong>elevated</strong> (upper half of frame).
-          A bowl sitting on a table will no longer trigger eating — only when you actually raise food to your mouth will it detect eating.
+          💡 <strong>v4:</strong> Activities confirm after ~1 second of stable detection (was 3s),
+          feeding straight into schedule status marking (Completed / Early / Late / Missed).
+          Sitting/Resting, Standing, Sleeping, Walking, Drinking, and Taking Medications each
+          light up green the moment they're the confirmed activity.
         </p>
       </div>
 
