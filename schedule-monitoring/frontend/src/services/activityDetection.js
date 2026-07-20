@@ -623,9 +623,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   const leftAnkleConfident = latestPose && latestPose[15] && latestPose[15].score > ANKLE_CONFIDENCE_THRESHOLD;
   const rightAnkleConfident = latestPose && latestPose[16] && latestPose[16].score > ANKLE_CONFIDENCE_THRESHOLD;
   const anklesConfident = leftAnkleConfident && rightAnkleConfident;
-
-  const wristIsElevated = wristHeight < 0.50;
-
   const now = Date.now();
 
   const hasCup = objects && objects.some(obj => ['cup', 'bottle', 'wine glass'].includes(obj.class));
@@ -710,7 +707,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   else if (
     handToMouth < 0.30 &&
     hasCup &&
-    wristIsElevated &&
     velocity < 0.08
   ) {
     activity = "Drinking";
@@ -720,7 +716,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       interaction: "hand_to_mouth_with_cup",
       handToMouth: handToMouth.toFixed(3),
       objectDetected: "cup/bottle",
-      wristElevated: true,
     };
   }
 
@@ -728,7 +723,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   else if (
     handToMouth < 0.35 &&
     (hasFoodOrBowl || objectMemory.hasFood) &&
-    wristIsElevated &&
     velocity < 0.08
   ) {
     activity = "Eating";
@@ -738,14 +732,12 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       interaction: "hand_to_mouth_with_food",
       handToMouth: handToMouth.toFixed(3),
       objectDetected: hasFoodOrBowl ? "food/plate" : "food_from_memory",
-      wristElevated: true,
     };
     actionMemory.lastEatingGestureWithFood = now;
   }
 
   else if (
     handToMouth < 0.40 &&
-    wristIsElevated &&
     isChewing &&
     sawFoodRecently &&
     velocity < 0.08
@@ -758,14 +750,12 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       handToMouth: handToMouth.toFixed(3),
       objectDetected: "food_temporal_memory",
       chewCycles: chewingCycles,
-      wristElevated: true,
     };
     actionMemory.lastEatingGestureWithFood = now;
   }
 
   else if (
     handToMouth < 0.45 &&
-    wristIsElevated &&
     (now - actionMemory.lastEatingGestureWithFood) < 15000 &&
     velocity < 0.08
   ) {
@@ -775,7 +765,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       posture: "sitting",
       interaction: "eating_ongoing_context",
       handToMouth: handToMouth.toFixed(3),
-      wristElevated: true,
     };
   }
 

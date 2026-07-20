@@ -7,6 +7,7 @@ import Reports from "./pages/Reports";
 import Layout from "./components/Layout";
 import NotificationsPanel from "./pages/NotificationsPanel";
 import ActivityLog from "./pages/ActivityLog";
+import DataCollector from "./pages/DataCollector";
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<NotificationsPanel />} />
           <Route path="/activity-log" element={<ActivityLog />} />
+          <Route path="/data-collector" element={<DataCollector />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>

@@ -1,4 +1,3 @@
-
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule, createSchedule } from "../services/scheduleApi";
@@ -222,10 +221,10 @@ export default function ScheduleDashboard() {
             onClick={handleStartTracking}
             disabled={!selectedSchedule}
             className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
-                ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
-                : selectedSchedule
-                  ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
-                  : "bg-gray-700 text-gray-400 cursor-not-allowed"
+              ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
+              : selectedSchedule
+                ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
+                : "bg-gray-700 text-gray-400 cursor-not-allowed"
               }`}
           >
             {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
@@ -351,8 +350,18 @@ export default function ScheduleDashboard() {
                       let barColor = "bg-gray-800";
                       let glowClass = "hover:shadow-gray-900/10 border-gray-800";
 
+                      // FIX: this component previously checked for "Done" /
+                      // "On Time" / "Slightly Late" — a status vocabulary
+                      // that has never existed anywhere in the backend.
+                      // The backend's canonical statuses (via
+                      // schedule_controller.py's _shape_detection_response
+                      // translation) are: Completed / Early / Late / Missed.
+                      // Every activity was falling through to the default
+                      // "Planned" / 0% state below regardless of what was
+                      // actually detected, because none of the old checks
+                      // could ever match.
                       if (log) {
-                        if (log.status === "Done" || log.status === "On Time") {
+                        if (log.status === "Completed") {
                           statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900";
                           statusText = "Completed";
                           textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
@@ -368,7 +377,7 @@ export default function ScheduleDashboard() {
                           barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
                           glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
                         }
-                        else if (log.status === "Late" || log.status === "Slightly Late") {
+                        else if (log.status === "Late") {
                           statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900";
                           statusText = "Late";
                           textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
@@ -383,6 +392,14 @@ export default function ScheduleDashboard() {
                           progress = 0;
                           barColor = "bg-rose-500/20";
                           glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
+                        }
+                        else if (log.status === "Not Done") {
+                          statusDot = "bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.5)] border-orange-900";
+                          statusText = "Not Done";
+                          textClass = "text-orange-400 bg-orange-500/10 border-orange-500/20";
+                          progress = 0;
+                          barColor = "bg-orange-500/20";
+                          glowClass = "hover:shadow-orange-950/10 border-orange-950/40 hover:border-orange-500/30";
                         }
                       } else if (isCurrent) {
                         statusDot = "bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.5)] border-blue-900 animate-pulse";

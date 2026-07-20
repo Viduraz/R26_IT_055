@@ -1,21 +1,54 @@
 """
 schedule-monitoring/backend/app/services/schedule_service.py
-Full CRUD for patient schedule items.
+CRUD for patient schedule items, notifications, and reporting.
+
+CHANGED (vocabulary consolidation):
+This file used to run its OWN parallel activity-detection status logic
+(check_activity_status / log_activity_detection / check_missed_activities)
+using a different status vocabulary ("Early"/"Completed"/"Late"/"Missed"/
+"Not Done") than monitoring_service.py ("done"/"late"/"missed"/
+"caregiver_missing"). Both wrote into the same `activity_logs` collection,
+which meant any code reading logs by status only ever saw whichever half of
+the vocabulary it was written to filter for — e.g. get_reports() here would
+always show 0 for anything monitoring_service.py had logged, even though
+those log entries existed.
+
+monitoring_service.py is now the single canonical engine for detection
+status and the 20-minute rule (matches the original spec: Done/Late/Missed
+based on a fixed 20-minute grace period). This file is CRUD-only:
+schedule create/delete/get, notifications, reports, deviations — all
+reading/writing the same lowercase vocabulary monitoring_service.py uses.
+
+REMOVED from this file (now dead, superseded by monitoring_service.py):
+  - get_adaptive_grace_period() / check_activity_status() — the ML-lite
+    adaptive-grace-period idea is genuinely nice; if you want it later,
+    port it INTO monitoring_service.py's 20-minute rule as an optional
+    per-user override, rather than running it as a second parallel engine.
+  - log_activity_detection() — detection events should call
+    MonitoringService.process_detection_event() instead (see
+    schedule_routes.py / your controller — needs updating to point there).
+  - check_missed_activities() — superseded by
+    MonitoringService.evaluate_missed_tasks(), which is now the ONLY missed-
+    task sweep. Make sure your background scheduler only starts ONE of
+    these two, not both.
 """
 from datetime import datetime, timedelta
-from statistics import mean, pstdev
 import uuid
-
 from shared.backend.config.database import get_db
+from app.services.monitoring_service import STATUS_TO_DISPLAY
+
 
 def _schedules():
     return get_db()["schedules"]
 
+
 def _activity_logs():
     return get_db()["activity_logs"]
 
+
 def _notifications():
     return get_db()["notifications"]
+
 
 def _deviations():
     return get_db()["deviations"]
@@ -25,21 +58,31 @@ def _delete_many(collection, query: dict):
     delete_many = getattr(collection, "delete_many", None)
     if callable(delete_many):
         return delete_many(query)
-
     data = getattr(collection, "data", None)
     if isinstance(data, list):
         original_len = len(data)
         collection.data = [doc for doc in data if not all(doc.get(key) == value for key, value in query.items())]
         return type("DeleteResult", (), {"deleted_count": original_len - len(collection.data)})()
-
     return type("DeleteResult", (), {"deleted_count": 0})()
 
 
-# Timing Configuration for Presentation & Testing (Easily adjustable)
+# ── Timing config ────────────────────────────────────────────────────────
+# FIX: previously _normalize_schedule_activities() ALWAYS overwrote every
+# activity's start_time/end_time with these fast test values, regardless of
+# what the owner actually entered in the frontend — so a real schedule like
+# "Eating: 7:50-8:20" silently became "starts 2 min from now, lasts 3 min"
+# every time. That means the finished product could never honor an owner's
+# real schedule.
+#
+# Set TESTING_MODE = True only while you want fast demo timing (e.g. showing
+# your leader a Late/Missed notification within minutes instead of waiting
+# for a real 8am slot). Set it to False for real usage — real start_time/
+# end_time from the owner's input will then be preserved untouched.
+TESTING_MODE = True
+
 TIMING_CONFIG = {
     "DURATION_MINUTES": 3.0,
-    "LATE_THRESHOLD_MINUTES": 1.5,
-    "START_OFFSET_MINUTES": 2.0
+    "START_OFFSET_MINUTES": 2.0,
 }
 
 
@@ -47,303 +90,56 @@ def _local_now() -> datetime:
     return datetime.now()
 
 
-def _parse_time_value(time_value):
-    if isinstance(time_value, datetime):
-        return time_value.time()
-    if hasattr(time_value, "hour") and hasattr(time_value, "minute") and not isinstance(time_value, str):
-        return time_value
-    if isinstance(time_value, str):
-        return datetime.strptime(time_value, "%H:%M").time()
-    raise ValueError(f"Unsupported time value: {time_value!r}")
-
-
 def _normalize_schedule_activities(activities: list, anchor: datetime | None = None) -> list:
+    """
+    In TESTING_MODE, auto-generates fast sequential start/end times so you can
+    demo Done/Late/Missed within minutes.
+
+    Otherwise (real usage), preserves whatever start_time/end_time the owner
+    actually entered — only auto-filling if an activity is genuinely missing
+    a time (defensive fallback, not the normal path).
+    """
     normalized = []
-    base_start = (anchor or _local_now()).replace(second=0, microsecond=0)
-    base_start += timedelta(minutes=TIMING_CONFIG["START_OFFSET_MINUTES"])
 
-    duration = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
-    spacing = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
+    if TESTING_MODE:
+        base_start = (anchor or _local_now()).replace(second=0, microsecond=0)
+        base_start += timedelta(minutes=TIMING_CONFIG["START_OFFSET_MINUTES"])
+        duration = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
+        spacing = timedelta(minutes=TIMING_CONFIG["DURATION_MINUTES"])
 
-    for index, activity in enumerate(activities or []):
-        if hasattr(activity, "model_dump"):
-            activity = activity.model_dump()
-        elif not isinstance(activity, dict):
-            activity = dict(activity)
+        for index, activity in enumerate(activities or []):
+            activity = activity.model_dump() if hasattr(activity, "model_dump") else dict(activity)
+            start_dt = base_start + (spacing * index)
+            end_dt = start_dt + duration
+            activity["start_time"] = start_dt.strftime("%H:%M")
+            activity["end_time"] = end_dt.strftime("%H:%M")
+            normalized.append(activity)
+        return normalized
 
-        start_dt = base_start + (spacing * index)
-        end_dt = start_dt + duration
-
-        normalized_activity = dict(activity)
-        normalized_activity["start_time"] = start_dt.strftime("%H:%M")
-        normalized_activity["end_time"] = end_dt.strftime("%H:%M")
-        normalized.append(normalized_activity)
-
+    # Real usage: keep the owner's actual times.
+    for activity in activities or []:
+        activity = activity.model_dump() if hasattr(activity, "model_dump") else dict(activity)
+        if not activity.get("start_time") or not activity.get("end_time"):
+            # Defensive fallback only — should rarely trigger if the frontend
+            # form requires both fields.
+            fallback_start = (anchor or _local_now()).replace(second=0, microsecond=0)
+            activity["start_time"] = activity.get("start_time") or fallback_start.strftime("%H:%M")
+            activity["end_time"] = activity.get("end_time") or (fallback_start + timedelta(minutes=30)).strftime("%H:%M")
+        normalized.append(activity)
     return normalized
 
 
 class ScheduleService:
+    """Schedule CRUD, notifications, and reporting — no detection/status logic."""
 
-    """
-    Schedule Service with Adaptive Thresholds (Phase 1 ML)
-    """
-
-    # ====================== ML-BASED ADAPTIVE MONITORING ======================
-
-    def get_adaptive_grace_period(self, user_id: str, activity_name: str) -> float:
-        """Learns personalized grace period from past behavior using ML/statistics"""
-        logs = list(_activity_logs().find({
-            "user_id": user_id,
-            "activity_name": {"$regex": f"^{activity_name}$", "$options": "i"}
-        }).sort("detected_at", -1).limit(50))
-
-        fallback_threshold = TIMING_CONFIG["LATE_THRESHOLD_MINUTES"]
-        if len(logs) < 8:
-            return fallback_threshold
-
-        delays = []
-        for log in logs:
-            expected_start_str = log.get("expected_start")
-            detected_at_dt = log.get("detected_at")
-            if not expected_start_str or not detected_at_dt:
-                continue
-
-            if isinstance(detected_at_dt, str):
-                try:
-                    detected_at_dt = datetime.fromisoformat(detected_at_dt)
-                except ValueError:
-                    continue
-
-            try:
-                expected_time_obj = datetime.strptime(expected_start_str, "%H:%M").time()
-                expected_dt = datetime.combine(detected_at_dt.date(), expected_time_obj)
-
-                delay_min = (detected_at_dt.replace(tzinfo=None) - expected_dt.replace(tzinfo=None)).total_seconds() / 60.0
-
-                duration = TIMING_CONFIG["DURATION_MINUTES"]
-                if -2.0 * duration < delay_min < 5.0 * duration:
-                    delays.append(delay_min)
-            except Exception:
-                continue
-
-        if len(delays) < 6:
-            return fallback_threshold
-
-        mean_delay = float(mean(delays))
-        std_delay = float(pstdev(delays)) if len(delays) > 1 else 0.0
-
-        grace = mean_delay + (1.8 * std_delay)
-
-        min_grace = 0.6 * TIMING_CONFIG["DURATION_MINUTES"]
-        max_grace = 1.5 * TIMING_CONFIG["DURATION_MINUTES"]
-        grace = max(min_grace, min(max_grace, grace))
-        return round(grace, 1)
-
-    def check_activity_status(self, user_id: str, activity_name: str, expected_start: datetime, detected_at: datetime) -> dict:
-        """Determines activity status using statistical adaptive thresholds"""
-        grace_minutes = self.get_adaptive_grace_period(user_id, activity_name)
-        duration_minutes = TIMING_CONFIG["DURATION_MINUTES"]
-
-        detected_naive = detected_at.replace(tzinfo=None)
-        expected_naive = expected_start.replace(tzinfo=None)
-
-        deadline = expected_naive + timedelta(minutes=grace_minutes)
-        missed_boundary = expected_naive + timedelta(minutes=duration_minutes)
-
-        diff_seconds = (detected_naive - expected_naive).total_seconds()
-        delay_minutes = round(diff_seconds / 60, 1)
-
-        if detected_naive < expected_naive:
-            status = "Early"
-            confidence = 0.90
-        elif detected_naive <= deadline:
-            status = "Completed"
-            confidence = 0.92
-        elif detected_naive <= missed_boundary:
-            status = "Late"
-            confidence = 0.65
-        else:
-            status = "Missed"
-            confidence = 0.52
-
-        return {
-            "status": status,
-            "completion_state": "completed" if status in {"Early", "Completed", "Late"} else "not_completed",
-            "grace_minutes": grace_minutes,
-            "delay_minutes": delay_minutes,
-            "confidence": confidence,
-            "deadline": deadline.isoformat(),
-            "missed_boundary": missed_boundary.isoformat()
-        }
-
-    # ====================== MAIN LOGGING FUNCTION ======================
-
-    def log_activity_detection(self, schedule_id: str, activity_name: str,
-                               detected_at: datetime, confidence: float, signals: dict):
-        """Main function called from frontend"""
-        schedule = _schedules().find_one({"schedule_id": schedule_id})
-        if not schedule:
-            return {"error": "Schedule not found"}
-
-        target_activity = None
-        activities = schedule.get("activities", []) if isinstance(schedule, dict) else getattr(schedule, "activities", [])
-
-        for act in activities:
-            act_name = act.get("activity_name", "") if isinstance(act, dict) else getattr(act, "activity_name", "")
-            if act_name.lower() == activity_name.lower():
-                target_activity = act
-                break
-
-        if not target_activity:
-            return {"error": f"Activity '{activity_name}' not found in schedule"}
-
-        target_start = target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time
-        start_time = _parse_time_value(target_start)
-        expected_start = datetime.combine(_local_now().date(), start_time)
-
-        status_info = self.check_activity_status(
-            user_id=schedule["user_id"],
-            activity_name=activity_name,
-            expected_start=expected_start,
-            detected_at=detected_at
-        )
-
-        log_entry = {
-            "schedule_id": schedule_id,
-            "user_id": schedule["user_id"],
-            "activity_name": activity_name,
-            "expected_start": target_activity.get("start_time") if isinstance(target_activity, dict) else target_activity.start_time,
-            "expected_end": target_activity.get("end_time") if isinstance(target_activity, dict) else target_activity.end_time,
-            "detected_at": detected_at,
-            "status": status_info["status"],
-            "completion_state": status_info["completion_state"],
-            "adaptive_grace_minutes": status_info["grace_minutes"],
-            "delay_minutes": status_info["delay_minutes"],
-            "detection_confidence": confidence,
-            "signals": signals,
-            "created_at": datetime.utcnow()
-        }
-
-        result = _activity_logs().insert_one(log_entry)
-
-        if status_info["status"] in ["Late", "Missed"]:
-            self.create_notification(
-                schedule["user_id"],
-                activity_name,
-                status_info["status"],
-                f"{activity_name} was detected {status_info['status'].lower()} "
-                f"(Delay: {status_info['delay_minutes']} min. Completion limit: {status_info['grace_minutes']} min)."
-            )
-
-        log_entry["_id"] = str(result.inserted_id)
-        return log_entry
-
-    # ── CRUD (legacy async versions — DEAD CODE, see note below) ──────
-
-    async def get_all_schedules(self) -> list:
-        docs = list(_schedules().find({}, {"_id": 0}))
-        return docs
-
-    async def get_schedules_by_patient(self, patient_id: str) -> list:
-        docs = list(_schedules().find({"patient_id": patient_id}, {"_id": 0}))
-        return docs
-
-    # NOTE: Python only keeps the LAST method with a given name in a class
-    # body. The sync create_schedule/delete_schedule/get_schedule/get_reports/
-    # get_deviations defined further down in this file override the ones
-    # that used to live here. This comment marks where that dead code was
-    # removed to avoid confusion; the real, active implementations are in
-    # the "ACTIVE METHODS" section below.
-
-    async def update_schedule(self, schedule_id: str, data: dict) -> dict:
-        update_data = {k: v for k, v in data.items() if v is not None}
-        update_data["updated_at"] = datetime.utcnow()
-        res = _schedules().update_one(
-            {"schedule_id": schedule_id},
-            {"$set": update_data},
-        )
-        return {"success": res.matched_count > 0}
-
-    async def log_deviation(self, schedule_id: str, observed: str, expected: str):
-        _deviations().insert_one({
-            "schedule_id": schedule_id,
-            "observed": observed,
-            "expected": expected,
-            "created_at": datetime.utcnow(),
-        })
-
-    # ====================== BACKGROUND TASKS ======================
-
-    def check_missed_activities(self):
-        """Background task to check for missed/not done activities."""
-        schedules = list(_schedules().find({}))
-        local_now = _local_now()
-
-        for schedule in schedules:
-            user_id = schedule.get("user_id")
-            schedule_id = schedule.get("schedule_id")
-            activities = schedule.get("activities", []) if isinstance(schedule, dict) else getattr(schedule, "activities", [])
-            for activity in activities:
-                activity_name = activity.get("activity_name") if isinstance(activity, dict) else getattr(activity, "activity_name", None)
-                end_time_str = activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None)
-                if not end_time_str:
-                    continue
-
-                try:
-                    end_time_obj = datetime.strptime(end_time_str, "%H:%M").time()
-                    expected_end = datetime.combine(local_now.date(), end_time_obj)
-                except ValueError:
-                    continue
-
-                if local_now > expected_end:
-                    start_of_day = datetime.combine(local_now.date(), datetime.min.time())
-                    end_of_day = datetime.combine(local_now.date(), datetime.max.time())
-
-                    log = _activity_logs().find_one({
-                        "schedule_id": schedule_id,
-                        "activity_name": activity_name,
-                        "created_at": {"$gte": start_of_day, "$lte": end_of_day}
-                    })
-
-                    if not log:
-                        log_entry = {
-                            "schedule_id": schedule_id,
-                            "user_id": user_id,
-                            "activity_name": activity_name,
-                            "expected_start": activity.get("start_time") if isinstance(activity, dict) else getattr(activity, "start_time", None),
-                            "expected_end": activity.get("end_time") if isinstance(activity, dict) else getattr(activity, "end_time", None),
-                            "detected_at": None,
-                            "status": "Not Done",
-                            "adaptive_grace_minutes": TIMING_CONFIG["LATE_THRESHOLD_MINUTES"],
-                            "delay_minutes": None,
-                            "detection_confidence": 1.0,
-                            "signals": {},
-                            "created_at": datetime.utcnow()
-                        }
-                        _activity_logs().insert_one(log_entry)
-
-                        self.create_notification(
-                            user_id,
-                            activity_name,
-                            "Not Done",
-                            f"{activity_name} was not done throughout the scheduled time."
-                        )
-
-    # ====================== ACTIVE METHODS ======================
-
+    # ====================== SCHEDULE CRUD ======================
     def create_schedule(self, user_id: str, activities: list, description: str = None):
         """Create a new schedule for a user.
 
-        FIX: previously this always did a plain insert_one(), so every
-        "Save Routine" click left the OLD schedule(s) sitting in Mongo
-        alongside the new one. The dashboard only ever displays schedule[0]
-        from the returned list, so old routines could silently reappear
-        later — including making "Delete Routine" look broken, when really
-        it deleted one document while a stale duplicate remained.
-
-        Now we delete any existing schedule(s) + their logs/notifications
-        for this user BEFORE inserting the new one, enforcing "one active
-        routine per user" to match what the UI already assumes.
+        Deletes any existing schedule(s) + their logs/notifications for this
+        user BEFORE inserting the new one, enforcing "one active routine per
+        user" to match what the UI already assumes (dashboard only ever
+        displays schedule[0]).
         """
         existing = list(_schedules().find({"user_id": user_id}))
         for old in existing:
@@ -356,6 +152,7 @@ class ScheduleService:
         schedule = {
             "schedule_id": schedule_id,
             "user_id": user_id,
+            "patient_id": user_id,   # monitoring_service._active_schedules() checks both keys
             "activities": normalized_activities,
             "description": description or "",
             "created_at": _local_now(),
@@ -368,10 +165,9 @@ class ScheduleService:
     def delete_schedule(self, user_id: str, schedule_id: str):
         """Delete a schedule and all associated logs/notifications.
 
-        FIX: now deletes ALL schedules for this user_id (not just the one
-        matching schedule_id) as a safety net against any duplicate/stale
-        documents left over from before the create_schedule fix above.
-        Also clears notifications, which the old version never touched.
+        Deletes ALL schedules for this user_id (not just the one matching
+        schedule_id) as a safety net against any duplicate/stale documents.
+        Also clears notifications.
         """
         matching = list(_schedules().find({"user_id": user_id}))
         if not matching:
@@ -381,16 +177,14 @@ class ScheduleService:
         for sched in matching:
             _delete_many(_activity_logs(), {"schedule_id": sched["schedule_id"]})
         _delete_many(_notifications(), {"user_id": user_id})
-
         return {"message": "Schedule deleted successfully", "deleted": result.deleted_count > 0}
 
     def get_schedule(self, user_id: str = None):
-        """Get all schedules for a user"""
+        """Get all schedules for a user."""
         if user_id:
             schedules = list(_schedules().find({"user_id": user_id}))
         else:
             schedules = list(_schedules().find({}))
-
         for s in schedules:
             s["_id"] = str(s["_id"])
             if "activities" in s and isinstance(s["activities"], list):
@@ -401,16 +195,60 @@ class ScheduleService:
                 ]
         return schedules
 
+    async def update_schedule(self, schedule_id: str, data: dict) -> dict:
+        update_data = {k: v for k, v in data.items() if v is not None}
+        update_data["updated_at"] = datetime.utcnow()
+        res = _schedules().update_one(
+            {"schedule_id": schedule_id},
+            {"$set": update_data},
+        )
+        return {"success": res.matched_count > 0}
+
+    # ====================== ACTIVITY LOGS (read-only here) ======================
     def get_activity_logs(self, user_id: str = None, limit: int = 100):
-        """Get activity logs"""
+        """Get activity logs. Logs themselves are written exclusively by
+        MonitoringService — this is a read-only view for the dashboard."""
         query = {"user_id": user_id} if user_id else {}
+        # Logs are keyed by patient_id in monitoring_service.py — support both.
+        if user_id:
+            query = {"$or": [{"user_id": user_id}, {"patient_id": user_id}]}
         logs = list(_activity_logs().find(query).sort("created_at", -1).limit(limit))
         for log in logs:
             log["_id"] = str(log["_id"])
+            # Serialize datetime fields to ISO strings for JSON compatibility
+            for field in ("detected_at", "created_at"):
+                if isinstance(log.get(field), datetime):
+                    log[field] = log[field].isoformat()
+            # Add capitalized display_status so the dashboard can match
+            # against "Completed"/"Early"/"Late"/"Missed" labels.
+            raw_status = log.get("status", "")
+            log["display_status"] = STATUS_TO_DISPLAY.get(
+                raw_status, raw_status.title() if raw_status else "Planned"
+            )
         return logs
 
+    async def log_deviation(self, schedule_id: str, observed: str, expected: str):
+        _deviations().insert_one({
+            "schedule_id": schedule_id,
+            "observed": observed,
+            "expected": expected,
+            "created_at": datetime.utcnow(),
+        })
+
+    def get_deviations(self, user_id: str = None):
+        """Get deviations from schedule."""
+        query = {"user_id": user_id} if user_id else {}
+        deviations = list(_deviations().find(query).sort("detected_at", -1).limit(50))
+        for d in deviations:
+            d["_id"] = str(d["_id"])
+        return deviations
+
+    # ====================== NOTIFICATIONS ======================
+    # NOTE: activity-triggered notifications (late/missed/caregiver_missing)
+    # are created by MonitoringService via NotificationService — NOT by this
+    # method. This method remains available for any other part of the app
+    # that needs to create a one-off notification directly.
     def create_notification(self, user_id: str, activity_name: str, status: str, message: str):
-        """Create a notification"""
         notification = {
             "notification_id": str(uuid.uuid4()),
             "user_id": user_id,
@@ -425,7 +263,6 @@ class ScheduleService:
         return notification
 
     def get_notifications(self, user_id: str = None, unread_only: bool = False):
-        """Get notifications"""
         query = {"user_id": user_id} if user_id else {}
         if unread_only:
             query["read"] = False
@@ -435,34 +272,32 @@ class ScheduleService:
         return notifs
 
     def mark_notification_read(self, notification_id: str):
-        """Mark notification as read"""
         result = _notifications().update_one(
             {"notification_id": notification_id},
             {"$set": {"read": True}}
         )
         return {"matched": result.matched_count, "modified": result.modified_count}
 
+    # ====================== REPORTS ======================
     def get_reports(self, user_id: str = None):
-        """Get activity reports"""
+        """Get activity reports.
+
+        FIX: stats keys now match monitoring_service.py's canonical lowercase
+        vocabulary (done/late/missed/caregiver_missing/pending) instead of
+        the old Early/Completed/Late/Missed/Not-Done set, which no longer
+        matches anything actually being written to activity_logs.
+        """
         logs = self.get_activity_logs(user_id)
         stats = {
-            "Early": 0,
-            "Completed": 0,
-            "Late": 0,
-            "Missed": 0,
-            "Not Done": 0,
+            "done": 0,
+            "late": 0,
+            "missed": 0,
+            "caregiver_missing": 0,
+            "pending": 0,
             "total": len(logs)
         }
         for log in logs:
-            status = log.get("status", "Unknown")
+            status = log.get("status", "pending")
             if status in stats:
                 stats[status] += 1
         return {"stats": stats, "logs": logs}
-
-    def get_deviations(self, user_id: str = None):
-        """Get deviations from schedule"""
-        query = {"user_id": user_id} if user_id else {}
-        deviations = list(_deviations().find(query).sort("detected_at", -1).limit(50))
-        for d in deviations:
-            d["_id"] = str(d["_id"])
-        return deviations

@@ -24,7 +24,7 @@ const STATUS_DISPLAY = {
   "Unexpected":   { color: "bg-gray-900/20 border-gray-700 text-gray-300",      icon: "?", label: "Not Scheduled" },
 };
 
-export default function ActivityDetectorMonitor() {
+export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   const videoRef    = useRef(null);
   const canvasRef   = useRef(null);
   const expectedActivityRef = useRef(null);
@@ -39,6 +39,7 @@ export default function ActivityDetectorMonitor() {
   const [debugInfo,       setDebugInfo]       = useState("");
   const [liveFeatures,    setLiveFeatures]    = useState(null);
   const [stats, setStats] = useState({ detected: 0, logged: 0, completed: 0, late: 0, missed: 0 });
+  const [confirmedActivity, setConfirmedActivity] = useState(null);
 
   const lastLogTimeRef = useRef({});
 
@@ -163,7 +164,6 @@ export default function ActivityDetectorMonitor() {
         torsoAlign:   detectionData.features[14]?.toFixed(2),
         activity:     detectionData.activity_name,
         confidence:   (detectionData.confidence * 100).toFixed(0),
-        wristElev:    detectionData.features[11] < 0.50 ? "YES" : "NO",
       });
     }
 
@@ -234,6 +234,19 @@ export default function ActivityDetectorMonitor() {
       setDebugInfo(
         `✓ ${logEntry.activity} [${logEntry.status}] | Grace: ${logEntry.adaptive_grace_minutes}min | Delay: ${logEntry.delay_minutes}min`
       );
+
+      // Set confirmed activity for visual indicator
+      setConfirmedActivity({
+        name: detectionData.activity_name,
+        status: logEntry.status,
+        confidence: detectionData.confidence,
+        time: new Date().toLocaleTimeString(),
+      });
+
+      // Notify parent (ScheduleDashboard) to immediately re-fetch data
+      if (onActivityConfirmed) {
+        onActivityConfirmed();
+      }
     } catch (error) {
       console.error("Error logging activity:", error);
       setDetectionLogs((prev) => [{ ...logEntry, status: "Error" }, ...prev.slice(0, 9)]);
@@ -339,14 +352,6 @@ export default function ActivityDetectorMonitor() {
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
 
-              {/* WRIST ELEVATED */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${liveFeatures.wristElev === "YES"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
-                <span className="text-xs">🖐️</span> WRIST ELEVATED
-              </div>
-
               {/* LYING DOWN */}
               <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
                 ${parseFloat(liveFeatures.torsoAlign) > 1.1
@@ -421,14 +426,38 @@ export default function ActivityDetectorMonitor() {
               <p className="text-[10px] text-gray-500 mt-1 text-right font-mono">
                 {(currentActivity.confidence * 100).toFixed(0)}% CONFIDENCE
               </p>
-              {liveFeatures && (
-                <p className={`text-[9px] mt-1 font-bold ${liveFeatures.wristElev === "YES" ? "text-green-400" : "text-red-400"}`}>
-                  WRIST {liveFeatures.wristElev === "YES" ? "✓ ELEVATED" : "✗ LOW"}
-                </p>
-              )}
             </div>
           )}
         </div>
+
+        {/* Confirmed Activity Indicator */}
+        {confirmedActivity && (
+          <div className="mt-4 p-4 rounded-xl border border-green-500/30 bg-green-900/10 backdrop-blur-sm animate-slide-up">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-green-500/20 border-2 border-green-500 flex items-center justify-center animate-pulse">
+                  <span className="text-green-400 text-lg font-bold">✓</span>
+                </div>
+                <div>
+                  <p className="text-green-400 font-bold text-sm">Activity Confirmed (1s stable)</p>
+                  <p className="text-white text-base font-semibold">{confirmedActivity.name}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                  confirmedActivity.status === 'Completed' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                  confirmedActivity.status === 'Early' ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' :
+                  confirmedActivity.status === 'Late' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                  confirmedActivity.status === 'Missed' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' :
+                  'text-blue-400 bg-blue-500/10 border-blue-500/20'
+                }`}>
+                  {confirmedActivity.status}
+                </div>
+                <p className="text-gray-500 text-[10px] mt-1 font-mono">{confirmedActivity.time}</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Controls */}
         <div className="flex gap-3 mt-4">
