@@ -1,3 +1,4 @@
+// schedule-monitoring/frontend/src/pages/ScheduleDashboard.jsx
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { getDeviations, getSchedule, getNotifications, getActivityLogs, deleteSchedule, createSchedule } from "../services/scheduleApi";
@@ -46,6 +47,18 @@ const isCurrentActivity = (start, end) => {
   }
 };
 
+// Local "today" string in the same YYYY-MM-DD shape the backend writes to
+// log["date"] via datetime.now().strftime("%Y-%m-%d"), so we only match
+// today's detections against today's schedule (not a stale log from an
+// earlier test run with the same activity_name).
+const getTodayStr = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
 const normalizeNotifications = (payload) => {
   if (Array.isArray(payload)) {
     return payload;
@@ -68,6 +81,10 @@ export default function ScheduleDashboard() {
   const [deviations, setDeviations] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [recentLogs, setRecentLogs] = useState([]);
+  // Full log list (not just the most-recent 5) used purely for matching each
+  // scheduled activity to its detection status, so activities further back
+  // than the last 5 detections still light up correctly.
+  const [allLogs, setAllLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showDetector, setShowDetector] = useState(fromSetup);
@@ -75,12 +92,20 @@ export default function ScheduleDashboard() {
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
 
+  // Live digital clock — ticks every second, purely client-side.
+  const [currentTime, setCurrentTime] = useState(new Date());
+
   const selectedSchedule = schedule[0] || null;
 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const clockInterval = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(clockInterval);
   }, []);
 
   const handleStartTracking = () => {
@@ -136,6 +161,7 @@ export default function ScheduleDashboard() {
       const logs = logsRes.data || [];
       setTotalLogs(logs.length);
       setRecentLogs(logs.slice(0, 5));
+      setAllLogs(logs);
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
     } finally {
@@ -177,6 +203,7 @@ export default function ScheduleDashboard() {
         setSchedule([]);
         setShowDetector(false);
         setRecentLogs([]);
+        setAllLogs([]);
         setTotalLogs(0);
         setDeviations([]);
         setNotifications([]);
@@ -188,6 +215,7 @@ export default function ScheduleDashboard() {
 
   const unreadCount = notifications.filter((n) => !n.read).length;
   const todayActivities = selectedSchedule?.activities?.length || 0;
+  const todayStr = getTodayStr();
 
   return (
     <div className="w-full pb-20">
@@ -210,6 +238,18 @@ export default function ScheduleDashboard() {
             <p className="text-sm text-white font-medium">Monitoring pipeline active</p>
           </div>
         </div>
+
+        {/* Digital clock */}
+        <div className="flex items-center gap-3 rounded-2xl border border-gray-800 bg-gray-900/40 backdrop-blur-md px-4 py-3 shadow-lg shadow-blue-950/10">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse" />
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-semibold">Current Time</p>
+            <p className="text-lg font-mono font-bold text-white tabular-nums">
+              {currentTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </p>
+          </div>
+        </div>
+
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <button
             onClick={() => navigate("/routine-setup")}
@@ -339,8 +379,17 @@ export default function ScheduleDashboard() {
                 ) : (
                   <div className="relative border-l-2 border-gray-800/80 sm:ml-20 ml-12 space-y-8 py-2 z-10">
                     {selectedSchedule?.activities?.map((activity, idx) => {
-                      // Find if there is a log for this
-                      const log = recentLogs.find(l => l.activity_name === activity.activity_name);
+                      // Match against the FULL log list (allLogs), not just
+                      // the most-recent-5 (recentLogs) — with more than 5
+                      // scheduled activities, older detections used to fall
+                      // out of the slice and their progress bar could never
+                      // find a match. Also restrict to today's date so a
+                      // stale log from an earlier test run doesn't match.
+                      const log = allLogs.find(
+                        (l) =>
+                          l.activity_name === activity.activity_name &&
+                          (!l.date || l.date === todayStr)
+                      );
                       const isCurrent = isCurrentActivity(activity.start_time, activity.end_time);
 
                       let statusDot = "bg-gray-800 border-gray-700";
@@ -350,18 +399,17 @@ export default function ScheduleDashboard() {
                       let barColor = "bg-gray-800";
                       let glowClass = "hover:shadow-gray-900/10 border-gray-800";
 
-                      // FIX: this component previously checked for "Done" /
-                      // "On Time" / "Slightly Late" — a status vocabulary
-                      // that has never existed anywhere in the backend.
-                      // The backend's canonical statuses (via
-                      // schedule_controller.py's _shape_detection_response
-                      // translation) are: Completed / Early / Late / Missed.
-                      // Every activity was falling through to the default
-                      // "Planned" / 0% state below regardless of what was
-                      // actually detected, because none of the old checks
-                      // could ever match.
+                      // The backend's raw `status` field is always lowercase
+                      // ("done"/"early"/"late"/"missed"/"caregiver_missing")
+                      // — that vocabulary lives in monitoring_service.py.
+                      // The capitalized labels this component needs
+                      // ("Completed"/"Early"/"Late"/"Missed"/"Not Done")
+                      // only exist on `display_status`, which
+                      // schedule_service.py's get_activity_logs() adds
+                      // specifically for display purposes. Compare against
+                      // `log.display_status`, not `log.status`.
                       if (log) {
-                        if (log.status === "Completed") {
+                        if (log.display_status === "Completed") {
                           statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900";
                           statusText = "Completed";
                           textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
@@ -369,7 +417,7 @@ export default function ScheduleDashboard() {
                           barColor = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
                           glowClass = "hover:shadow-emerald-950/10 border-emerald-900/40 hover:border-emerald-500/30";
                         }
-                        else if (log.status === "Early") {
+                        else if (log.display_status === "Early") {
                           statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900";
                           statusText = "Early";
                           textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
@@ -377,7 +425,7 @@ export default function ScheduleDashboard() {
                           barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
                           glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
                         }
-                        else if (log.status === "Late") {
+                        else if (log.display_status === "Late") {
                           statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900";
                           statusText = "Late";
                           textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
@@ -385,7 +433,7 @@ export default function ScheduleDashboard() {
                           barColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
                           glowClass = "hover:shadow-amber-950/10 border-amber-900/40 hover:border-amber-500/30";
                         }
-                        else if (log.status === "Missed") {
+                        else if (log.display_status === "Missed") {
                           statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900";
                           statusText = "Missed";
                           textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20";
@@ -393,7 +441,7 @@ export default function ScheduleDashboard() {
                           barColor = "bg-rose-500/20";
                           glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
                         }
-                        else if (log.status === "Not Done") {
+                        else if (log.display_status === "Not Done") {
                           statusDot = "bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.5)] border-orange-900";
                           statusText = "Not Done";
                           textClass = "text-orange-400 bg-orange-500/10 border-orange-500/20";
