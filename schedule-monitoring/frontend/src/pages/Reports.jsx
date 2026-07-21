@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getActivityLogs, getNotifications, getSchedule } from "../services/scheduleApi";
+import { getActivityLogs, getNotifications, getSchedule, getDayReport, getWeekReport } from "../services/scheduleApi";
 
 const getActivityIcon = (name) => {
   const n = name.toLowerCase();
@@ -14,6 +14,8 @@ const getActivityIcon = (name) => {
   return "📋";
 };
 
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
 export default function Reports() {
   const [logs, setLogs] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -21,9 +23,24 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("logs");
 
+  // NEW: Day / Week report state
+  const [reportMode, setReportMode] = useState("day"); // "day" | "week"
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [dayReport, setDayReport] = useState(null);
+  const [weekReport, setWeekReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState(null);
+
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "reports") {
+      fetchReport();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, reportMode, selectedDate]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -40,6 +57,25 @@ export default function Reports() {
       console.error("Error:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchReport = async () => {
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      if (reportMode === "day") {
+        const res = await getDayReport(selectedDate);
+        setDayReport(res.data || null);
+      } else {
+        const res = await getWeekReport(selectedDate);
+        setWeekReport(res.data || null);
+      }
+    } catch (error) {
+      console.error("Error fetching report:", error);
+      setReportError("Couldn't load that report. Try a different date.");
+    } finally {
+      setReportLoading(false);
     }
   };
 
@@ -181,12 +217,12 @@ export default function Reports() {
           )}
         </div>
 
-        {/* Right Column: Original Tabs (2/3 width) */}
+        {/* Right Column: Tabs (2/3 width) */}
         <div className="lg:col-span-2 bg-gray-900/40 backdrop-blur-md rounded-2xl border border-gray-800/60 shadow-lg overflow-hidden flex flex-col min-h-[500px]">
           <div className="flex border-b border-gray-800/60 bg-gray-950/30">
             <button
               onClick={() => setActiveTab("logs")}
-              className={`px-8 py-4 font-semibold text-sm transition-colors border-b-2 ${
+              className={`px-6 py-4 font-semibold text-sm transition-colors border-b-2 ${
                 activeTab === "logs" ? "border-blue-500 text-blue-400 bg-blue-500/5" : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/30"
               }`}
             >
@@ -194,11 +230,19 @@ export default function Reports() {
             </button>
             <button
               onClick={() => setActiveTab("notifications")}
-              className={`px-8 py-4 font-semibold text-sm transition-colors border-b-2 ${
+              className={`px-6 py-4 font-semibold text-sm transition-colors border-b-2 ${
                 activeTab === "notifications" ? "border-rose-500 text-rose-400 bg-rose-500/5" : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/30"
               }`}
             >
               🔔 All Notifications
+            </button>
+            <button
+              onClick={() => setActiveTab("reports")}
+              className={`px-6 py-4 font-semibold text-sm transition-colors border-b-2 ${
+                activeTab === "reports" ? "border-purple-500 text-purple-400 bg-purple-500/5" : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/30"
+              }`}
+            >
+              📆 Day / Week Reports
             </button>
           </div>
 
@@ -281,6 +325,129 @@ export default function Reports() {
                       ))
                     ) : (
                       <div className="py-12 text-center text-gray-500 text-sm">No notifications found.</div>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === "reports" && (
+                  <div>
+                    {/* Mode toggle + date picker */}
+                    <div className="flex flex-wrap items-center gap-3 mb-6">
+                      <div className="flex rounded-xl border border-gray-800 overflow-hidden">
+                        <button
+                          onClick={() => setReportMode("day")}
+                          className={`px-4 py-2 text-sm font-semibold transition-colors ${
+                            reportMode === "day" ? "bg-purple-500/20 text-purple-300" : "bg-gray-950/40 text-gray-400 hover:text-gray-200"
+                          }`}
+                        >
+                          Day
+                        </button>
+                        <button
+                          onClick={() => setReportMode("week")}
+                          className={`px-4 py-2 text-sm font-semibold transition-colors ${
+                            reportMode === "week" ? "bg-purple-500/20 text-purple-300" : "bg-gray-950/40 text-gray-400 hover:text-gray-200"
+                          }`}
+                        >
+                          Week
+                        </button>
+                      </div>
+
+                      <input
+                        type="date"
+                        value={selectedDate}
+                        onChange={(e) => setSelectedDate(e.target.value)}
+                        className="bg-gray-950/40 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500/50"
+                      />
+                      {reportMode === "week" && (
+                        <span className="text-xs text-gray-500">
+                          Week starting from the date above (7 days)
+                        </span>
+                      )}
+                    </div>
+
+                    {reportLoading ? (
+                      <div className="py-12 flex items-center justify-center">
+                        <div className="w-8 h-8 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin"></div>
+                      </div>
+                    ) : reportError ? (
+                      <div className="py-12 text-center text-rose-400 text-sm">{reportError}</div>
+                    ) : reportMode === "day" ? (
+                      dayReport ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 text-center">
+                            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Done</p>
+                            <p className="text-2xl font-bold text-emerald-400">{dayReport.counts?.done ?? 0}</p>
+                          </div>
+                          <div className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 text-center">
+                            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Late</p>
+                            <p className="text-2xl font-bold text-amber-400">{dayReport.counts?.late ?? 0}</p>
+                          </div>
+                          <div className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 text-center">
+                            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Missed</p>
+                            <p className="text-2xl font-bold text-rose-400">{dayReport.counts?.missed ?? 0}</p>
+                          </div>
+                          <div className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 text-center">
+                            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total</p>
+                            <p className="text-2xl font-bold text-white">{dayReport.counts?.total ?? 0}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="py-12 text-center text-gray-500 text-sm">
+                          No archived report yet for {selectedDate}. Reports are created when a new routine replaces the previous one.
+                        </div>
+                      )
+                    ) : (
+                      weekReport && (
+                        <div>
+                          <table className="w-full text-left border-collapse mb-6">
+                            <thead>
+                              <tr className="text-xs uppercase tracking-wider text-gray-500 border-b border-gray-800">
+                                <th className="pb-3 font-semibold">Date</th>
+                                <th className="pb-3 font-semibold text-center">Done</th>
+                                <th className="pb-3 font-semibold text-center">Late</th>
+                                <th className="pb-3 font-semibold text-center">Missed</th>
+                                <th className="pb-3 font-semibold text-center">Total</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-800/50">
+                              {weekReport.daily_reports.map((r, idx) => (
+                                <tr key={idx}>
+                                  <td className="py-3 text-sm text-gray-200 font-mono">{r.date}</td>
+                                  {r.counts ? (
+                                    <>
+                                      <td className="py-3 text-center text-emerald-400 font-semibold">{r.counts.done}</td>
+                                      <td className="py-3 text-center text-amber-400 font-semibold">{r.counts.late}</td>
+                                      <td className="py-3 text-center text-rose-400 font-semibold">{r.counts.missed}</td>
+                                      <td className="py-3 text-center text-white font-semibold">{r.counts.total}</td>
+                                    </>
+                                  ) : (
+                                    <td colSpan="4" className="py-3 text-center text-gray-600 text-xs">No report yet</td>
+                                  )}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 text-center">
+                              <p className="text-xs text-purple-300 uppercase tracking-wider mb-1">Week Done</p>
+                              <p className="text-2xl font-bold text-emerald-400">{weekReport.weekly_totals.done}</p>
+                            </div>
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 text-center">
+                              <p className="text-xs text-purple-300 uppercase tracking-wider mb-1">Week Late</p>
+                              <p className="text-2xl font-bold text-amber-400">{weekReport.weekly_totals.late}</p>
+                            </div>
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 text-center">
+                              <p className="text-xs text-purple-300 uppercase tracking-wider mb-1">Week Missed</p>
+                              <p className="text-2xl font-bold text-rose-400">{weekReport.weekly_totals.missed}</p>
+                            </div>
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 text-center">
+                              <p className="text-xs text-purple-300 uppercase tracking-wider mb-1">Week Total</p>
+                              <p className="text-2xl font-bold text-white">{weekReport.weekly_totals.total}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )
                     )}
                   </div>
                 )}

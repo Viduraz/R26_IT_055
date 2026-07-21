@@ -10,6 +10,12 @@ NOTE: the lowercase→capitalized status dict now lives in monitoring_service.py
 as STATUS_TO_DISPLAY, imported here instead of kept as a private copy — see
 that file's docstring for why (monitoring_controller.py needed the same
 mapping and previously had none at all).
+
+NEW: get_day_report() and get_week_report() expose the daily_reports
+archive (see schedule_service.py's _archive_schedule_as_report /
+get_report_by_date / get_reports_for_week) so the frontend Reports page can
+show Done/Late/Missed counts for any past day or a 7-day week, not just the
+currently-active schedule.
 """
 from fastapi import HTTPException
 from app.services.schedule_service import ScheduleService
@@ -142,8 +148,22 @@ def get_activity_logs(user: dict):
 
 
 def get_reports(user: dict):
-    """Get activity reports"""
+    """Get activity reports for the CURRENTLY ACTIVE schedule (today, in
+    progress). For past archived days, use get_day_report / get_week_report
+    below."""
     return _svc.get_reports(user.get("user_id"))
+
+
+def get_day_report(user: dict, date: str):
+    """NEW: Get the archived Done/Late/Missed/Total counts for one specific
+    calendar day (YYYY-MM-DD), e.g. Monday's finished routine."""
+    return _svc.get_report_by_date(user.get("user_id"), date)
+
+
+def get_week_report(user: dict, start_date: str):
+    """NEW: Get 7 days of archived reports plus summed weekly totals,
+    starting at start_date (YYYY-MM-DD)."""
+    return _svc.get_reports_for_week(user.get("user_id"), start_date)
 
 
 def get_notifications(user: dict, unread_only: bool = False):
