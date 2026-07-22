@@ -9,61 +9,45 @@ using a different status vocabulary ("Early"/"Completed"/"Late"/"Missed"/
 "Not Done") than monitoring_service.py ("done"/"late"/"missed"/
 "caregiver_missing"). Both wrote into the same `activity_logs` collection,
 which meant any code reading logs by status only ever saw whichever half of
-the vocabulary it was written to filter for — e.g. get_reports() here would
-always show 0 for anything monitoring_service.py had logged, even though
-those log entries existed.
+the vocabulary it was written to filter for.
 
 monitoring_service.py is now the single canonical engine for detection
-status and the 20-minute rule (matches the original spec: Done/Late/Missed
-based on a fixed 20-minute grace period). This file is CRUD-only:
-schedule create/delete/get, notifications, reports, deviations — all
-reading/writing the same lowercase vocabulary monitoring_service.py uses.
+status and the 20-minute rule. This file is CRUD-only.
 
 REMOVED from this file (now dead, superseded by monitoring_service.py):
   - get_adaptive_grace_period() / check_activity_status()
   - log_activity_detection()
   - check_missed_activities()
 
-DAILY REPORT ARCHIVING (added previously):
+DAILY REPORT ARCHIVING:
 Each user has exactly ONE active schedule at a time. Every schedule is
 stamped with a "date" (the calendar day it belongs to) when created, and
-gets archived before being replaced.
+gets archived into `daily_archives` before being replaced.
 
-NEW FIX (this revision) — two bugs reported by Nethmi:
+BUG 1 FIX (orphaned schedule survives "delete") — schedule_routes.py
+hardcodes `_user = {"user_id": "patient_001"}` for every request (no real
+multi-user auth here — single-patient system). delete_schedule() and
+create_schedule() now treat `schedules` as a SINGLETON collection: they
+locate/remove ALL schedule documents regardless of user_id, so a stray
+user_id (like an old "dev-user" orphan) can never survive a delete or
+linger forever again.
 
-BUG 1 — orphaned schedule survives "delete":
-schedule_routes.py hardcodes `_user = {"user_id": "patient_001"}` for every
-request (there's no real multi-user auth in this app — it's a single-
-patient system). But delete_schedule()/create_schedule() previously scoped
-their queries to `{"user_id": user_id}`. A document was found in the real
-DB with "user_id": "dev-user" (leftover from an earlier test run, before
-`_user` was hardcoded) — every user_id-scoped query silently skips it
-forever, since it never matches "patient_001". Clicking "delete" in the UI
-therefore never touched it.
+BUG 2 FIX (stale schedule doesn't clear itself) — originally, an old
+schedule only got archived+removed when a calendar day rolled over, OR when
+you manually created a new one. That's too coarse for two real cases:
 
-FIX: since this app only ever has ONE real active schedule regardless of
-which user_id string got stamped on it, delete_schedule() and
-create_schedule() now operate on the schedules collection as a SINGLETON —
-they no longer filter by user_id at all when locating what to remove. This
-makes "delete" actually delete everything, and closes the door on this bug
-recurring from any future user_id mismatch.
+  (a) Calendar-day rollover: opening the dashboard on a NEW day should show
+      a clean slate without you having to manually create anything.
+  (b) FINISHED-TODAY rollover (NEW in this revision): with TESTING_MODE on,
+      a schedule's activities can all finish their windows within minutes —
+      long before midnight. The schedule should disappear from the
+      dashboard and land in daily_archives as soon as the LAST activity's
+      end_time has passed, not just at the next calendar day.
 
-BUG 2 — stale schedule doesn't clear itself for a new day:
-Previously, an old schedule only got archived+removed at the moment you
-manually created a NEW one. So if you finished Monday's routine and just
-opened the dashboard on Tuesday without creating a new schedule first,
-Tuesday's dashboard would still show Monday's stale schedule.
-
-FIX: get_schedule() now calls _expire_stale_schedules_if_new_day() on every
-call. Any schedule whose date is not today gets auto-archived into
-daily_archives and deleted, BEFORE the schedule list is returned. This means
-simply opening the dashboard on a new day is enough to get a clean slate —
-you don't have to remember to create a new schedule to trigger the
-rollover.
-
-COLLECTION RENAME: the archive collection is now `daily_archives` (matches
-the collection name already present in the project's real MongoDB schema),
-instead of a new "daily_reports" collection invented in an earlier revision.
+_expire_finished_or_stale_schedules() now checks BOTH conditions every time
+get_schedule() is called: it retires a schedule if it belongs to a past day
+OR if today's schedule has already run past its last activity's end_time.
+Either way, the guardian can immediately pick a fresh schedule afterward.
 """
 from datetime import datetime, timedelta
 import uuid
@@ -105,6 +89,41 @@ def _delete_many(collection, query: dict):
     return type("DeleteResult", (), {"deleted_count": 0})()
 
 
+def _delete_logs_for_schedule(base_schedule_id: str):
+    """FIX: delete all activity_logs tied to a schedule, correctly.
+
+    monitoring_service.py's _active_schedules() stores each activity's logs
+    under a COMPOSITE schedule_id of the form "{base_schedule_id}::{index}"
+    (e.g. "abc123::0", "abc123::1") — one per activity — NOT the plain
+    schedule UUID stored on the schedule document itself. Every previous
+    call site in this file did `_delete_many(_activity_logs(),
+    {"schedule_id": old["schedule_id"]})`, which only ever matches the
+    plain UUID and therefore matched NOTHING — logs from every schedule
+    ever created just piled up forever, never actually deleted.
+
+    Symptom this caused: create a new routine reusing an activity name from
+    an earlier (already-finished/expired) schedule — e.g. "Sleeping" again —
+    and ScheduleDashboard.jsx's activity_name + date matching would
+    immediately pick up the OLD, never-deleted "Missed" log and show it as
+    already Missed, before the new schedule's window had even opened.
+
+    Fetch all logs and filter for an exact match OR a "{base}::" prefix
+    match in Python (the mock DB doesn't support regex/prefix queries
+    either), then delete each matching schedule_id individually.
+    """
+    if not base_schedule_id:
+        return
+    all_logs = list(_activity_logs().find({}))
+    matching_ids = {
+        log.get("schedule_id")
+        for log in all_logs
+        if log.get("schedule_id") == base_schedule_id
+        or (log.get("schedule_id") or "").startswith(f"{base_schedule_id}::")
+    }
+    for sid in matching_ids:
+        _delete_many(_activity_logs(), {"schedule_id": sid})
+
+
 # ── Timing config ────────────────────────────────────────────────────────
 # Set TESTING_MODE = True only while you want fast demo timing (e.g. showing
 # your leader a Late/Missed notification within minutes instead of waiting
@@ -112,9 +131,17 @@ def _delete_many(collection, query: dict):
 # end_time from the owner's input will then be preserved untouched.
 TESTING_MODE = True
 
+# FIX: was DURATION_MINUTES=3.0 / START_OFFSET_MINUTES=2.0 — the entire
+# schedule (across all activities) closed within ~9-11 minutes of creation,
+# which is barely enough time to read the dashboard, let alone click "Start
+# Live Tracking" and let the camera actually observe each activity. The
+# background missed-sweep isn't buggy — it correctly marks an activity
+# Missed once its window closes with no detection, REGARDLESS of whether the
+# camera was ever turned on. Widened so each activity gets a realistic
+# window to actually demo detection in, not just to prove the sweep works.
 TIMING_CONFIG = {
-    "DURATION_MINUTES": 3.0,
-    "START_OFFSET_MINUTES": 2.0,
+    "DURATION_MINUTES": 10.0,
+    "START_OFFSET_MINUTES": 5.0,
 }
 
 
@@ -126,9 +153,8 @@ def _date_of(schedule: dict) -> str | None:
     """Get the calendar day (YYYY-MM-DD) a schedule document belongs to.
 
     Newer documents have an explicit "date" field. Older documents (created
-    before that field existed — like the orphaned "dev-user" one found in
-    the DB) don't have it, so we fall back to created_at so they don't
-    linger forever uncleaned.
+    before that field existed) fall back to created_at so they don't linger
+    forever uncleaned.
     """
     date_str = schedule.get("date")
     if date_str:
@@ -140,6 +166,38 @@ def _date_of(schedule: dict) -> str | None:
     if isinstance(created, str) and len(created) >= 10:
         return created[:10]
     return None
+
+
+def _last_activity_end_time(schedule: dict) -> tuple[int, int] | None:
+    """Parse every activity's end_time ("HH:MM") and return the LATEST one
+    as (hour, minute), so we know when the whole schedule finishes.
+    Returns None if there are no activities or no parseable end_times.
+    """
+    end_times = []
+    for activity in schedule.get("activities") or []:
+        end_time = activity.get("end_time") if isinstance(activity, dict) else None
+        if not end_time:
+            continue
+        try:
+            h, m = map(int, end_time.split(":"))
+            end_times.append((h, m))
+        except (ValueError, AttributeError):
+            continue
+    return max(end_times) if end_times else None
+
+
+def _is_finished_today(schedule: dict) -> bool:
+    """True if the current local time is already past this schedule's last
+    activity's end_time (only meaningful for a schedule dated today —
+    schedules from a past day are already caught by the date check).
+    """
+    last_end = _last_activity_end_time(schedule)
+    if not last_end:
+        return False
+    h, m = last_end
+    now = _local_now()
+    last_end_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    return now > last_end_dt
 
 
 def _normalize_schedule_activities(activities: list, anchor: datetime | None = None) -> list:
@@ -186,20 +244,19 @@ class ScheduleService:
     def create_schedule(self, user_id: str, activities: list, description: str = None):
         """Create a new schedule for a user.
 
-        Treats `schedules` as a SINGLETON collection (see module docstring,
-        BUG 1): finds and archives/deletes ALL existing schedule documents,
-        not just ones matching this user_id, so a stray user_id can never
-        create an orphan again. Also runs the day-rollover expiry check
-        first, so anything already stale gets cleaned up the same way.
+        Treats `schedules` as a SINGLETON collection: archives/deletes ALL
+        existing schedule documents, not just ones matching this user_id.
+        Also runs the finished-or-stale expiry check first, so anything
+        already done gets cleaned up the same way.
         """
-        self._expire_stale_schedules_if_new_day(user_id)
+        self._expire_finished_or_stale_schedules(user_id)
 
         existing = list(_schedules().find({}))  # ALL schedules, not user_id-scoped
         for old in existing:
             self._archive_schedule_as_report(old.get("user_id") or user_id, old)
 
         for old in existing:
-            _delete_many(_activity_logs(), {"schedule_id": old["schedule_id"]})
+            _delete_logs_for_schedule(old["schedule_id"])
         _delete_many(_notifications(), {})
         _delete_many(_schedules(), {})
 
@@ -222,16 +279,12 @@ class ScheduleService:
     def delete_schedule(self, user_id: str, schedule_id: str):
         """Delete the active schedule and all associated logs/notifications.
 
-        FIX (BUG 1): previously scoped to `{"user_id": user_id}`, which
-        silently failed to delete any document stamped with a different
-        user_id (e.g. the "dev-user" orphan). Since this app only ever has
-        one real active schedule, this now wipes ALL schedule documents,
-        regardless of user_id, so "delete" always actually deletes.
-
-        NOTE: an explicit delete does NOT archive to daily_archives first —
-        this is treated as "throw this away", not "the day finished". Day
-        completion archiving happens automatically via
-        _expire_stale_schedules_if_new_day() / create_schedule() instead.
+        Wipes ALL schedule documents regardless of user_id (see module
+        docstring, BUG 1), so "delete" always actually deletes. This is an
+        explicit "throw this away" action — it does NOT archive to
+        daily_archives first. Day/schedule completion archiving happens
+        automatically via _expire_finished_or_stale_schedules() /
+        create_schedule() instead.
         """
         matching = list(_schedules().find({}))
         if not matching:
@@ -239,21 +292,23 @@ class ScheduleService:
 
         result = _delete_many(_schedules(), {})
         for sched in matching:
-            _delete_many(_activity_logs(), {"schedule_id": sched["schedule_id"]})
+            _delete_logs_for_schedule(sched["schedule_id"])
         _delete_many(_notifications(), {})
         return {"message": "Schedule deleted successfully", "deleted": result.deleted_count > 0}
 
     def get_schedule(self, user_id: str = None):
         """Get all schedules for a user.
 
-        NEW (BUG 2 fix): runs the day-rollover check FIRST. If the active
-        schedule belongs to a day before today, it gets archived into
-        daily_archives and deleted right here — before this function
-        returns anything. So opening the dashboard on a new day, with no
-        manual action taken, is enough to see a clean "no active routine"
-        state.
+        Runs the finished-or-stale expiry check FIRST. A schedule gets
+        auto-archived into daily_archives and deleted right here — before
+        this function returns anything — if EITHER:
+          (a) it belongs to a day before today, OR
+          (b) today's schedule has already run past its last activity's
+              end_time (NEW — this is what makes fast TESTING_MODE routines
+              disappear and land in reports within minutes, not only at
+              midnight).
         """
-        self._expire_stale_schedules_if_new_day(user_id)
+        self._expire_finished_or_stale_schedules(user_id)
 
         if user_id:
             schedules = list(_schedules().find({"user_id": user_id}))
@@ -366,13 +421,9 @@ class ScheduleService:
 
     # ====================== DAILY REPORT ARCHIVING ======================
     def _archive_schedule_as_report(self, user_id: str, old_schedule: dict):
-        """Snapshot an ending day's schedule + logs into daily_archives
-        BEFORE it gets deleted (called from create_schedule(),
-        delete_schedule()'s sibling expiry check, or
-        _expire_stale_schedules_if_new_day()).
-
-        Safe to call even if the old schedule has zero logs — counts will
-        just come out all zero, and we still record that the day happened.
+        """Snapshot an ending schedule + logs into daily_archives BEFORE it
+        gets deleted. Safe to call even with zero logs — counts will just
+        come out all zero, and we still record that the day happened.
         """
         logs = self.get_activity_logs(user_id)
         counts = {
@@ -402,26 +453,29 @@ class ScheduleService:
         _archives().insert_one(report_doc)
         return report_doc
 
-    def _expire_stale_schedules_if_new_day(self, user_id: str = None):
-        """NEW: auto-archive + delete any schedule whose date is before
-        today. Called at the top of get_schedule() (and again defensively
-        inside create_schedule()) so a new calendar day always starts with
-        a clean slate — no manual action required.
+    def _expire_finished_or_stale_schedules(self, user_id: str = None):
+        """Auto-archive + delete any schedule that is DONE, meaning either:
+          (a) it belongs to a calendar day before today, or
+          (b) it's today's schedule, but the current time is already past
+              its last activity's end_time (NEW — see module docstring).
 
-        Checks ALL schedule documents, not just ones matching a specific
-        user_id (see module docstring, BUG 1) — this is also what silently
-        cleans up any orphaned document like the "dev-user" one, since its
-        created_at (2026-07-14) will always be "before today" from now on.
+        Called at the top of get_schedule() (and again defensively inside
+        create_schedule()). Checks ALL schedule documents, not just ones
+        matching a specific user_id, which also cleans up any orphaned
+        document with a mismatched user_id.
         """
         today_str = _local_now().strftime("%Y-%m-%d")
         all_schedules = list(_schedules().find({}))
 
         for sched in all_schedules:
             sched_date = _date_of(sched)
-            if sched_date and sched_date != today_str:
+            is_past_day = bool(sched_date) and sched_date != today_str
+            is_finished_today = (sched_date == today_str) and _is_finished_today(sched)
+
+            if is_past_day or is_finished_today:
                 owner = sched.get("user_id") or user_id
                 self._archive_schedule_as_report(owner, sched)
-                _delete_many(_activity_logs(), {"schedule_id": sched.get("schedule_id")})
+                _delete_logs_for_schedule(sched.get("schedule_id"))
                 _delete_many(_notifications(), {"user_id": owner})
                 _delete_many(_schedules(), {"schedule_id": sched.get("schedule_id")})
 

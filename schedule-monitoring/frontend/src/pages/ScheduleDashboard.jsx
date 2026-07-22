@@ -59,6 +59,11 @@ const getTodayStr = () => {
   return `${y}-${m}-${d}`;
 };
 
+// NEW: statuses that are FINAL — once a log shows one of these for an
+// activity, that activity is done deciding. Anything else ("Planned", or
+// no log yet) is still open and can keep being evaluated.
+const FINAL_STATUSES = ["Completed", "Early", "Late", "Missed", "Not Done"];
+
 const normalizeNotifications = (payload) => {
   if (Array.isArray(payload)) {
     return payload;
@@ -92,10 +97,20 @@ export default function ScheduleDashboard() {
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
 
+  // NEW: once an activity's status is decided (Completed/Early/Late/Missed/
+  // Not Done), it gets "locked" here — keyed by activity_name — and the
+  // render below stops looking at fresh logs for that activity entirely.
+  // This is what makes a status permanent for the rest of the day: even if
+  // the detector keeps firing and the backend writes further log rows for
+  // the same activity (e.g. a stray late detection after it was already
+  // marked Missed), the dashboard ignores them once locked.
+  const [lockedStatuses, setLockedStatuses] = useState({});
+
   // Live digital clock — ticks every second, purely client-side.
   const [currentTime, setCurrentTime] = useState(new Date());
 
   const selectedSchedule = schedule[0] || null;
+  const todayStr = getTodayStr();
 
   useEffect(() => {
     fetchData();
@@ -107,6 +122,46 @@ export default function ScheduleDashboard() {
     const clockInterval = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(clockInterval);
   }, []);
+
+  // NEW: a fresh schedule (new schedule_id) means a fresh set of activities
+  // — none of them should inherit a previous routine's locked status, even
+  // if an activity with the same name (e.g. "Eating") appears again.
+  useEffect(() => {
+    setLockedStatuses({});
+  }, [selectedSchedule?.schedule_id]);
+
+  // NEW: whenever fresh logs come in, check each of today's scheduled
+  // activities that ISN'T already locked. If it now has a FINAL status,
+  // lock it in — permanently, until the schedule itself changes. Activities
+  // that are already locked are skipped entirely, so nothing can overwrite
+  // a decision once it's made.
+  useEffect(() => {
+    if (!selectedSchedule?.activities?.length) return;
+
+    setLockedStatuses((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      selectedSchedule.activities.forEach((activity) => {
+        if (next[activity.activity_name]) return; // already locked — never touch again
+
+        const matchingLog = allLogs.find(
+          (l) =>
+            l.activity_name === activity.activity_name &&
+            (!l.date || l.date === todayStr) &&
+            (l.schedule_id === selectedSchedule.schedule_id ||
+             (l.schedule_id || "").startsWith(`${selectedSchedule.schedule_id}::`))
+        );
+
+        if (matchingLog && FINAL_STATUSES.includes(matchingLog.display_status)) {
+          next[activity.activity_name] = matchingLog.display_status;
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [allLogs, selectedSchedule, todayStr]);
 
   const handleStartTracking = () => {
     if (selectedSchedule) {
@@ -215,7 +270,6 @@ export default function ScheduleDashboard() {
 
   const unreadCount = notifications.filter((n) => !n.read).length;
   const todayActivities = selectedSchedule?.activities?.length || 0;
-  const todayStr = getTodayStr();
 
   return (
     <div className="w-full pb-20">
@@ -379,17 +433,27 @@ export default function ScheduleDashboard() {
                 ) : (
                   <div className="relative border-l-2 border-gray-800/80 sm:ml-20 ml-12 space-y-8 py-2 z-10">
                     {selectedSchedule?.activities?.map((activity, idx) => {
-                      // Match against the FULL log list (allLogs), not just
-                      // the most-recent-5 (recentLogs) — with more than 5
-                      // scheduled activities, older detections used to fall
-                      // out of the slice and their progress bar could never
-                      // find a match. Also restrict to today's date so a
-                      // stale log from an earlier test run doesn't match.
-                      const log = allLogs.find(
-                        (l) =>
-                          l.activity_name === activity.activity_name &&
-                          (!l.date || l.date === todayStr)
-                      );
+                      // NEW: if this activity's status has already been
+                      // LOCKED (see the effect above), use that locked
+                      // status and never look at allLogs again for it —
+                      // this is what makes Completed/Early/Late/Missed
+                      // permanent for the rest of the schedule's life,
+                      // regardless of any further detections the backend
+                      // might log for it.
+                      const lockedStatus = lockedStatuses[activity.activity_name];
+
+                      // Only look at live logs if NOT yet locked.
+                      const log = !lockedStatus
+                        ? allLogs.find(
+                          (l) =>
+                            l.activity_name === activity.activity_name &&
+                            (!l.date || l.date === todayStr) &&
+                            (l.schedule_id === selectedSchedule.schedule_id ||
+                             (l.schedule_id || "").startsWith(`${selectedSchedule.schedule_id}::`))
+                        )
+                        : null;
+
+                      const effectiveStatus = lockedStatus || log?.display_status || null;
                       const isCurrent = isCurrentActivity(activity.start_time, activity.end_time);
 
                       let statusDot = "bg-gray-800 border-gray-700";
@@ -404,52 +468,53 @@ export default function ScheduleDashboard() {
                       // — that vocabulary lives in monitoring_service.py.
                       // The capitalized labels this component needs
                       // ("Completed"/"Early"/"Late"/"Missed"/"Not Done")
-                      // only exist on `display_status`, which
-                      // schedule_service.py's get_activity_logs() adds
-                      // specifically for display purposes. Compare against
-                      // `log.display_status`, not `log.status`.
-                      if (log) {
-                        if (log.display_status === "Completed") {
-                          statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900";
-                          statusText = "Completed";
-                          textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-                          progress = 100;
-                          barColor = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
-                          glowClass = "hover:shadow-emerald-950/10 border-emerald-900/40 hover:border-emerald-500/30";
-                        }
-                        else if (log.display_status === "Early") {
-                          statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900";
-                          statusText = "Early";
-                          textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
-                          progress = 100;
-                          barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
-                          glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
-                        }
-                        else if (log.display_status === "Late") {
-                          statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900";
-                          statusText = "Late";
-                          textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
-                          progress = 65;
-                          barColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
-                          glowClass = "hover:shadow-amber-950/10 border-amber-900/40 hover:border-amber-500/30";
-                        }
-                        else if (log.display_status === "Missed") {
-                          statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900";
-                          statusText = "Missed";
-                          textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20";
-                          progress = 0;
-                          barColor = "bg-rose-500/20";
-                          glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
-                        }
-                        else if (log.display_status === "Not Done") {
-                          statusDot = "bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.5)] border-orange-900";
-                          statusText = "Not Done";
-                          textClass = "text-orange-400 bg-orange-500/10 border-orange-500/20";
-                          progress = 0;
-                          barColor = "bg-orange-500/20";
-                          glowClass = "hover:shadow-orange-950/10 border-orange-950/40 hover:border-orange-500/30";
-                        }
-                      } else if (isCurrent) {
+                      // only exist on `display_status`. Compare against
+                      // `effectiveStatus` (locked status takes priority,
+                      // falling back to the live log's display_status).
+                      if (effectiveStatus === "Completed") {
+                        statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900";
+                        statusText = "Completed";
+                        textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
+                        progress = 100;
+                        barColor = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
+                        glowClass = "hover:shadow-emerald-950/10 border-emerald-900/40 hover:border-emerald-500/30";
+                      }
+                      else if (effectiveStatus === "Early") {
+                        statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900";
+                        statusText = "Early";
+                        textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
+                        progress = 100;
+                        barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
+                        glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
+                      }
+                      else if (effectiveStatus === "Late") {
+                        statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900";
+                        statusText = "Late";
+                        textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
+                        progress = 65;
+                        barColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
+                        glowClass = "hover:shadow-amber-950/10 border-amber-900/40 hover:border-amber-500/30";
+                      }
+                      else if (effectiveStatus === "Missed") {
+                        statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900";
+                        statusText = "Missed";
+                        textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20";
+                        progress = 0;
+                        barColor = "bg-rose-500/20";
+                        glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
+                      }
+                      else if (effectiveStatus === "Not Done") {
+                        statusDot = "bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.5)] border-orange-900";
+                        statusText = "Not Done";
+                        textClass = "text-orange-400 bg-orange-500/10 border-orange-500/20";
+                        progress = 0;
+                        barColor = "bg-orange-500/20";
+                        glowClass = "hover:shadow-orange-950/10 border-orange-950/40 hover:border-orange-500/30";
+                      }
+                      else if (isCurrent) {
+                        // Only reachable when there's no locked status AND
+                        // no final-status log yet — a genuinely undecided,
+                        // currently-in-window activity.
                         statusDot = "bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.5)] border-blue-900 animate-pulse";
                         statusText = "In Progress";
                         textClass = "text-blue-400 bg-blue-500/10 border-blue-500/20";

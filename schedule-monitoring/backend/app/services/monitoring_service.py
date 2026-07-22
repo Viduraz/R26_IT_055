@@ -8,19 +8,35 @@ Core business logic:
   - Triggers notifications
 
 CANONICAL STACK: this file (lowercase statuses, task_name/task_type vocabulary)
-is now the single source of truth for activity-detection status logic and the
+is the single source of truth for activity-detection status logic and the
 20-minute rule.
 
-NEW (this version): STATUS_TO_DISPLAY moved here from schedule_controller.py
-so it's a single shared source of truth. Previously schedule_controller.py
-had its own private copy (_STATUS_TO_DISPLAY) used to translate responses for
-the detection-logging endpoint, but monitoring_controller.py's
-get_activity_logs() and get_today_status() had NO translation at all — they
-returned the raw lowercase statuses straight from the database. That meant
-ScheduleDashboard.jsx (which checks for "Completed"/"Early"/"Late"/"Missed")
-never matched anything from the logs endpoint, even after a real detection
-was correctly logged, so every activity displayed as "Planned" regardless of
-what was actually detected. Both controllers now import this one dict.
+STATUS_TO_DISPLAY lives here as the single shared source of truth — both
+schedule_controller.py and monitoring_controller.py import it, instead of
+each keeping a private copy that can drift out of sync.
+
+FIX (this revision) — root cause of "status flickers / doesn't stay frozen":
+process_detection_event()'s "already logged" duplicate-guard used to run:
+
+    existing = _logs_col().find_one({
+        "schedule_id": schedule_id,
+        "date": today_str,
+        "status": {"$in": ["early", "done", "late", "missed", "caregiver_missing"]},
+    })
+
+The mock in-memory database used elsewhere in this project has already been
+shown NOT to support Mongo compound operators like `$or` — and `$in` is the
+same category. If the mock's find_one() doesn't understand `$in`, this guard
+silently matches nothing, EVER, meaning every fresh detection event for an
+already-finalized activity just wrote ANOTHER log entry with whatever status
+fit the current time. Since the frontend displays the newest log per
+activity, this is exactly what caused a status to "un-freeze" and change
+after already being marked Completed/Early/Late/Missed.
+
+FIX: fetch all logs for {schedule_id, date} (a plain two-key equality query,
+which the mock DB does support) and filter for a final status in Python,
+matching the established pattern used everywhere else in this codebase for
+working around the mock DB's operator limitations.
 """
 import uuid
 from datetime import datetime
@@ -41,11 +57,8 @@ def _logs_col():
 EARLY_GRACE_MINUTES = 30
 LATE_THRESHOLD_MINUTES = 20
 
-# NEW: shared lowercase → capitalized status translation. This is the single
-# source of truth both controllers import from, instead of each keeping a
-# private copy that can drift out of sync (which is exactly how the
-# activity-logs endpoint ended up untranslated while the detection endpoint
-# was fixed).
+# Shared lowercase → capitalized status translation. Single source of truth
+# both controllers import from, instead of each keeping a private copy.
 STATUS_TO_DISPLAY: dict[str, str] = {
     "early":             "Early",
     "done":              "Completed",
@@ -54,6 +67,11 @@ STATUS_TO_DISPLAY: dict[str, str] = {
     "caregiver_missing": "Not Done",   # closest existing frontend bucket for now
     "pending":           "Pending",
 }
+
+# NEW: statuses that count as "this activity is finalized for today — don't
+# log it again." Pulled out as a constant so the dedup check below and any
+# other code that needs the same definition of "final" stay in sync.
+FINAL_LOG_STATUSES = ("early", "done", "late", "missed", "caregiver_missing")
 
 
 # ── Activity → task-type mapping ───────────────────────────────────────────
@@ -208,11 +226,21 @@ class MonitoringService:
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
 
-            existing = _logs_col().find_one({
+            # FIX: was find_one({..., "status": {"$in": [...]}}) — the mock
+            # DB doesn't reliably support the $in operator (same class of
+            # limitation as the earlier documented $or issue), so that guard
+            # silently matched nothing, EVER, letting duplicate log rows
+            # pile up for an activity that was already finalized. Fetch by
+            # the plain two-key equality query (which the mock DB does
+            # support) and filter for a final status in Python instead.
+            same_day_logs = list(_logs_col().find({
                 "schedule_id": schedule_id,
                 "date": today_str,
-                "status": {"$in": ["early", "done", "late", "missed", "caregiver_missing"]},
-            })
+            }))
+            existing = next(
+                (l for l in same_day_logs if l.get("status") in FINAL_LOG_STATUSES),
+                None,
+            )
             if existing:
                 continue
 
@@ -252,7 +280,7 @@ class MonitoringService:
                 {"$set": {"today_status": status, "detected_at": ts}},
             )
 
-            if status in ("done", "early", "late", "missed", "caregiver_missing"):
+            if status in FINAL_LOG_STATUSES:
                 from app.services.notification_service import NotificationService
                 ns = NotificationService()
                 msgs = {
@@ -362,9 +390,9 @@ class MonitoringService:
                 "end_time":          sched.get("end_time", ""),
                 "caregiver_required": sched.get("caregiver_required", False),
                 "priority":          sched.get("priority", "medium"),
-                # NEW: display_status added alongside the raw lowercase
-                # "status" (kept for backward compatibility with anything
-                # else reading this field), so callers can show either.
+                # display_status added alongside the raw lowercase "status"
+                # (kept for backward compatibility with anything else
+                # reading this field), so callers can show either.
                 "status":            status,
                 "display_status":    STATUS_TO_DISPLAY.get(status, status.title()),
                 "detected_at":       detected_at,
@@ -394,12 +422,6 @@ class MonitoringService:
             for field in ("detected_at", "created_at"):
                 if isinstance(log.get(field), datetime):
                     log[field] = log[field].isoformat()
-            # NEW: this is the actual fix for your reported bug. Previously
-            # this list was returned with the raw lowercase "status"
-            # ("done"/"early"/"late"/"missed") and nothing else — the
-            # frontend's ScheduleDashboard.jsx checks for "Completed"/
-            # "Early"/"Late"/"Missed" and never matched, so every activity
-            # displayed as "Planned" / 0% no matter what was really detected.
             raw_status = log.get("status", "")
             log["display_status"] = STATUS_TO_DISPLAY.get(raw_status, raw_status.title() if raw_status else "Planned")
         return logs

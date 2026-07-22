@@ -16,28 +16,28 @@ const DETECTION_DEBOUNCE = 2000;
 const CONFIDENCE_THRESHOLD = 0.50;
 
 const STATUS_DISPLAY = {
-  "Completed":    { color: "bg-green-900/20 border-green-700 text-green-300",   icon: "✓", label: "Completed" },
-  "Early":        { color: "bg-cyan-900/20 border-cyan-700 text-cyan-300",      icon: "🕒", label: "Early" },
-  "Late":         { color: "bg-red-900/20 border-red-700 text-red-300",         icon: "✕", label: "Late" },
-  "Missed":       { color: "bg-rose-900/20 border-rose-700 text-rose-300",      icon: "⚠", label: "Missed" },
-  "Not Done":     { color: "bg-orange-900/20 border-orange-700 text-orange-300",icon: "⚠", label: "Not Done" },
-  "Unexpected":   { color: "bg-gray-900/20 border-gray-700 text-gray-300",      icon: "?", label: "Not Scheduled" },
+  "Completed": { color: "bg-green-900/20 border-green-700 text-green-300", icon: "✓", label: "Completed" },
+  "Early": { color: "bg-cyan-900/20 border-cyan-700 text-cyan-300", icon: "🕒", label: "Early" },
+  "Late": { color: "bg-red-900/20 border-red-700 text-red-300", icon: "✕", label: "Late" },
+  "Missed": { color: "bg-rose-900/20 border-rose-700 text-rose-300", icon: "⚠", label: "Missed" },
+  "Not Done": { color: "bg-orange-900/20 border-orange-700 text-orange-300", icon: "⚠", label: "Not Done" },
+  "Unexpected": { color: "bg-gray-900/20 border-gray-700 text-gray-300", icon: "?", label: "Not Scheduled" },
 };
 
 export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
-  const videoRef    = useRef(null);
-  const canvasRef   = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const expectedActivityRef = useRef(null);
 
-  const [isDetecting,     setIsDetecting]     = useState(false);
-  const [isLoading,       setIsLoading]       = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [currentExpected, setCurrentExpected] = useState("Walking");
-  const [isAligned,       setIsAligned]       = useState(false);
+  const [isAligned, setIsAligned] = useState(false);
   const [currentActivity, setCurrentActivity] = useState(null);
-  const [schedule,        setSchedule]        = useState(null);
-  const [detectionLogs,   setDetectionLogs]   = useState([]);
-  const [debugInfo,       setDebugInfo]       = useState("");
-  const [liveFeatures,    setLiveFeatures]    = useState(null);
+  const [schedule, setSchedule] = useState(null);
+  const [detectionLogs, setDetectionLogs] = useState([]);
+  const [debugInfo, setDebugInfo] = useState("");
+  const [liveFeatures, setLiveFeatures] = useState(null);
   const [stats, setStats] = useState({ detected: 0, logged: 0, completed: 0, late: 0, missed: 0 });
   const [confirmedActivity, setConfirmedActivity] = useState(null);
 
@@ -45,9 +45,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
 
   // ── 1-second activity confirmation (was 3s) — applies to ALL activities ────
   const activityConfirmationRef = useRef({
-    activityName:        null,
-    startTime:           null,
-    timeoutId:           null,
+    activityName: null,
+    startTime: null,
+    timeoutId: null,
     confirmedActivities: {},
   });
 
@@ -65,14 +65,14 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   useEffect(() => {
     if (!schedule) return;
     const updateExpected = () => {
-      const now         = new Date();
+      const now = new Date();
       const currentTime = now.getHours() * 60 + now.getMinutes();
-      let active        = schedule.activities[0]?.activity_name || "Walking";
+      let active = schedule.activities[0]?.activity_name || "Walking";
       for (const act of schedule.activities) {
         const [startH, startM] = act.start_time.split(":").map(Number);
-        const [endH,   endM  ] = act.end_time.split(":").map(Number);
+        const [endH, endM] = act.end_time.split(":").map(Number);
         const start = startH * 60 + startM;
-        const end   = endH   * 60 + endM;
+        const end = endH * 60 + endM;
         if (currentTime >= start && currentTime <= end) {
           active = act.activity_name;
           break;
@@ -97,7 +97,7 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   // ── Fetch schedule ─────────────────────────────────────────────────────────
   const fetchSchedule = async () => {
     try {
-      const res       = await getSchedule();
+      const res = await getSchedule();
       const schedules = res.data || [];
       if (schedules.length > 0) {
         setSchedule(schedules[0]);
@@ -121,23 +121,23 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
 
   // ── 1-second confirmation logic (was 3000ms) ───────────────────────────────
   const confirmActivityForLogging = (detectionData) => {
-    const confirmation     = activityConfirmationRef.current;
-    const now              = Date.now();
+    const confirmation = activityConfirmationRef.current;
+    const now = Date.now();
     const CONFIRMATION_TIME = 1000; // was 3000 — every activity confirms after ~1s of stability
 
     if (confirmation.activityName !== detectionData.activity_name) {
       if (confirmation.timeoutId) clearTimeout(confirmation.timeoutId);
       confirmation.activityName = detectionData.activity_name;
-      confirmation.startTime    = now;
-      confirmation.timeoutId    = setTimeout(() => {
+      confirmation.startTime = now;
+      confirmation.timeoutId = setTimeout(() => {
         confirmation.confirmedActivities[detectionData.activity_name] = true;
         confirmation.timeoutId = null;
       }, CONFIRMATION_TIME);
       return false;
     }
 
-    const elapsedTime  = now - confirmation.startTime;
-    const isConfirmed  = confirmation.confirmedActivities[detectionData.activity_name] === true;
+    const elapsedTime = now - confirmation.startTime;
+    const isConfirmed = confirmation.confirmedActivities[detectionData.activity_name] === true;
 
     if (elapsedTime >= CONFIRMATION_TIME && !isConfirmed) {
       confirmation.confirmedActivities[detectionData.activity_name] = true;
@@ -157,21 +157,21 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
 
     if (detectionData.features) {
       setLiveFeatures({
-        handToMouth:  detectionData.features[7]?.toFixed(3),
-        velocity:     detectionData.features[8]?.toFixed(5),
-        wristHeight:  detectionData.features[11]?.toFixed(3),
-        hipHeight:    detectionData.features[10]?.toFixed(3),
-        torsoAlign:   detectionData.features[14]?.toFixed(2),
-        activity:     detectionData.activity_name,
-        confidence:   (detectionData.confidence * 100).toFixed(0),
+        handToMouth: detectionData.features[7]?.toFixed(3),
+        velocity: detectionData.features[8]?.toFixed(5),
+        wristHeight: detectionData.features[11]?.toFixed(3),
+        hipHeight: detectionData.features[10]?.toFixed(3),
+        torsoAlign: detectionData.features[14]?.toFixed(2),
+        activity: detectionData.activity_name,
+        confidence: (detectionData.confidence * 100).toFixed(0),
       });
     }
 
     const isActivityConfirmed = confirmActivityForLogging(detectionData);
     if (!isActivityConfirmed) return;
 
-    const key      = detectionData.activity_name;
-    const now      = Date.now();
+    const key = detectionData.activity_name;
+    const now = Date.now();
     const lastTime = lastLogTimeRef.current[key] || 0;
     if (now - lastTime < DETECTION_DEBOUNCE) return;
 
@@ -186,29 +186,29 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
     }
 
     const logEntry = {
-      activity:               detectionData.activity_name,
-      confidence:             (detectionData.confidence * 100).toFixed(0),
-      status:                 activityStatus,
-      time:                   new Date().toLocaleTimeString(),
+      activity: detectionData.activity_name,
+      confidence: (detectionData.confidence * 100).toFixed(0),
+      status: activityStatus,
+      time: new Date().toLocaleTimeString(),
       adaptive_grace_minutes: "...",
-      delay_minutes:          "...",
-      deadline:               "...",
+      delay_minutes: "...",
+      deadline: "...",
     };
 
     try {
       if (schedule) {
         const response = await logDetectedActivity(schedule.schedule_id, {
           activity_name: detectionData.activity_name,
-          confidence:    detectionData.confidence,
-          detected_at:   detectionData.detected_at.toISOString(),
-          signals:       detectionData.signals,
+          confidence: detectionData.confidence,
+          detected_at: detectionData.detected_at.toISOString(),
+          signals: detectionData.signals,
         });
 
         const adaptiveData = response.data;
-        logEntry.status                 = adaptiveData.status                 || activityStatus;
+        logEntry.status = adaptiveData.status || activityStatus;
         logEntry.adaptive_grace_minutes = adaptiveData.adaptive_grace_minutes || "?";
-        logEntry.delay_minutes          = adaptiveData.delay_minutes          || "?";
-        logEntry.deadline               = adaptiveData.deadline
+        logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
+        logEntry.deadline = adaptiveData.deadline
           ? new Date(adaptiveData.deadline).toLocaleTimeString()
           : "?";
 
@@ -222,10 +222,10 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
           return updated;
         });
       } else {
-        logEntry.status                 = "Unexpected (No Schedule)";
+        logEntry.status = "Unexpected (No Schedule)";
         logEntry.adaptive_grace_minutes = "N/A";
-        logEntry.delay_minutes          = "N/A";
-        logEntry.deadline               = "N/A";
+        logEntry.delay_minutes = "N/A";
+        logEntry.deadline = "N/A";
         setStats((prev) => ({ ...prev, logged: prev.logged + 1 }));
       }
 
@@ -286,8 +286,8 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
         clearTimeout(activityConfirmationRef.current.timeoutId);
         activityConfirmationRef.current.timeoutId = null;
       }
-      activityConfirmationRef.current.activityName        = null;
-      activityConfirmationRef.current.startTime           = null;
+      activityConfirmationRef.current.activityName = null;
+      activityConfirmationRef.current.startTime = null;
       activityConfirmationRef.current.confirmedActivities = {};
 
       await stopPoseDetection();
@@ -444,13 +444,12 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
                 </div>
               </div>
               <div className="text-right">
-                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${
-                  confirmedActivity.status === 'Completed' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
-                  confirmedActivity.status === 'Early' ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' :
-                  confirmedActivity.status === 'Late' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
-                  confirmedActivity.status === 'Missed' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' :
-                  'text-blue-400 bg-blue-500/10 border-blue-500/20'
-                }`}>
+                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${confirmedActivity.status === 'Completed' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                    confirmedActivity.status === 'Early' ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' :
+                      confirmedActivity.status === 'Late' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                        confirmedActivity.status === 'Missed' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' :
+                          'text-blue-400 bg-blue-500/10 border-blue-500/20'
+                  }`}>
                   {confirmedActivity.status}
                 </div>
                 <p className="text-gray-500 text-[10px] mt-1 font-mono">{confirmedActivity.time}</p>
