@@ -1,9 +1,10 @@
 """
 anomaly-detection/backend/app/routes/anomaly_routes.py
 Phase 3: metrics endpoint, simulate endpoints, session reset, latency tracking.
+Phase 4: JWT authentication added to all protected endpoints.
 """
 import time
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from app.controllers.anomaly_controller import (
     process_frame,
     get_history,
@@ -17,6 +18,7 @@ from app.services.metrics_service import record_frame, get_metrics, reset_sessio
 from app.services.simulation_service import (
     simulate_fall, simulate_aggression, simulate_inactivity, simulate_normal,
 )
+from app.middleware.verify_token import get_current_user
 
 router = APIRouter()
 
@@ -24,11 +26,25 @@ router = APIRouter()
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @router.websocket("/ws/process")
-async def websocket_process(websocket: WebSocket):
+async def websocket_process(websocket: WebSocket, token: str = ""):
     """
     Persistent WebSocket stream for real-time anomaly detection.
     Phase 3: latency instrumentation + metrics recording per frame.
+    Phase 4: JWT token validated via query param:
+             ws://localhost:8003/api/anomaly/ws/process?token=<jwt>
     """
+    # ── JWT validation before accepting ──────────────────────────────────────
+    if token:
+        try:
+            from shared.backend.auth.jwt_handler import decode_access_token
+            decode_access_token(token)
+        except Exception as auth_err:
+            print(f"[websocket] JWT rejected: {repr(auth_err)}")
+            await websocket.close(code=4001)
+            return
+    # If no token provided, allow through (supports unauthenticated demo mode)
+    # In full production, change the above `if token:` to always validate.
+
     await websocket.accept()
     person_id   = None
     frame_count = 0
@@ -128,30 +144,37 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── Standard REST endpoints ────────────────────────────────────────────────────
-
-@router.post("/process", summary="Run full anomaly detection pipeline on a live frame")
-async def _process(payload: AnomalyProcessRequest):
-    return await process_frame(payload)
-
-
-@router.get("/history", summary="Anomaly detection event history (last 100)")
-async def _history():
-    return await get_history()
-
-
-@router.get("/model-status", summary="ML model weights + pipeline status")
-async def _model_status():
-    return await get_model_status()
-
+# ── Public REST endpoints (no auth required) ──────────────────────────────────
 
 @router.get("/health", summary="Service health check")
 def _health():
     return {"status": "ok", "service": "anomaly-detection"}
 
 
+@router.post("/process", summary="Run full anomaly detection pipeline on a live frame")
+async def _process(payload: AnomalyProcessRequest):
+    """
+    Left public intentionally — the WebSocket stream is the primary interface.
+    The dashboard's JS sends base64 frames via WebSocket, not this REST endpoint.
+    Protect if needed for production hardening.
+    """
+    return await process_frame(payload)
+
+
+# ── Protected REST endpoints (JWT required) ───────────────────────────────────
+
+@router.get("/history", summary="Anomaly detection event history (last 100)")
+async def _history(user: dict = Depends(get_current_user)):
+    return await get_history()
+
+
+@router.get("/model-status", summary="ML model weights + pipeline status")
+async def _model_status(user: dict = Depends(get_current_user)):
+    return await get_model_status()
+
+
 @router.get("/session-logs", summary="Retrieve structured JSON session alert logs")
-def _session_logs():
+def _session_logs(user: dict = Depends(get_current_user)):
     from app.services.alert_service import get_session_logs, get_memory_alerts
     return {
         "file_logs":     get_session_logs(),
@@ -162,7 +185,7 @@ def _session_logs():
 # ── Research Metrics ───────────────────────────────────────────────────────────
 
 @router.get("/metrics", summary="Research metrics: latency, FPS, event distribution")
-def _metrics():
+def _metrics(user: dict = Depends(get_current_user)):
     """
     Returns session-level research metrics for the analytics dashboard.
     Examiners love this endpoint — it demonstrates the system is measurable.
@@ -173,7 +196,7 @@ def _metrics():
 # ── Session Reset ──────────────────────────────────────────────────────────────
 
 @router.post("/reset-session", summary="Reset all session metrics and alert cooldowns")
-def _reset_session():
+def _reset_session(user: dict = Depends(get_current_user)):
     reset_session()
     from app.services.alert_service import _cooldown_map, _memory_alerts, _lock
     with _lock:
@@ -185,28 +208,28 @@ def _reset_session():
 # ── Scenario Simulation endpoints ──────────────────────────────────────────────
 
 @router.post("/simulate/fall", summary="[Demo] Inject a synthetic FALL DETECTED event")
-def _sim_fall(person_id: str = "demo_patient"):
+def _sim_fall(person_id: str = "demo_patient", user: dict = Depends(get_current_user)):
     evt = simulate_fall(person_id)
     record_frame("fall_detected", 35.0)
     return evt
 
 
 @router.post("/simulate/aggression", summary="[Demo] Inject a synthetic AGGRESSION event")
-def _sim_aggression(person_id: str = "demo_patient"):
+def _sim_aggression(person_id: str = "demo_patient", user: dict = Depends(get_current_user)):
     evt = simulate_aggression(person_id)
     record_frame("aggression_detected", 38.0)
     return evt
 
 
 @router.post("/simulate/inactivity", summary="[Demo] Inject a synthetic INACTIVITY event")
-def _sim_inactivity(person_id: str = "demo_patient"):
+def _sim_inactivity(person_id: str = "demo_patient", user: dict = Depends(get_current_user)):
     evt = simulate_inactivity(person_id)
     record_frame("prolonged_inactivity", 32.0)
     return evt
 
 
 @router.post("/simulate/normal", summary="[Demo] Inject a synthetic NORMAL ACTIVITY event")
-def _sim_normal(person_id: str = "demo_patient"):
+def _sim_normal(person_id: str = "demo_patient", user: dict = Depends(get_current_user)):
     evt = simulate_normal(person_id)
     record_frame("normal_activity", 28.0)
     return evt
@@ -215,15 +238,15 @@ def _sim_normal(person_id: str = "demo_patient"):
 # ── IP Camera routes ───────────────────────────────────────────────────────────
 
 @router.get("/camera-snapshot", summary="Proxy one JPEG snapshot from the IP camera as base64")
-def _camera_snapshot():
+def _camera_snapshot(user: dict = Depends(get_current_user)):
     return get_camera_snapshot()
 
 
 @router.post("/camera-process", summary="Capture from IP camera and run anomaly detection")
-async def _camera_process(payload: CameraProcessRequest):
+async def _camera_process(payload: CameraProcessRequest, user: dict = Depends(get_current_user)):
     return await process_frame_from_camera(payload)
 
 
 @router.get("/camera-probe", summary="Diagnostic: probe all known snapshot URLs")
-def _camera_probe():
+def _camera_probe(user: dict = Depends(get_current_user)):
     return probe_camera()
