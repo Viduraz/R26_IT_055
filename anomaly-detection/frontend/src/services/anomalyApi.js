@@ -12,7 +12,18 @@ anomalyApi.interceptors.request.use((config) => {
   return config;
 });
 
-export const detectAnomaly = (frameB64) => anomalyApi.post("/detect", { frame_b64: frameB64 });
+anomalyApi.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem("access_token");
+      window.location.href = "/login";
+    }
+    return Promise.reject(error);
+  }
+);
+
+export const detectAnomaly = (frameB64) => anomalyApi.post("/process", { live_frame: frameB64 });
 export const getAnomalyHistory = () => anomalyApi.get("/history");
 export const getModelStatus = () => anomalyApi.get("/model-status");
 

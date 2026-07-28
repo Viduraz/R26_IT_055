@@ -312,7 +312,8 @@ export default function AnomalyDashboard() {
   // ── WebSocket lifecycle ───────────────────────────────────────────────────
   useEffect(() => {
     if (isOn) {
-      const wsUrl = ANOMALY_API.replace(/^http/, "ws") + "/ws/process";
+      const token  = localStorage.getItem("access_token") || "";
+      const wsUrl  = ANOMALY_API.replace(/^http/, "ws") + "/ws/process" + (token ? `?token=${token}` : "");
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen    = () => { setWsStatus("connected"); setError(""); pollRef.current = setInterval(sendFrame, POLL_MS); };
@@ -342,9 +343,11 @@ export default function AnomalyDashboard() {
   // ── Scenario Mode ─────────────────────────────────────────────────────────
   const runScenario = useCallback(async (scenario) => {
     setSimLoading(scenario);
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
       const { data } = await axios.post(`${ANOMALY_API}/simulate/${scenario}`, null,
-        { params: { person_id: personId }, timeout: 5000 });
+        { params: { person_id: personId }, headers: authHeaders, timeout: 5000 });
       handleMessage(data);
       setIsSimulating(true);
       setTimeout(() => setIsSimulating(false), 4000);
@@ -357,8 +360,10 @@ export default function AnomalyDashboard() {
 
   // ── Reset Session ─────────────────────────────────────────────────────────
   const resetSession = useCallback(async () => {
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      await axios.post(`${ANOMALY_API}/reset-session`);
+      await axios.post(`${ANOMALY_API}/reset-session`, null, { headers: authHeaders });
       setTimeline([]);
       setAnomalyType("no_person");
       setConfidence(0);
@@ -372,8 +377,10 @@ export default function AnomalyDashboard() {
 
   // ── Export logs ───────────────────────────────────────────────────────────
   const exportLogs = useCallback(async () => {
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      const { data } = await axios.get(`${ANOMALY_API}/session-logs`);
+      const { data } = await axios.get(`${ANOMALY_API}/session-logs`, { headers: authHeaders });
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
