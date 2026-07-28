@@ -57,7 +57,15 @@ def decide(
 
     # ── Case 2: Rule engine fired ─────────────────────────────────────────────
     if rule_result["event"] != "normal_activity":
-        conf = rule_result["confidence"]
+        # Phase 4: Dynamic Autoencoder Override for Inactivity
+        if rule_result["event"] == "prolonged_inactivity" and ae_used:
+            if ae_error < AE_THRESHOLD * 1.5: 
+                # AE recognizes this static pose as "normal" (e.g. reading a book). Override!
+                rule_result["event"] = "normal_activity"
+        
+        # Re-check in case it was overridden
+        if rule_result["event"] != "normal_activity":
+            conf = rule_result["confidence"]
         if ae_used and ae_error >= AE_THRESHOLD:
             conf = min(conf + 0.07, 0.99)
         anomaly_type = rule_result["event"]
