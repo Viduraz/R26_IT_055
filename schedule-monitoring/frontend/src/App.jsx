@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-
 import Home from "./pages/Home";
 import ScheduleDashboard from "./pages/ScheduleDashboard";
 import RoutineSetup from "./pages/RoutineSetup";
@@ -9,11 +8,10 @@ import NotificationsPanel from "./pages/NotificationsPanel";
 import ActivityLog from "./pages/ActivityLog";
 import DataCollector from "./pages/DataCollector";
 import ScheduleProgress from "./pages/ScheduleProgress";
-// or whatever the correct relative path is in your project
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/schedule">
       <Layout>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -23,8 +21,8 @@ function App() {
           <Route path="/notifications" element={<NotificationsPanel />} />
           <Route path="/activity-log" element={<ActivityLog />} />
           <Route path="/data-collector" element={<DataCollector />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
           <Route path="/schedule-progress" element={<ScheduleProgress />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </BrowserRouter>
