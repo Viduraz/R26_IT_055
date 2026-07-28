@@ -91,6 +91,8 @@ def validate_activity(user: dict, payload: dict):
         # the correct one internally based on the schedule. 
         # You can improve this later by sending expected_start from frontend.
         return _svc.check_activity_status(
+            user_id=user.get("user_id", "dev-user"),
+            activity_name=payload.get("activity_name", "Walking"),
             expected_start=datetime.now(),
             detected_at=detected_at
         )
