@@ -2,41 +2,53 @@
 schedule-monitoring/backend/app/services/monitoring_service.py
 Core business logic:
   - Receives vision detection events
-  - Applies the 20-minute validation rule
+  - Applies the start_time/end_time boundary rule (Early / Completed / Late)
   - Marks tasks Early / Done / Late / Missed / Caregiver-Missing
   - Persists activity logs
   - Triggers notifications
 
 CANONICAL STACK: this file (lowercase statuses, task_name/task_type vocabulary)
-is the single source of truth for activity-detection status logic and the
-20-minute rule.
+is the single source of truth for activity-detection status logic.
 
 STATUS_TO_DISPLAY lives here as the single shared source of truth — both
 schedule_controller.py and monitoring_controller.py import it, instead of
 each keeping a private copy that can drift out of sync.
 
-FIX (this revision) — root cause of "status flickers / doesn't stay frozen":
-process_detection_event()'s "already logged" duplicate-guard used to run:
+FIX (previous revision) — duplicate-log guard now filters FINAL_LOG_STATUSES
+in Python instead of relying on a Mongo $in query the mock DB doesn't
+reliably support.
 
-    existing = _logs_col().find_one({
-        "schedule_id": schedule_id,
-        "date": today_str,
-        "status": {"$in": ["early", "done", "late", "missed", "caregiver_missing"]},
-    })
+FIX (previous revision) — Dashboard Schedule Sidebar & Detection Status Fix
+plan: Completed vs Late boundary now uses each activity's own end_time
+instead of a fixed 20-minute cutoff, and get_today_status() auto-triggers
+evaluate_missed_tasks() so Missed logs get persisted as time passes.
 
-The mock in-memory database used elsewhere in this project has already been
-shown NOT to support Mongo compound operators like `$or` — and `$in` is the
-same category. If the mock's find_one() doesn't understand `$in`, this guard
-silently matches nothing, EVER, meaning every fresh detection event for an
-already-finalized activity just wrote ANOTHER log entry with whatever status
-fit the current time. Since the frontend displays the newest log per
-activity, this is exactly what caused a status to "un-freeze" and change
-after already being marked Completed/Early/Late/Missed.
+FIX (this revision) — "how early is too early" rule:
 
-FIX: fetch all logs for {schedule_id, date} (a plain two-key equality query,
-which the mock DB does support) and filter for a final status in Python,
-matching the established pattern used everywhere else in this codebase for
-working around the mock DB's operator limitations.
+Previously, ANY detection up to EARLY_GRACE_MINUTES (30) before an
+activity's start_time was accepted and logged as "early", for every
+activity in a routine. That's too generous for the very first activity of
+the day (a stray early-morning motion 25+ minutes before the first
+scheduled activity could get logged against it), and doesn't reflect how
+adjacent activities naturally bound each other.
+
+New rule:
+  - FIRST activity of the day (chronologically, by start_time, within a
+    routine): only accepted as "early" up to FIRST_ACTIVITY_EARLY_GRACE_MINUTES
+    (10) minutes before its start_time. Anything earlier than that is
+    outside the matching window entirely (no log written — the detection
+    simply doesn't match any schedule entry, same as before this fix for
+    "too early" cases).
+  - EVERY SUBSEQUENT activity: "early" is accepted any time after the
+    immediately-preceding activity's end_time, with NO extra minute cap —
+    the previous activity's own window naturally bounds how early is
+    possible, so an artificial cutoff isn't needed there.
+
+This is computed once per routine in _active_schedules() (sorting that
+routine's activities by start_time and carrying forward each activity's own
+end_time as the next activity's early-window floor), then consumed in
+process_detection_event() as sched["early_window_start_min"] instead of the
+old flat "start_min - EARLY_GRACE_MINUTES" calculation.
 """
 import uuid
 from datetime import datetime
@@ -54,7 +66,23 @@ def _logs_col():
 
 
 # ── Config ──────────────────────────────────────────────────────────────────
-EARLY_GRACE_MINUTES = 30
+# Used only as a fallback (single-activity/legacy schedules with no
+# siblings to bound them, and as the frontend-facing "adaptive_grace_minutes"
+# display field) — see FIRST_ACTIVITY_EARLY_GRACE_MINUTES below for the
+# value actually used for a routine's first activity.
+EARLY_GRACE_MINUTES = 10
+
+# How many minutes before start_time the FIRST activity of a routine (by
+# start_time) may be detected and still count as "early". Every activity
+# after the first has no fixed cap — see _active_schedules()'s
+# early_window_start_min computation, which bounds it by the previous
+# activity's end_time instead.
+FIRST_ACTIVITY_EARLY_GRACE_MINUTES = 10
+
+# NOTE: no longer used to decide Completed vs Late (that boundary is each
+# activity's own end_time — see process_detection_event()) — retained only
+# because schedule_controller.py's _shape_detection_response() surfaces it
+# as a legacy "delay_minutes" display field for the frontend.
 LATE_THRESHOLD_MINUTES = 20
 
 # Shared lowercase → capitalized status translation. Single source of truth
@@ -68,9 +96,9 @@ STATUS_TO_DISPLAY: dict[str, str] = {
     "pending":           "Pending",
 }
 
-# NEW: statuses that count as "this activity is finalized for today — don't
-# log it again." Pulled out as a constant so the dedup check below and any
-# other code that needs the same definition of "final" stay in sync.
+# Statuses that count as "this activity is finalized for today — don't log
+# it again." Pulled out as a constant so the dedup check below and any other
+# code that needs the same definition of "final" stay in sync.
 FINAL_LOG_STATUSES = ("early", "done", "late", "missed", "caregiver_missing")
 
 
@@ -153,12 +181,43 @@ class MonitoringService:
             owner_id = doc.get("patient_id") or doc.get("user_id") or patient_id
             activities = doc.get("activities", [])
             if isinstance(activities, list) and activities:
+                # ── Build valid (idx, act, start_min, end_min) tuples first,
+                # so we can sort by start_min to establish chronological
+                # neighbor relationships regardless of the order activities
+                # happen to be stored in.
+                valid = []
                 for idx, act in enumerate(activities):
                     if not isinstance(act, dict):
                         continue
-                    act_name = act.get("activity_name", "")
                     if not act.get("start_time") or not act.get("end_time"):
                         continue
+                    valid.append({
+                        "idx": idx,
+                        "act": act,
+                        "start_min": self._time_to_minutes(act["start_time"]),
+                        "end_min": self._time_to_minutes(act["end_time"]),
+                    })
+
+                # Chronological order (by start_time) to compute each
+                # activity's early-window floor: the first activity gets a
+                # fixed FIRST_ACTIVITY_EARLY_GRACE_MINUTES cap; every
+                # subsequent activity's floor is simply the previous
+                # activity's own end_min — no extra cap needed since that
+                # naturally bounds how early a detection could plausibly be.
+                chrono = sorted(valid, key=lambda v: v["start_min"])
+                early_window_by_idx = {}
+                prev_end_min = None
+                for i, entry in enumerate(chrono):
+                    if i == 0:
+                        early_window_by_idx[entry["idx"]] = entry["start_min"] - FIRST_ACTIVITY_EARLY_GRACE_MINUTES
+                    else:
+                        early_window_by_idx[entry["idx"]] = prev_end_min
+                    prev_end_min = entry["end_min"]
+
+                for entry in valid:
+                    idx = entry["idx"]
+                    act = entry["act"]
+                    act_name = act.get("activity_name", "")
                     normalized.append({
                         "patient_id": owner_id,
                         "schedule_id": f"{base_schedule_id}::{idx}",
@@ -168,12 +227,14 @@ class MonitoringService:
                         "task_type": _infer_task_type(act_name),
                         "start_time": act.get("start_time"),
                         "end_time": act.get("end_time"),
+                        "early_window_start_min": early_window_by_idx[idx],
                         "caregiver_required": bool(act.get("caregiver_required", doc.get("caregiver_required", False))),
                         "priority": act.get("priority", doc.get("priority", "medium")),
                     })
                 continue
             if doc.get("start_time") and doc.get("end_time"):
                 task_name = doc.get("task_name") or doc.get("activity_name", "")
+                start_min = self._time_to_minutes(doc["start_time"])
                 normalized.append({
                     "patient_id": owner_id,
                     "schedule_id": base_schedule_id,
@@ -183,6 +244,9 @@ class MonitoringService:
                     "task_type": doc.get("task_type", _infer_task_type(task_name)),
                     "start_time": doc.get("start_time"),
                     "end_time": doc.get("end_time"),
+                    # Legacy single-activity schedule — no siblings to bound
+                    # it, so treat it like a routine's "first" activity.
+                    "early_window_start_min": start_min - FIRST_ACTIVITY_EARLY_GRACE_MINUTES,
                     "caregiver_required": bool(doc.get("caregiver_required", False)),
                     "priority": doc.get("priority", "medium"),
                 })
@@ -219,20 +283,22 @@ class MonitoringService:
             start_min = self._time_to_minutes(sched["start_time"])
             end_min   = self._time_to_minutes(sched["end_time"])
 
-            window_open  = start_min - EARLY_GRACE_MINUTES
+            # Lower bound: this activity's own computed early-window floor
+            # (10 min before start for the first activity of the day, or
+            # the previous activity's end_time for every activity after
+            # that) — NOT a flat EARLY_GRACE_MINUTES subtraction from
+            # start_min anymore.
+            window_open  = sched.get("early_window_start_min", start_min - EARLY_GRACE_MINUTES)
             window_close = end_min + 30
             if now_minutes < window_open or now_minutes > window_close:
                 continue
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
 
-            # FIX: was find_one({..., "status": {"$in": [...]}}) — the mock
-            # DB doesn't reliably support the $in operator (same class of
-            # limitation as the earlier documented $or issue), so that guard
-            # silently matched nothing, EVER, letting duplicate log rows
-            # pile up for an activity that was already finalized. Fetch by
-            # the plain two-key equality query (which the mock DB does
-            # support) and filter for a final status in Python instead.
+            # Dedup guard: fetch by the plain two-key equality query (which
+            # the mock DB supports) and filter for a final status in Python,
+            # instead of relying on a Mongo $in operator the mock DB doesn't
+            # reliably support.
             same_day_logs = list(_logs_col().find({
                 "schedule_id": schedule_id,
                 "date": today_str,
@@ -244,13 +310,15 @@ class MonitoringService:
             if existing:
                 continue
 
-            threshold = start_min + LATE_THRESHOLD_MINUTES
+            # Completed/Late boundary is this activity's own end_time, not a
+            # fixed threshold. Early is anything before start_time that
+            # still falls within the early-window floor checked above.
             if now_minutes < start_min:
                 status = "early"
-            elif now_minutes <= threshold:
-                status = "done"
+            elif now_minutes <= end_min:
+                status = "done"        # within scheduled window = Completed
             else:
-                status = "late"
+                status = "late"        # after end_time = Late
 
             if sched.get("caregiver_required", False) and not caregiver_p:
                 status = "caregiver_missing"
@@ -308,6 +376,10 @@ class MonitoringService:
         return {"matched": len(results), "results": results}
 
     def evaluate_missed_tasks(self, patient_id: str = "patient_001") -> dict:
+        """Scan all active schedules for this patient and write a "missed"
+        log (once) for any activity whose end_time has already passed with
+        no log entry recorded yet. Safe to call repeatedly/on every poll —
+        the find_one() check below prevents duplicate rows."""
         schedules    = self._active_schedules(patient_id)
         now          = datetime.now()
         now_minutes  = now.hour * 60 + now.minute
@@ -358,6 +430,12 @@ class MonitoringService:
         return {"missed_marked": missed_count}
 
     def get_today_status(self, patient_id: str) -> dict:
+        # Auto-trigger missed evaluation so any activity whose window has
+        # already closed with no detection gets written to the DB as
+        # "missed" before we read status back out below, instead of only
+        # being inferred on the fly (and never persisted) as before.
+        self.evaluate_missed_tasks(patient_id)
+
         schedules   = self._active_schedules(patient_id)
         now         = datetime.now()
         today_str   = now.strftime("%Y-%m-%d")

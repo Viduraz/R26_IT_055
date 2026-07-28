@@ -36,21 +36,21 @@ const isCurrentActivity = (start, end) => {
     const now = new Date();
     const [sHr, sMin] = start.split(":").map(Number);
     const [eHr, eMin] = end.split(":").map(Number);
-
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const startMin = sHr * 60 + sMin;
     const endMin = eHr * 60 + eMin;
-
     return nowMin >= startMin && nowMin <= endMin;
   } catch (e) {
     return false;
   }
 };
 
-// Local "today" string in the same YYYY-MM-DD shape the backend writes to
-// log["date"] via datetime.now().strftime("%Y-%m-%d"), so we only match
-// today's detections against today's schedule (not a stale log from an
-// earlier test run with the same activity_name).
+const timeToMinutes = (timeStr) => {
+  if (!timeStr) return 0;
+  const [h, m] = String(timeStr).split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+
 const getTodayStr = () => {
   const now = new Date();
   const y = now.getFullYear();
@@ -59,20 +59,26 @@ const getTodayStr = () => {
   return `${y}-${m}-${d}`;
 };
 
-// NEW: statuses that are FINAL — once a log shows one of these for an
-// activity, that activity is done deciding. Anything else ("Planned", or
-// no log yet) is still open and can keep being evaluated.
 const FINAL_STATUSES = ["Completed", "Early", "Late", "Missed", "Not Done"];
+
+// Badge styling for the sidebar's per-activity status list.
+const SIDEBAR_STATUS_STYLE = {
+  Completed: { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/40", icon: "✅" },
+  Early:     { bg: "bg-sky-500/15",     text: "text-sky-400",     border: "border-sky-500/40",     icon: "⏰" },
+  Late:      { bg: "bg-amber-500/15",   text: "text-amber-400",   border: "border-amber-500/40",   icon: "⏳" },
+  Missed:    { bg: "bg-rose-500/15",    text: "text-rose-400",    border: "border-rose-500/40",    icon: "❌" },
+  "Not Done": { bg: "bg-orange-500/15", text: "text-orange-400",  border: "border-orange-500/40",  icon: "🚫" },
+  "In Progress": { bg: "bg-blue-500/15", text: "text-blue-400",   border: "border-blue-500/40",    icon: "🔄" },
+  Pending:   { bg: "bg-gray-500/15",    text: "text-gray-400",    border: "border-gray-600/40",    icon: "🕒" },
+};
 
 const normalizeNotifications = (payload) => {
   if (Array.isArray(payload)) {
     return payload;
   }
-
   if (payload && Array.isArray(payload.notifications)) {
     return payload.notifications;
   }
-
   return [];
 };
 
@@ -81,14 +87,10 @@ export default function ScheduleDashboard() {
   const location = useLocation();
   const assetBase = import.meta.env.BASE_URL;
   const fromSetup = location.state?.fromSetup === true;
-
   const [schedule, setSchedule] = useState([]);
   const [deviations, setDeviations] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [recentLogs, setRecentLogs] = useState([]);
-  // Full log list (not just the most-recent 5) used purely for matching each
-  // scheduled activity to its detection status, so activities further back
-  // than the last 5 detections still light up correctly.
   const [allLogs, setAllLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -96,19 +98,9 @@ export default function ScheduleDashboard() {
   const [activeAlert, setActiveAlert] = useState(null);
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
-
-  // NEW: once an activity's status is decided (Completed/Early/Late/Missed/
-  // Not Done), it gets "locked" here — keyed by activity_name — and the
-  // render below stops looking at fresh logs for that activity entirely.
-  // This is what makes a status permanent for the rest of the day: even if
-  // the detector keeps firing and the backend writes further log rows for
-  // the same activity (e.g. a stray late detection after it was already
-  // marked Missed), the dashboard ignores them once locked.
   const [lockedStatuses, setLockedStatuses] = useState({});
-
-  // Live digital clock — ticks every second, purely client-side.
   const [currentTime, setCurrentTime] = useState(new Date());
-
+  const [showProgressSidebar, setShowProgressSidebar] = useState(false);
   const selectedSchedule = schedule[0] || null;
   const todayStr = getTodayStr();
 
@@ -123,42 +115,29 @@ export default function ScheduleDashboard() {
     return () => clearInterval(clockInterval);
   }, []);
 
-  // NEW: a fresh schedule (new schedule_id) means a fresh set of activities
-  // — none of them should inherit a previous routine's locked status, even
-  // if an activity with the same name (e.g. "Eating") appears again.
   useEffect(() => {
     setLockedStatuses({});
   }, [selectedSchedule?.schedule_id]);
 
-  // NEW: whenever fresh logs come in, check each of today's scheduled
-  // activities that ISN'T already locked. If it now has a FINAL status,
-  // lock it in — permanently, until the schedule itself changes. Activities
-  // that are already locked are skipped entirely, so nothing can overwrite
-  // a decision once it's made.
   useEffect(() => {
     if (!selectedSchedule?.activities?.length) return;
-
     setLockedStatuses((prev) => {
       let changed = false;
       const next = { ...prev };
-
       selectedSchedule.activities.forEach((activity) => {
-        if (next[activity.activity_name]) return; // already locked — never touch again
-
+        if (next[activity.activity_name]) return;
         const matchingLog = allLogs.find(
           (l) =>
             l.activity_name === activity.activity_name &&
             (!l.date || l.date === todayStr) &&
             (l.schedule_id === selectedSchedule.schedule_id ||
-             (l.schedule_id || "").startsWith(`${selectedSchedule.schedule_id}::`))
+              (l.schedule_id || "").startsWith(`${selectedSchedule.schedule_id}::`))
         );
-
         if (matchingLog && FINAL_STATUSES.includes(matchingLog.display_status)) {
           next[activity.activity_name] = matchingLog.display_status;
           changed = true;
         }
       });
-
       return changed ? next : prev;
     });
   }, [allLogs, selectedSchedule, todayStr]);
@@ -182,18 +161,14 @@ export default function ScheduleDashboard() {
       ]);
       setDeviations(devRes.data || []);
       setSchedule(schedRes.data || []);
-
       const newNotifs = normalizeNotifications(notifRes.data);
       setNotifications(newNotifs);
-
       const newUnreadCount = newNotifs.filter(n => !n.read).length;
       if (newUnreadCount > prevUnreadCount.current && prevUnreadCount.current !== 0) {
         toast.error(`You have new alerts! Check the notifications.`, {
           icon: '⚠️',
           duration: 4000,
         });
-
-        // Show full-screen modal for new Missed notifications
         const missedNotifs = newNotifs.filter(
           n => !n.read && n.status === "Missed" && !shownMissedRef.current.has(n.notification_id)
         );
@@ -212,7 +187,6 @@ export default function ScheduleDashboard() {
         }
       }
       prevUnreadCount.current = newUnreadCount;
-
       const logs = logsRes.data || [];
       setTotalLogs(logs.length);
       setRecentLogs(logs.slice(0, 5));
@@ -231,7 +205,6 @@ export default function ScheduleDashboard() {
       const updatedActivities = currentSched.activities.filter(
         (act) => act.activity_name !== activityName
       );
-
       if (updatedActivities.length === 0) {
         await deleteSchedule(currentSched.schedule_id);
         toast.success("All activities deleted. Routine cleared!", { icon: "🗑" });
@@ -239,7 +212,6 @@ export default function ScheduleDashboard() {
         setShowDetector(false);
         return;
       }
-
       await createSchedule(updatedActivities, currentSched.description || "");
       toast.success(`"${activityName}" deleted and schedule saved!`, { icon: "🗑" });
       fetchData();
@@ -262,18 +234,46 @@ export default function ScheduleDashboard() {
         setTotalLogs(0);
         setDeviations([]);
         setNotifications([]);
+        setShowProgressSidebar(false);
       } catch (err) {
         toast.error("Failed to delete routine");
       }
     }
   };
 
+  // ── Sidebar helpers ───────────────────────────────────────────────────
+  // A locked (final) status always wins. Otherwise fall back to a simple
+  // time-based label so unfinished activities aren't just blank.
+  const getSidebarStatus = (activity) => {
+    const locked = lockedStatuses[activity.activity_name];
+    if (locked) return locked;
+    const nowMin = currentTime.getHours() * 60 + currentTime.getMinutes();
+    const startMin = timeToMinutes(activity.start_time);
+    const endMin = timeToMinutes(activity.end_time);
+    if (nowMin >= startMin && nowMin <= endMin) return "In Progress";
+    return "Pending";
+  };
+
+  const sidebarActivities = (selectedSchedule?.activities || []).map((activity) => ({
+    ...activity,
+    status: getSidebarStatus(activity),
+  }));
+
+  const sidebarCounts = {
+    Completed: sidebarActivities.filter((a) => a.status === "Completed").length,
+    Early: sidebarActivities.filter((a) => a.status === "Early").length,
+    Late: sidebarActivities.filter((a) => a.status === "Late").length,
+    Missed: sidebarActivities.filter((a) => a.status === "Missed").length,
+  };
+  const sidebarTotal = sidebarActivities.length;
+  const sidebarFinalCount = sidebarActivities.filter((a) => FINAL_STATUSES.includes(a.status)).length;
+  const sidebarPct = sidebarTotal > 0 ? Math.round((sidebarFinalCount / sidebarTotal) * 100) : 0;
+
   const unreadCount = notifications.filter((n) => !n.read).length;
   const todayActivities = selectedSchedule?.activities?.length || 0;
 
   return (
     <div className="w-full pb-20">
-      {/* Dashboard Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 animate-slide-up">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Live Dashboard</h1>
@@ -292,8 +292,6 @@ export default function ScheduleDashboard() {
             <p className="text-sm text-white font-medium">Monitoring pipeline active</p>
           </div>
         </div>
-
-        {/* Digital clock */}
         <div className="flex items-center gap-3 rounded-2xl border border-gray-800 bg-gray-900/40 backdrop-blur-md px-4 py-3 shadow-lg shadow-blue-950/10">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse" />
           <div>
@@ -303,7 +301,6 @@ export default function ScheduleDashboard() {
             </p>
           </div>
         </div>
-
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <button
             onClick={() => navigate("/routine-setup")}
@@ -332,15 +329,20 @@ export default function ScheduleDashboard() {
         </div>
       ) : (
         <div className="space-y-8 animate-slide-up" style={{ animationDelay: "0.1s" }}>
-
-          {/* Activity Detector - Always visible once a routine exists */}
           {selectedSchedule && (
-            <div className={`mb-10 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${showDetector ? "" : "opacity-95"}`}>
-              <ActivityDetectorMonitor selectedScheduleId={selectedSchedule.schedule_id} autoStart={showDetector} />
+            <div className={`mb-2 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${showDetector ? "" : "opacity-95"}`}>
+              <div className="flex justify-end px-4 pt-4">
+                <button
+                  onClick={() => setShowProgressSidebar(true)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg shadow-md transition-colors flex items-center gap-2"
+                >
+                  📊 Schedule Progress
+                </button>
+              </div>
+              <ActivityDetectorMonitor schedule={selectedSchedule} autoStart={showDetector} onActivityConfirmed={fetchData} />
             </div>
           )}
 
-          {/* Health Metrics KPI Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-indigo-900/20 group relative overflow-hidden">
               <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
@@ -364,7 +366,6 @@ export default function ScheduleDashboard() {
                 </svg>
               </div>
             </div>
-
             <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-900/20 group relative overflow-hidden">
               <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
               <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 relative z-10"><span>👣</span> Step Count</p>
@@ -383,7 +384,6 @@ export default function ScheduleDashboard() {
                 ))}
               </div>
             </div>
-
             <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl p-6 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-amber-900/20 group relative overflow-hidden">
               <div className="absolute -bottom-4 -right-4 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl pointer-events-none"></div>
               <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 relative z-10"><span>⚡</span> Activity Level</p>
@@ -401,199 +401,124 @@ export default function ScheduleDashboard() {
             </div>
           </div>
 
-          <div className="pt-4">
-
-            {/* Timeline */}
-            <div className="w-full space-y-8">
-              <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-8 border border-gray-800/60 shadow-lg relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-32 bg-blue-500/5 rounded-full blur-3xl"></div>
-                <div className="flex justify-between items-center mb-8 relative z-10">
-                  <h2 className="text-lg font-semibold text-gray-100 flex items-center gap-3">
-                    <span className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 text-sm">📅</span>
-                    Today's Routine
-                  </h2>
-                  {selectedSchedule && (
-                    <button
-                      onClick={handleDeleteSchedule}
-                      className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-semibold rounded-lg border border-rose-500/30 transition-colors flex items-center gap-2"
-                    >
-                      <span>🗑</span> Delete Routine
-                    </button>
-                  )}
-                </div>
-
-                {!selectedSchedule ? (
-                  <div className="py-12 text-center text-gray-500 relative z-10">
-                    <p className="mb-4 text-4xl">📭</p>
-                    <p>{schedule.length === 0 ? "No routine established yet." : "Select a routine above to view tracking and start live monitoring."}</p>
-                    <button onClick={() => navigate("/routine-setup")} className="mt-4 text-blue-400 hover:text-blue-300 text-sm font-medium transition">
-                      Set up a routine →
-                    </button>
-                  </div>
-                ) : (
-                  <div className="relative border-l-2 border-gray-800/80 sm:ml-20 ml-12 space-y-8 py-2 z-10">
-                    {selectedSchedule?.activities?.map((activity, idx) => {
-                      // NEW: if this activity's status has already been
-                      // LOCKED (see the effect above), use that locked
-                      // status and never look at allLogs again for it —
-                      // this is what makes Completed/Early/Late/Missed
-                      // permanent for the rest of the schedule's life,
-                      // regardless of any further detections the backend
-                      // might log for it.
-                      const lockedStatus = lockedStatuses[activity.activity_name];
-
-                      // Only look at live logs if NOT yet locked.
-                      const log = !lockedStatus
-                        ? allLogs.find(
-                          (l) =>
-                            l.activity_name === activity.activity_name &&
-                            (!l.date || l.date === todayStr) &&
-                            (l.schedule_id === selectedSchedule.schedule_id ||
-                             (l.schedule_id || "").startsWith(`${selectedSchedule.schedule_id}::`))
-                        )
-                        : null;
-
-                      const effectiveStatus = lockedStatus || log?.display_status || null;
-                      const isCurrent = isCurrentActivity(activity.start_time, activity.end_time);
-
-                      let statusDot = "bg-gray-800 border-gray-700";
-                      let statusText = "Planned";
-                      let textClass = "text-purple-400 bg-purple-500/10 border-purple-500/20";
-                      let progress = 0;
-                      let barColor = "bg-gray-800";
-                      let glowClass = "hover:shadow-gray-900/10 border-gray-800";
-
-                      // The backend's raw `status` field is always lowercase
-                      // ("done"/"early"/"late"/"missed"/"caregiver_missing")
-                      // — that vocabulary lives in monitoring_service.py.
-                      // The capitalized labels this component needs
-                      // ("Completed"/"Early"/"Late"/"Missed"/"Not Done")
-                      // only exist on `display_status`. Compare against
-                      // `effectiveStatus` (locked status takes priority,
-                      // falling back to the live log's display_status).
-                      if (effectiveStatus === "Completed") {
-                        statusDot = "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] border-emerald-900";
-                        statusText = "Completed";
-                        textClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-                        progress = 100;
-                        barColor = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
-                        glowClass = "hover:shadow-emerald-950/10 border-emerald-900/40 hover:border-emerald-500/30";
-                      }
-                      else if (effectiveStatus === "Early") {
-                        statusDot = "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.5)] border-cyan-900";
-                        statusText = "Early";
-                        textClass = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
-                        progress = 100;
-                        barColor = "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.5)]";
-                        glowClass = "hover:shadow-cyan-950/10 border-cyan-900/40 hover:border-cyan-500/30";
-                      }
-                      else if (effectiveStatus === "Late") {
-                        statusDot = "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] border-amber-900";
-                        statusText = "Late";
-                        textClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
-                        progress = 65;
-                        barColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
-                        glowClass = "hover:shadow-amber-950/10 border-amber-900/40 hover:border-amber-500/30";
-                      }
-                      else if (effectiveStatus === "Missed") {
-                        statusDot = "bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.5)] border-rose-900";
-                        statusText = "Missed";
-                        textClass = "text-rose-400 bg-rose-500/10 border-rose-500/20";
-                        progress = 0;
-                        barColor = "bg-rose-500/20";
-                        glowClass = "hover:shadow-rose-950/10 border-rose-950/40 hover:border-rose-500/30";
-                      }
-                      else if (effectiveStatus === "Not Done") {
-                        statusDot = "bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.5)] border-orange-900";
-                        statusText = "Not Done";
-                        textClass = "text-orange-400 bg-orange-500/10 border-orange-500/20";
-                        progress = 0;
-                        barColor = "bg-orange-500/20";
-                        glowClass = "hover:shadow-orange-950/10 border-orange-950/40 hover:border-orange-500/30";
-                      }
-                      else if (isCurrent) {
-                        // Only reachable when there's no locked status AND
-                        // no final-status log yet — a genuinely undecided,
-                        // currently-in-window activity.
-                        statusDot = "bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.5)] border-blue-900 animate-pulse";
-                        statusText = "In Progress";
-                        textClass = "text-blue-400 bg-blue-500/10 border-blue-500/20";
-                        progress = 65;
-                        barColor = "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]";
-                        glowClass = "hover:shadow-blue-950/10 border-blue-900/40 hover:border-blue-500/30";
-                      }
-
-                      return (
-                        <div key={idx} className="relative pl-8 sm:pl-12 group transition-all duration-300">
-                          {/* Thread Dot */}
-                          <div className={`absolute -left-[9px] top-8 w-4 h-4 rounded-full border-2 ${statusDot} transition-all duration-300 group-hover:scale-125 z-10`} />
-
-                          {/* Left Time Label */}
-                          <div className="absolute -left-12 sm:-left-20 top-7 text-xs font-semibold text-gray-500 tracking-tight text-right w-10 sm:w-16 group-hover:text-gray-400 transition-colors">
-                            {activity.start_time}
-                          </div>
-
-                          {/* Beautiful Glassmorphic Card */}
-                          <div className={`bg-gray-800/20 hover:bg-gray-800/40 hover:shadow-2xl transition-all duration-300 border ${glowClass} rounded-2xl p-6 backdrop-blur-sm`}>
-                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
-                              <div className="flex items-center gap-4">
-                                <span className="w-12 h-12 rounded-xl bg-gray-800/80 flex items-center justify-center text-2xl border border-gray-700/50 shadow-md group-hover:scale-105 transition-transform duration-300">
-                                  {getActivityIcon(activity.activity_name)}
-                                </span>
-                                <div>
-                                  <h4 className="font-bold text-lg text-white group-hover:text-blue-400 transition-colors">{activity.activity_name}</h4>
-                                  <p className="text-xs text-gray-500 font-medium mt-0.5">{getActivityCategory(activity.activity_name)}</p>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <span className="text-xs text-gray-500 font-mono tracking-tight bg-gray-800/40 px-2.5 py-1 rounded-lg border border-gray-800">
-                                  {activity.start_time} — {activity.end_time}
-                                </span>
-                                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${textClass}`}>
-                                  {statusText}
-                                </div>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (window.confirm(`Are you sure you want to delete "${activity.activity_name}" from the routine?`)) {
-                                      handleDeleteIndividualActivity(activity.activity_name);
-                                    }
-                                  }}
-                                  className="w-8 h-8 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500 hover:text-white transition-all flex items-center justify-center text-sm shadow-md"
-                                  title="Delete Activity"
-                                >
-                                  🗑
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Progress Bar */}
-                            <div className="mt-5">
-                              <div className="flex justify-between items-center text-xs text-gray-500 mb-1.5 font-medium">
-                                <span>Progress</span>
-                                <span>{progress}%</span>
-                              </div>
-                              <div className="w-full h-2 bg-gray-800/60 rounded-full overflow-hidden border border-gray-800">
-                                <div
-                                  className={`h-full rounded-full ${barColor} transition-all duration-500`}
-                                  style={{ width: `${progress}%` }}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+          {!selectedSchedule && (
+            <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-12 border border-gray-800/60 text-center text-gray-500">
+              <p className="mb-4 text-4xl">📭</p>
+              <p>{schedule.length === 0 ? "No routine established yet." : "Set up a routine to start live monitoring."}</p>
+              <button onClick={() => navigate("/routine-setup")} className="mt-4 text-blue-400 hover:text-blue-300 text-sm font-medium transition">
+                Set up a routine →
+              </button>
             </div>
-
-          </div>
+          )}
         </div>
       )}
 
-      {/* Full-screen Missed alert modal */}
+      {/* ── Slide-in Schedule Progress sidebar ─────────────────────────── */}
+      {showProgressSidebar && (
+        <>
+          <div
+            className="fixed inset-0 z-40 sidebar-overlay"
+            onClick={() => setShowProgressSidebar(false)}
+          />
+          <div className="fixed top-0 right-0 h-full w-full max-w-sm z-50 sidebar-slide-in bg-gray-950 border-l border-gray-800 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                <span className="w-7 h-7 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 text-sm">📊</span>
+                Schedule Progress
+              </h2>
+              <button
+                onClick={() => setShowProgressSidebar(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+              {!selectedSchedule ? (
+                <div className="text-center text-gray-500 py-12">
+                  <p className="text-3xl mb-3">📭</p>
+                  <p>No routine established yet.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-gray-900/60 border border-emerald-500/30 rounded-xl p-3 text-center">
+                      <div className="text-xl font-bold text-emerald-400">{sidebarCounts.Completed}</div>
+                      <div className="text-[11px] text-gray-400 mt-1">Completed</div>
+                    </div>
+                    <div className="bg-gray-900/60 border border-sky-500/30 rounded-xl p-3 text-center">
+                      <div className="text-xl font-bold text-sky-400">{sidebarCounts.Early}</div>
+                      <div className="text-[11px] text-gray-400 mt-1">Early</div>
+                    </div>
+                    <div className="bg-gray-900/60 border border-amber-500/30 rounded-xl p-3 text-center">
+                      <div className="text-xl font-bold text-amber-400">{sidebarCounts.Late}</div>
+                      <div className="text-[11px] text-gray-400 mt-1">Late</div>
+                    </div>
+                    <div className="bg-gray-900/60 border border-rose-500/30 rounded-xl p-3 text-center">
+                      <div className="text-xl font-bold text-rose-400">{sidebarCounts.Missed}</div>
+                      <div className="text-[11px] text-gray-400 mt-1">Missed</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs font-medium text-gray-400">Overall Progress</span>
+                      <span className="text-xs font-semibold text-white">{sidebarFinalCount}/{sidebarTotal} · {sidebarPct}%</span>
+                    </div>
+                    <div className="w-full h-2.5 bg-gray-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-sky-500 rounded-full transition-all duration-500"
+                        style={{ width: `${sidebarPct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {sidebarActivities.map((activity, idx) => {
+                      const cfg = SIDEBAR_STATUS_STYLE[activity.status] || SIDEBAR_STATUS_STYLE.Pending;
+                      return (
+                        <div
+                          key={idx}
+                          className={`flex items-center justify-between gap-3 p-3 rounded-xl border ${cfg.border} ${cfg.bg}`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-lg shrink-0">{getActivityIcon(activity.activity_name)}</span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-white truncate">{activity.activity_name}</p>
+                              <p className="text-[11px] text-gray-500">{activity.start_time} – {activity.end_time}</p>
+                            </div>
+                          </div>
+                          <span className={`shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold ${cfg.text}`}>
+                            {cfg.icon} {activity.status}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {sidebarActivities.length === 0 && (
+                      <p className="text-center text-gray-500 text-sm py-6">No activities in this routine.</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-gray-800">
+              <button
+                onClick={() => {
+                  setShowProgressSidebar(false);
+                  navigate("/schedule-progress");
+                }}
+                className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg shadow-md transition-colors"
+              >
+                View Full Progress →
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       <AlertModal
         alert={activeAlert}
         onDismiss={() => setActiveAlert(null)}

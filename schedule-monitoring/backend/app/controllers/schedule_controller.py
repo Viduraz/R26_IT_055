@@ -4,12 +4,22 @@ schedule-monitoring/backend/app/controllers/schedule_controller.py
 
 log_detected_activity() and validate_activity() delegate to
 MonitoringService.process_detection_event() — the canonical rule engine
-(Early / Completed / Late / Missed).
+(Early / Completed / Late / Missed), which now determines Completed vs Late
+using each activity's own start_time/end_time boundary rather than a fixed
+20-minute cutoff (see monitoring_service.py's docstring).
 
 NOTE: the lowercase→capitalized status dict now lives in monitoring_service.py
 as STATUS_TO_DISPLAY, imported here instead of kept as a private copy — see
 that file's docstring for why (monitoring_controller.py needed the same
 mapping and previously had none at all).
+
+FIX (Dashboard Schedule Sidebar & Detection Status Fix plan) — get_activity_logs()
+now auto-triggers MonitoringService.evaluate_missed_tasks() before returning
+logs. The dashboard/sidebar polls this endpoint every 5 seconds, so this
+ensures any activity whose scheduled window has closed with no detection
+gets written to the DB as "Missed" (and locked) on the very next poll,
+instead of only being marked missed when something else happened to call
+evaluate_missed_tasks() directly.
 
 NEW: get_day_report() and get_week_report() expose the daily_reports
 archive (see schedule_service.py's _archive_schedule_as_report /
@@ -43,6 +53,12 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
     """Translate MonitoringService's raw {"matched","results"} shape into the
     flat status/adaptive_grace_minutes/delay_minutes/deadline shape the
     frontend actually reads off response.data.
+
+    NOTE: "delay_minutes"/"deadline" here are a legacy display convenience —
+    the actual Completed/Late boundary decision now happens inside
+    MonitoringService.process_detection_event() using each activity's own
+    end_time, not LATE_THRESHOLD_MINUTES. This field is kept only so any
+    existing frontend code reading response.data.deadline doesn't break.
     """
     results = monitoring_result.get("results", [])
 
@@ -60,11 +76,10 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
     display_status = STATUS_TO_DISPLAY.get(lower_status, "Unexpected")
 
     deadline_iso = None
-    start_time = match.get("start_time")
-    if start_time:
-        h, m = map(int, start_time.split(":"))
-        deadline_dt = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0) \
-            + timedelta(minutes=LATE_THRESHOLD_MINUTES)
+    end_time = match.get("end_time")
+    if end_time:
+        h, m = map(int, end_time.split(":"))
+        deadline_dt = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
         deadline_iso = deadline_dt.isoformat()
 
     return {
@@ -143,7 +158,14 @@ def validate_activity(user: dict, payload: dict):
 
 
 def get_activity_logs(user: dict):
-    """Get activity logs"""
+    """Get activity logs.
+
+    FIX: auto-trigger evaluate_missed_tasks() first. The dashboard/sidebar
+    polls this endpoint every 5 seconds, so this write-through ensures any
+    activity whose window has closed with no detection is marked "Missed"
+    (and persisted/locked) on the very next poll cycle.
+    """
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
     return _svc.get_activity_logs(user.get("user_id"))
 
 
@@ -155,13 +177,13 @@ def get_reports(user: dict):
 
 
 def get_day_report(user: dict, date: str):
-    """NEW: Get the archived Done/Late/Missed/Total counts for one specific
+    """Get the archived Done/Late/Missed/Total counts for one specific
     calendar day (YYYY-MM-DD), e.g. Monday's finished routine."""
     return _svc.get_report_by_date(user.get("user_id"), date)
 
 
 def get_week_report(user: dict, start_date: str):
-    """NEW: Get 7 days of archived reports plus summed weekly totals,
+    """Get 7 days of archived reports plus summed weekly totals,
     starting at start_date (YYYY-MM-DD)."""
     return _svc.get_reports_for_week(user.get("user_id"), start_date)
 

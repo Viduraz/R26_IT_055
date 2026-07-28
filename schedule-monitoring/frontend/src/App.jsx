@@ -8,6 +8,8 @@ import Layout from "./components/Layout";
 import NotificationsPanel from "./pages/NotificationsPanel";
 import ActivityLog from "./pages/ActivityLog";
 import DataCollector from "./pages/DataCollector";
+import ScheduleProgress from "./pages/ScheduleProgress";
+// or whatever the correct relative path is in your project
 
 function App() {
   return (
@@ -22,6 +24,7 @@ function App() {
           <Route path="/activity-log" element={<ActivityLog />} />
           <Route path="/data-collector" element={<DataCollector />} />
           <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/schedule-progress" element={<ScheduleProgress />} />
         </Routes>
       </Layout>
     </BrowserRouter>
