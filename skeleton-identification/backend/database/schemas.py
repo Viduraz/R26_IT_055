@@ -27,14 +27,14 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     role: Optional[str] = None
     notes: Optional[str] = None
-    enrollment_status: str
+    enrollment_status: str = "pending"
     enrollment_frames_count: int = 0
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class UserInDB(BaseModel):
-    """Full user document as stored in MongoDB."""
+    """Full user document as stored in MongoDB."""#universaly unique id
     user_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: Optional[str] = None

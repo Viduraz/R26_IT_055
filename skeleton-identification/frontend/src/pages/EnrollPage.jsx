@@ -25,7 +25,7 @@ export default function EnrollPage() {
   const [statusMsg, setStatusMsg] = useState('Select a user and start enrollment');
 
   const cameraStreamRef = useRef(null);
-  const enrollVideoRef  = useRef(null);
+  const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
 
   const streamStateRef = useRef({
@@ -36,6 +36,7 @@ export default function EnrollPage() {
     usePhoneCamera: false,
     phoneImage: null,
     phoneCameraUrl: '',
+    enrollType: 'skeleton',
   });
 
   // Load users on mount
@@ -54,9 +55,9 @@ export default function EnrollPage() {
     if (data.features_ok) setStatusMsg('');
     if (data.mode === 'enroll' && data.features_ok && data.frames_collected != null) {
       setFramesCollected(data.frames_collected);
-      
+
       // Speed up enrollment for presentation
-      const TARGET_FRAMES = 10;
+      /*const TARGET_FRAMES = 10;
       const pct = Math.min((data.frames_collected / TARGET_FRAMES) * 100, 100);
       setProgress(pct);
 
@@ -64,15 +65,15 @@ export default function EnrollPage() {
         toast('Enrollment complete! ✅', 'success');
         stopEnrollment();
       }
-
-      /* Original logic kept for after presentation:
+       */
+      //Original logic kept for after presentation:
       const pct = Math.min((data.progress || 0), 100);
       setProgress(pct);
       if (data.enrollment_status === 'completed') {
         toast('Enrollment complete! ✅', 'success');
         stopEnrollment();
       }
-      */
+
     }
   }, []);
 
@@ -181,7 +182,7 @@ export default function EnrollPage() {
 
   return (
     <div className="flex-1 p-6 overflow-y-auto">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl">
+      <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] gap-6 w-full">
 
         {/* Form Panel */}
         <div className="glass-card p-6 space-y-5">

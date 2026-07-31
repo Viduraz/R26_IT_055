@@ -46,7 +46,11 @@ class LocalCursor:
                 match = True
                 for k,v in self._query.items():
                     if k.startswith("$"): continue
-                    if doc.get(k) != v: match = False; break
+                    if isinstance(v, dict) and "$exists" in v:
+                        exists = v["$exists"]
+                        has_key = k in doc
+                        if has_key != exists: match = False; break
+                    elif doc.get(k) != v: match = False; break
                 if match: filtered.append(doc)
             data = filtered
             
@@ -246,6 +250,8 @@ class MongoDB:
                 uri,
                 serverSelectionTimeoutMS=3000,
                 connectTimeoutMS=3000,
+                tls=True,
+                tlsAllowInvalidCertificates=True,
             )
             # Verify connection
             await cls._client.admin.command("ping")
@@ -264,10 +270,22 @@ class MongoDB:
         """Create required indexes (Cloud only)."""
         if cls._is_local: return
         db = cls.get_db()
-        await db.users.create_index("user_id", unique=True)
-        await db.feature_profiles.create_index("user_id", unique=True)
-        await db.identification_logs.create_index("timestamp")
-        await db.trained_models.create_index([("model_type", 1), ("is_active", 1)])
+        try:
+            await db.users.create_index("user_id", unique=True)
+        except Exception as e:
+            log.warning("failed_to_create_users_index", error=str(e))
+        try:
+            await db.feature_profiles.create_index("user_id", unique=True)
+        except Exception as e:
+            log.warning("failed_to_create_feature_profiles_index", error=str(e))
+        try:
+            await db.identification_logs.create_index("timestamp")
+        except Exception as e:
+            log.warning("failed_to_create_logs_index", error=str(e))
+        try:
+            await db.trained_models.create_index([("model_type", 1), ("is_active", 1)])
+        except Exception as e:
+            log.warning("failed_to_create_trained_models_index", error=str(e))
         log.info("mongodb_indexes_created")
 
     @classmethod
@@ -279,6 +297,86 @@ class MongoDB:
     @classmethod
     def get_collection(cls, name: str):
         return cls.get_db()[name]
+
+    @classmethod
+    async def sync_local_db(cls):
+        """Sync data from local JSON database to cloud MongoDB Atlas if needed."""
+        if cls._is_local:
+            return
+
+        from config import settings
+        local_db_path = settings.local_db_path
+        if not os.path.exists(local_db_path):
+            log.info("sync_no_local_db_found", path=local_db_path)
+            return
+
+        try:
+            log.info("syncing_local_db_to_atlas_started", path=local_db_path)
+            with open(local_db_path, "r") as f:
+                data = json.load(f)
+
+            db = cls.get_db()
+            
+            # Sync users
+            users = data.get("users", [])
+            synced_users = 0
+            for u in users:
+                u_copy = u.copy()
+                for k in ["created_at", "updated_at"]:
+                    if k in u_copy and isinstance(u_copy[k], str):
+                        try:
+                            u_copy[k] = datetime.fromisoformat(u_copy[k])
+                        except Exception:
+                            pass
+                
+                existing = await db.users.find_one({"user_id": u_copy["user_id"]})
+                if not existing:
+                    await db.users.insert_one(u_copy)
+                    synced_users += 1
+
+            # Sync feature_profiles
+            profiles = data.get("feature_profiles", [])
+            synced_profiles = 0
+            for p in profiles:
+                p_copy = p.copy()
+                if "last_updated" in p_copy and isinstance(p_copy["last_updated"], str):
+                    try:
+                        p_copy["last_updated"] = datetime.fromisoformat(p_copy["last_updated"])
+                    except Exception:
+                        pass
+                
+                existing = await db.feature_profiles.find_one({"user_id": p_copy["user_id"]})
+                if not existing:
+                    await db.feature_profiles.insert_one(p_copy)
+                    synced_profiles += 1
+
+            # Sync trained_models
+            models = data.get("trained_models", [])
+            synced_models = 0
+            for m in models:
+                m_copy = m.copy()
+                if "trained_at" in m_copy and isinstance(m_copy["trained_at"], str):
+                    try:
+                        m_copy["trained_at"] = datetime.fromisoformat(m_copy["trained_at"])
+                    except Exception:
+                        pass
+                
+                existing = await db.trained_models.find_one({
+                    "model_type": m_copy["model_type"],
+                    "version": m_copy["version"]
+                })
+                if not existing:
+                    await db.trained_models.insert_one(m_copy)
+                    synced_models += 1
+
+            log.info(
+                "sync_local_db_to_atlas_success",
+                users=synced_users,
+                profiles=synced_profiles,
+                models=synced_models,
+            )
+        except Exception as e:
+            log.error("sync_local_db_to_atlas_failed", error=str(e))
 
     @classmethod
     async def close(cls):
