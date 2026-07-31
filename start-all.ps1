@@ -56,7 +56,15 @@ Write-Host "[INFO] Starting 8 React Frontends in tunnel mode (minimized)..." -Fo
 
 foreach ($fe in $frontends) {
     $fullPath = Join-Path $PSScriptRoot $fe.Path
-    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", "npm run dev -- --host 127.0.0.1 --mode tunnel" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
+
+    # Skeleton-ID frontend requires:
+    #   --host 0.0.0.0   : bind all interfaces (proxy connects via 127.0.0.1)
+    #   --mode tunnel     : activates base='/skeleton/' in vite.config.js
+    if ($fe.Name -like "*Skeleton*") {
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", "npm run dev -- --host 0.0.0.0 --mode tunnel" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
+    } else {
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", "npm run dev -- --host 127.0.0.1 --mode tunnel" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
+    }
     $processes += $proc
     Start-Sleep -Milliseconds 200
 }
@@ -74,6 +82,12 @@ if (-not (Test-Path $cloudflared)) {
     foreach ($p in $processes) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
     exit 1
 }
+
+# ── Kill any leftover cloudflared / proxy processes from a previous session ──
+Write-Host "[INFO] Cleaning up any leftover tunnel processes..." -ForegroundColor Yellow
+Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Give the OS a moment to release file handles
+Start-Sleep -Milliseconds 500
 
 # Remove old logs if they exist
 if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
@@ -122,17 +136,18 @@ try {
     }
 
     if ($linkFound) {
-        Write-Host ""
-        Write-Host "=====================================================================" -ForegroundColor Green
-        Write-Host " 🎉  YOUR LIVE SECURE ELDERCARE TUNNEL IS READY!" -ForegroundColor Green
-        Write-Host "=====================================================================" -ForegroundColor Green
+        Write-Host "" 
+        Write-Host "====================================================================" -ForegroundColor Green
+        Write-Host "  *** YOUR LIVE SECURE ELDERCARE TUNNEL IS READY! ***" -ForegroundColor Green
+        Write-Host "====================================================================" -ForegroundColor Green
         Write-Host "  Copy and share this public URL with your teammates:" -ForegroundColor White
         Write-Host ""
-        Write-Host "  👉  $url" -ForegroundColor Cyan
+        Write-Host "  >>  $url" -ForegroundColor Cyan
+        Write-Host "  >>  $url/skeleton/" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "=====================================================================" -ForegroundColor Green
+        Write-Host "====================================================================" -ForegroundColor Green
         Write-Host "  Press [Ctrl + C] in this window to stop and close all services." -ForegroundColor Red
-        Write-Host "=====================================================================" -ForegroundColor Green
+        Write-Host "====================================================================" -ForegroundColor Green
         Write-Host ""
         
         # Keep process open and wait for user interruption
