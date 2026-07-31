@@ -105,7 +105,14 @@ export default function FaceRecognitionPage() {
   });
 
   useEffect(() => {
-    fetchUsers().then(setUsers).catch(() => toast('Failed to load users', 'error'));
+    let cancelled = false;
+    fetchUsers()
+      .then(data => { if (!cancelled) setUsers(data); })
+      .catch(() => {
+        if (!cancelled)
+          toast('Could not reach skeleton backend (port 8007). Is it running?', 'error');
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const currentStep = SCAN_STEPS[currentStepIdx] || SCAN_STEPS[0];

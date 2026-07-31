@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     local_db_path: str = "./data/local_db.json"
 
     # ── Service Ports ─────────────────────────────────────────────────────────
-    gateway_port: int = 8000
+    gateway_port: int = 8007
     video_service_port: int = 8001
     pose_service_port: int = 8002
     feature_service_port: int = 8003
