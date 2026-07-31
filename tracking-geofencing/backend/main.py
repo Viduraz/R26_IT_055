@@ -32,10 +32,36 @@ app.include_router(tracking_router, prefix="/api/tracking", tags=["Tracking"])
 app.include_router(geofencing_router, prefix="/api/geofence", tags=["Geofencing"])
 
 @app.get("/health")
-def health():
+async def health():
     from datetime import datetime
-    return {"status": "ok", "service": "tracking-geofencing",
-            "timestamp": datetime.utcnow().isoformat()}
+    from app.database.db import get_client
+    
+    try:
+        client = get_client()
+        if client is None:
+            raise Exception("MongoDB client is None")
+        # Ping the admin database to verify active connection
+        await client.admin.command("ping")
+        return {
+            "status": "ok",
+            "database": "connected",
+            "service": "tracking-geofencing",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"[ERROR] Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "offline",
+                "database": "disconnected",
+                "detail": str(e),
+                "service": "tracking-geofencing",
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+
 
 @app.on_event("startup")
 async def startup_event():

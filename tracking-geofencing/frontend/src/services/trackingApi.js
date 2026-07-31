@@ -44,8 +44,8 @@ export async function checkBackendHealth() {
 
 // Tracking API
 export const trackingApi = {
-  processFrame: (frameBase64) =>
-    API.post("/api/tracking/process-frame", { frame: frameBase64 }),
+  processFrame: (frameBase64, trackerType = "bytetrack") =>
+    API.post("/api/tracking/process-frame", { frame: frameBase64, tracker_type: trackerType }),
   getHistory: (page = 1, pageSize = 50) =>
     API.get("/api/tracking/history", { params: { page, page_size: pageSize } }),
   getActive: () => API.get("/api/tracking/active"),
@@ -63,12 +63,16 @@ export const geofenceApi = {
   updateZone: (zoneId, data) => API.put(`/api/geofence/zones/${zoneId}`, data),
   deleteZone: (zoneId) => API.delete(`/api/geofence/zones/${zoneId}`),
   checkBreach: (data) => API.post("/api/geofence/check-breach", data),
-  getAlerts: (resolved) => {
+  getAlerts: (resolved, since) => {
     const params = {};
     if (resolved !== undefined && resolved !== null) params.resolved = resolved;
+    if (since) params.since = since;
     return API.get("/api/geofence/alerts", { params });
   },
   resolveAlert: (alertId) => API.put(`/api/geofence/alerts/${alertId}/resolve`),
+  clearAlerts: () => API.delete("/api/geofence/alerts"),
+  sendMobileLocation: (lat, lng, accuracy, battery) => API.post("/api/geofence/mobile-location", { lat, lng, accuracy, battery }),
+  getMobileLocation: () => API.get("/api/geofence/mobile-location"),
 };
 
 export default API;

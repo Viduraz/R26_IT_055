@@ -22,6 +22,7 @@ class DetectedPerson(BaseModel):
 class ProcessFrameRequest(BaseModel):
     frame: str = Field(..., description="Base64-encoded JPEG frame")
     elder_id: Optional[str] = None
+    tracker_type: Optional[str] = "bytetrack"
 
 
 class ProcessFrameResponse(BaseModel):
@@ -66,6 +67,7 @@ class ZoneCreateRequest(BaseModel):
     zone_type: str = Field(..., pattern="^(safe|restricted|alert)$")
     polygon: List[List[float]] = Field(..., min_length=3)
     color: Optional[str] = "#00D4FF"
+    camera_distance: Optional[float] = 4.0
 
 
 class ZoneUpdateRequest(BaseModel):
@@ -74,6 +76,7 @@ class ZoneUpdateRequest(BaseModel):
     polygon: Optional[List[List[float]]] = None
     color: Optional[str] = None
     is_active: Optional[bool] = None
+    camera_distance: Optional[float] = None
 
 
 class ZoneResponse(BaseModel):
@@ -83,6 +86,7 @@ class ZoneResponse(BaseModel):
     polygon: List[List[float]]
     color: str
     is_active: bool
+    camera_distance: float
     created_at: str
 
 

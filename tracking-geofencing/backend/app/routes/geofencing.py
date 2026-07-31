@@ -13,12 +13,23 @@ from app.controllers.geofencing_controller import (
     handle_check_breach,
     handle_get_alerts,
     handle_resolve_alert,
+    handle_clear_alerts,
+    handle_update_mobile_location,
+    handle_get_mobile_location,
 )
 from app.models.tracking_models import (
     ZoneCreateRequest,
     ZoneUpdateRequest,
     BreachCheckRequest,
 )
+from pydantic import BaseModel
+from typing import Optional
+
+class MobileLocationRequest(BaseModel):
+    lat: float
+    lng: float
+    accuracy: Optional[float] = None
+    battery: Optional[int] = None
 
 router = APIRouter()
 
@@ -83,9 +94,16 @@ async def check_breach(
 @router.get("/alerts")
 async def get_alerts(
     resolved: bool = Query(None),
+    since: str = Query(None),
 ):
-    """Retrieve geofence alerts, optionally filtered by resolved status."""
-    return await handle_get_alerts(resolved)
+    """Retrieve geofence alerts, optionally filtered by resolved status and since timestamp."""
+    return await handle_get_alerts(resolved, since)
+
+
+@router.delete("/alerts")
+async def clear_alerts():
+    """Clear all geofence alerts."""
+    return await handle_clear_alerts()
 
 
 @router.put("/alerts/{alert_id}/resolve")
@@ -97,3 +115,22 @@ async def resolve_alert(
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return alert
+
+
+@router.post("/mobile-location")
+async def update_mobile_location(request: MobileLocationRequest):
+    """Receive live caregiver mobile location."""
+    return await handle_update_mobile_location(
+        lat=request.lat,
+        lng=request.lng,
+        accuracy=request.accuracy,
+        battery=request.battery,
+    )
+
+
+@router.get("/mobile-location")
+async def get_mobile_location():
+    """Get latest live caregiver mobile location."""
+    return await handle_get_mobile_location()
+
+
