@@ -271,11 +271,11 @@ class MongoDB:
         if cls._is_local: return
         db = cls.get_db()
         try:
-            await db.users.create_index("user_id", unique=True)
+            await db.users.create_index("user_id", unique=True, sparse=True)
         except Exception as e:
             log.warning("failed_to_create_users_index", error=str(e))
         try:
-            await db.feature_profiles.create_index("user_id", unique=True)
+            await db.feature_profiles.create_index("user_id", unique=True, sparse=True)
         except Exception as e:
             log.warning("failed_to_create_feature_profiles_index", error=str(e))
         try:

@@ -39,11 +39,16 @@ export default function EnrollPage() {
     enrollType: 'skeleton',
   });
 
-  // Load users on mount
+  // Load users on mount — one-shot, no polling loop
   useEffect(() => {
+    let cancelled = false;
     fetchUsers()
-      .then(setUsers)
-      .catch(() => toast('Failed to load users', 'error'));
+      .then(data => { if (!cancelled) setUsers(data); })
+      .catch(() => {
+        if (!cancelled)
+          toast('Could not reach skeleton backend (port 8007). Is it running?', 'error');
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const handleResult = useCallback((data) => {
