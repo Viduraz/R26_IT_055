@@ -8,6 +8,7 @@ import NotificationsPanel from "./pages/NotificationsPanel";
 import ActivityLog from "./pages/ActivityLog";
 import DataCollector from "./pages/DataCollector";
 import ScheduleProgress from "./pages/ScheduleProgress";
+import TrainHAR from './pages/TrainHAR';
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
           <Route path="/data-collector" element={<DataCollector />} />
           <Route path="/schedule-progress" element={<ScheduleProgress />} />
           <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/train-har" element={<TrainHAR />} />
         </Routes>
       </Layout>
     </BrowserRouter>

@@ -37,7 +37,7 @@ import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detec
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
 // ── LSTM toggle ────────────────────────────────────────────────────────────────
-const USE_LSTM = false;
+const USE_LSTM = true;
 
 // ── MoveNet state ──────────────────────────────────────────────────────────────
 let detector = null;
@@ -99,8 +99,8 @@ let normStd = null;
 let lstmReady = false;
 
 const LSTM_SEQ_LEN = 30;
-const LSTM_MODEL_PATH = '/lstm_har_model/model.json';
-const LSTM_STATS_PATH = '/lstm_har_model/norm_stats.json';
+const LSTM_MODEL_PATH = '/schedule/lstm_har_model/model.json';
+const LSTM_STATS_PATH = '/schedule/lstm_har_model/norm_stats.json';
 
 const LSTM_ACTIVITY_NAMES = [
   'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
