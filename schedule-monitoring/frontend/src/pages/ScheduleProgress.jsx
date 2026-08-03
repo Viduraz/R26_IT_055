@@ -52,14 +52,24 @@ const timeToMinutes = (timeStr) => {
 // window, and "Upcoming" beforehand — consistent with the backend's rules,
 // with no 20-minute threshold anywhere in this calculation.
 const computeStatus = (activity, log, nowMinutes) => {
+  // Final status from backend is locked — never override it
   if (log && log.display_status) {
-    // Locked/final status from the database — trust it verbatim.
-    return log.display_status;
+    const s = String(log.display_status);
+    if (["Completed", "Early", "Late", "Missed", "Not Done", "Done"].includes(s)) {
+      return s === "Done" ? "Completed" : s;
+    }
   }
+
   const startMin = timeToMinutes(activity.start_time);
   const endMin = timeToMinutes(activity.end_time);
+
+  // Window finished and never detected → Missed
   if (nowMinutes > endMin) return "Missed";
+
+  // Currently inside the window → In Progress
   if (nowMinutes >= startMin && nowMinutes <= endMin) return "In Progress";
+
+  // Before the window starts
   return "Upcoming";
 };
 

@@ -9,19 +9,46 @@
  *     picked up color from the video behind it)
  */
 import { useEffect, useRef, useState } from "react";
-import { initializePoseDetection, stopPoseDetection } from "../services/activityDetection";
+import {
+  initializePoseDetection,
+  stopPoseDetection,
+} from "../services/activityDetection";
 import { getSchedule, logDetectedActivity } from "../services/scheduleApi";
 
 const DETECTION_DEBOUNCE = 2000;
-const CONFIDENCE_THRESHOLD = 0.50;
+const CONFIDENCE_THRESHOLD = 0.5;
 
 const STATUS_DISPLAY = {
-  "Completed": { color: "bg-green-900/20 border-green-700 text-green-300", icon: "✓", label: "Completed" },
-  "Early": { color: "bg-cyan-900/20 border-cyan-700 text-cyan-300", icon: "🕒", label: "Early" },
-  "Late": { color: "bg-red-900/20 border-red-700 text-red-300", icon: "✕", label: "Late" },
-  "Missed": { color: "bg-rose-900/20 border-rose-700 text-rose-300", icon: "⚠", label: "Missed" },
-  "Not Done": { color: "bg-orange-900/20 border-orange-700 text-orange-300", icon: "⚠", label: "Not Done" },
-  "Unexpected": { color: "bg-gray-900/20 border-gray-700 text-gray-300", icon: "?", label: "Not Scheduled" },
+  Completed: {
+    color: "bg-green-900/20 border-green-700 text-green-300",
+    icon: "✓",
+    label: "Completed",
+  },
+  Early: {
+    color: "bg-cyan-900/20 border-cyan-700 text-cyan-300",
+    icon: "🕒",
+    label: "Early",
+  },
+  Late: {
+    color: "bg-red-900/20 border-red-700 text-red-300",
+    icon: "✕",
+    label: "Late",
+  },
+  Missed: {
+    color: "bg-rose-900/20 border-rose-700 text-rose-300",
+    icon: "⚠",
+    label: "Missed",
+  },
+  "Not Done": {
+    color: "bg-orange-900/20 border-orange-700 text-orange-300",
+    icon: "⚠",
+    label: "Not Done",
+  },
+  Unexpected: {
+    color: "bg-gray-900/20 border-gray-700 text-gray-300",
+    icon: "?",
+    label: "Not Scheduled",
+  },
 };
 
 export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
@@ -38,7 +65,13 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   const [detectionLogs, setDetectionLogs] = useState([]);
   const [debugInfo, setDebugInfo] = useState("");
   const [liveFeatures, setLiveFeatures] = useState(null);
-  const [stats, setStats] = useState({ detected: 0, logged: 0, completed: 0, late: 0, missed: 0 });
+  const [stats, setStats] = useState({
+    detected: 0,
+    logged: 0,
+    completed: 0,
+    late: 0,
+    missed: 0,
+  });
   const [confirmedActivity, setConfirmedActivity] = useState(null);
 
   const lastLogTimeRef = useRef({});
@@ -101,7 +134,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
       const schedules = res.data || [];
       if (schedules.length > 0) {
         setSchedule(schedules[0]);
-        setDebugInfo(`✓ Loaded schedule with ${schedules[0].activities.length} activities`);
+        setDebugInfo(
+          `✓ Loaded schedule with ${schedules[0].activities.length} activities`,
+        );
       } else {
         setSchedule(null);
         setDebugInfo("⚠️ No schedule found. Create one first!");
@@ -115,7 +150,7 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   const findScheduledActivity = (activityName) => {
     if (!schedule) return null;
     return schedule.activities.find(
-      (act) => act.activity_name.toLowerCase() === activityName.toLowerCase()
+      (act) => act.activity_name.toLowerCase() === activityName.toLowerCase(),
     );
   };
 
@@ -137,7 +172,8 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
     }
 
     const elapsedTime = now - confirmation.startTime;
-    const isConfirmed = confirmation.confirmedActivities[detectionData.activity_name] === true;
+    const isConfirmed =
+      confirmation.confirmedActivities[detectionData.activity_name] === true;
 
     if (elapsedTime >= CONFIRMATION_TIME && !isConfirmed) {
       confirmation.confirmedActivities[detectionData.activity_name] = true;
@@ -180,9 +216,31 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
     if (detectionData.activity_name === "Movement") return;
 
     let activityStatus = "Unexpected";
+
     if (schedule) {
-      const scheduledActivity = findScheduledActivity(detectionData.activity_name);
-      activityStatus = scheduledActivity ? "Scheduled" : "Unexpected";
+      const scheduledActivity = findScheduledActivity(
+        detectionData.activity_name,
+      );
+
+      if (scheduledActivity) {
+        // Decide status from the activity's own time window
+        const now = new Date();
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        const [sH, sM] = scheduledActivity.start_time.split(":").map(Number);
+        const [eH, eM] = scheduledActivity.end_time.split(":").map(Number);
+        const startMin = sH * 60 + sM;
+        const endMin = eH * 60 + eM;
+
+        if (nowMin < startMin) {
+          activityStatus = "Early";
+        } else if (nowMin > endMin) {
+          activityStatus = "Late";
+        } else {
+          activityStatus = "Completed"; // detected inside the window
+        }
+      } else {
+        activityStatus = "Unexpected";
+      }
     }
 
     const logEntry = {
@@ -205,8 +263,16 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
         });
 
         const adaptiveData = response.data;
-        logEntry.status = adaptiveData.status || activityStatus;
-        logEntry.adaptive_grace_minutes = adaptiveData.adaptive_grace_minutes || "?";
+        // Prefer our time-window decision. Only use backend status if it is a real final status.
+        const backendStatus = adaptiveData?.status;
+        const finalStatuses = ["Completed", "Early", "Late", "Missed"];
+        if (backendStatus && finalStatuses.includes(backendStatus)) {
+          logEntry.status = backendStatus;
+        } else {
+          logEntry.status = activityStatus;
+        }
+        logEntry.adaptive_grace_minutes =
+          adaptiveData.adaptive_grace_minutes || "?";
         logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
         logEntry.deadline = adaptiveData.deadline
           ? new Date(adaptiveData.deadline).toLocaleTimeString()
@@ -214,7 +280,11 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
 
         setStats((prev) => {
           const updated = { ...prev, logged: prev.logged + 1 };
-          if (adaptiveData.status === "Completed" || adaptiveData.status === "Early" || adaptiveData.status === "Late") {
+          if (
+            adaptiveData.status === "Completed" ||
+            adaptiveData.status === "Early" ||
+            adaptiveData.status === "Late"
+          ) {
             updated.completed++;
           }
           if (adaptiveData.status === "Late") updated.late++;
@@ -232,7 +302,7 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
       setDetectionLogs((prev) => [logEntry, ...prev.slice(0, 9)]);
       lastLogTimeRef.current[key] = now;
       setDebugInfo(
-        `✓ ${logEntry.activity} [${logEntry.status}] | Grace: ${logEntry.adaptive_grace_minutes}min | Delay: ${logEntry.delay_minutes}min`
+        `✓ ${logEntry.activity} [${logEntry.status}] | Grace: ${logEntry.adaptive_grace_minutes}min | Delay: ${logEntry.delay_minutes}min`,
       );
 
       // Set confirmed activity for visual indicator
@@ -243,13 +313,19 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
         time: new Date().toLocaleTimeString(),
       });
 
-      // Notify parent (ScheduleDashboard) to immediately re-fetch data
+      // Notify parent with the final status so the sidebar can lock it immediately
       if (onActivityConfirmed) {
-        onActivityConfirmed();
+        onActivityConfirmed({
+          activity_name: detectionData.activity_name,
+          status: logEntry.status,
+        });
       }
     } catch (error) {
       console.error("Error logging activity:", error);
-      setDetectionLogs((prev) => [{ ...logEntry, status: "Error" }, ...prev.slice(0, 9)]);
+      setDetectionLogs((prev) => [
+        { ...logEntry, status: "Error" },
+        ...prev.slice(0, 9),
+      ]);
     }
   };
 
@@ -257,7 +333,8 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   const startDetection = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     if (isLoading) return;
-    if (!schedule) setDebugInfo("⚠️ No schedule — detection will run in test mode!");
+    if (!schedule)
+      setDebugInfo("⚠️ No schedule — detection will run in test mode!");
 
     try {
       setIsLoading(true);
@@ -267,13 +344,17 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
         canvasRef.current,
         expectedActivityRef,
         handleActivityDetected,
-        (aligned) => setIsAligned(aligned)
+        (aligned) => setIsAligned(aligned),
       );
       setIsDetecting(true);
-      setDebugInfo("✓ Activity detection active\n📷 Position yourself in front of the camera");
+      setDebugInfo(
+        "✓ Activity detection active\n📷 Position yourself in front of the camera",
+      );
     } catch (error) {
       console.error("Error:", error);
-      setDebugInfo(`✗ Error initializing: ${error.message}\n\nAllow camera permission!`);
+      setDebugInfo(
+        `✗ Error initializing: ${error.message}\n\nAllow camera permission!`,
+      );
     } finally {
       setIsLoading(false);
     }
@@ -304,12 +385,15 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-
       {/* ── Webcam Feed ── */}
       <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold">📷 ML Activity Detection (Adaptive Thresholds)</h2>
-          <span className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"}`} />
+          <h2 className="text-xl font-semibold">
+            📷 ML Activity Detection (Adaptive Thresholds)
+          </h2>
+          <span
+            className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"}`}
+          />
         </div>
 
         {/* Webcam */}
@@ -321,7 +405,12 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
             ref={videoRef}
             autoPlay
             playsInline
-            style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
+            style={{
+              width: "100%",
+              height: "100%",
+              display: "block",
+              objectFit: "cover",
+            }}
           />
           <canvas
             ref={canvasRef}
@@ -337,74 +426,110 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
           {isDetecting && liveFeatures && (
             <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
               {/* HAND NEAR FACE */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${parseFloat(liveFeatures.handToMouth) < 0.35
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  parseFloat(liveFeatures.handToMouth) < 0.35
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🍽️</span> HAND NEAR FACE
               </div>
 
               {/* BODY STILL */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${parseFloat(liveFeatures.velocity) < 0.03
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  parseFloat(liveFeatures.velocity) < 0.03
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
 
               {/* LYING DOWN */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${parseFloat(liveFeatures.torsoAlign) > 1.1
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  parseFloat(liveFeatures.torsoAlign) > 1.1
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🛏️</span> LYING DOWN
               </div>
 
               {/* SITTING / RESTING — confirmed-activity indicator (green light) */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Sitting / rest"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Sitting / rest"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🪑</span> SITTING / RESTING
               </div>
 
               {/* STANDING — confirmed-activity indicator */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Standing"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Standing"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🧍</span> STANDING
               </div>
 
               {/* SLEEPING — confirmed-activity indicator */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Sleeping"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Sleeping"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">😴</span> SLEEPING
               </div>
 
               {/* WALKING — confirmed-activity indicator */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Walking"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Walking"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🚶</span> WALKING
               </div>
 
               {/* DRINKING — confirmed-activity indicator */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Drinking"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Drinking"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">🥤</span> DRINKING
               </div>
 
               {/* TAKING MEDICATIONS — confirmed-activity indicator */}
-              <div className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
-                ${currentActivity?.activity_name === "Taking Medications"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"}`}>
+              <div
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2
+                ${
+                  currentActivity?.activity_name === "Taking Medications"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
+              >
                 <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
             </div>
@@ -413,14 +538,18 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
           {/* Detected activity — right side */}
           {currentActivity && (
             <div className="absolute top-20 right-4 bg-black/80 px-4 py-3 rounded-lg border border-purple-500/30 backdrop-blur-md w-48 shadow-xl">
-              <p className="text-gray-400 text-[10px] uppercase tracking-widest mb-1">Detected Activity</p>
+              <p className="text-gray-400 text-[10px] uppercase tracking-widest mb-1">
+                Detected Activity
+              </p>
               <p className="text-purple-400 font-bold text-base leading-none tracking-tight">
                 {currentActivity.activity_name}
               </p>
               <div className="w-full bg-gray-800 h-1 mt-3 rounded-full overflow-hidden">
                 <div
                   className="bg-purple-500 h-full transition-all duration-300 shadow-[0_0_8px_rgba(168,85,247,0.5)]"
-                  style={{ width: `${(currentActivity.confidence * 100).toFixed(0)}%` }}
+                  style={{
+                    width: `${(currentActivity.confidence * 100).toFixed(0)}%`,
+                  }}
                 />
               </div>
               <p className="text-[10px] text-gray-500 mt-1 text-right font-mono">
@@ -439,20 +568,33 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
                   <span className="text-green-400 text-lg font-bold">✓</span>
                 </div>
                 <div>
-                  <p className="text-green-400 font-bold text-sm">Activity Confirmed (1s stable)</p>
-                  <p className="text-white text-base font-semibold">{confirmedActivity.name}</p>
+                  <p className="text-green-400 font-bold text-sm">
+                    Activity Confirmed (1s stable)
+                  </p>
+                  <p className="text-white text-base font-semibold">
+                    {confirmedActivity.name}
+                  </p>
                 </div>
               </div>
               <div className="text-right">
-                <div className={`text-xs font-bold px-3 py-1 rounded-full border ${confirmedActivity.status === 'Completed' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
-                    confirmedActivity.status === 'Early' ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' :
-                      confirmedActivity.status === 'Late' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
-                        confirmedActivity.status === 'Missed' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' :
-                          'text-blue-400 bg-blue-500/10 border-blue-500/20'
-                  }`}>
+                <div
+                  className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                    confirmedActivity.status === "Completed"
+                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                      : confirmedActivity.status === "Early"
+                        ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
+                        : confirmedActivity.status === "Late"
+                          ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                          : confirmedActivity.status === "Missed"
+                            ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                            : "text-blue-400 bg-blue-500/10 border-blue-500/20"
+                  }`}
+                >
                   {confirmedActivity.status}
                 </div>
-                <p className="text-gray-500 text-[10px] mt-1 font-mono">{confirmedActivity.time}</p>
+                <p className="text-gray-500 text-[10px] mt-1 font-mono">
+                  {confirmedActivity.time}
+                </p>
               </div>
             </div>
           </div>
@@ -466,7 +608,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
               disabled={isLoading}
               className={`flex-1 ${isLoading ? "bg-gray-600 cursor-not-allowed" : "bg-green-600 hover:bg-green-700"} px-4 py-2 rounded font-semibold transition`}
             >
-              {isLoading ? "⏳ Loading Models..." : "▶ Start Activity Detection"}
+              {isLoading
+                ? "⏳ Loading Models..."
+                : "▶ Start Activity Detection"}
             </button>
           ) : (
             <button
@@ -492,7 +636,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
 
       {/* ── Detection Log ── */}
       <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-        <h3 className="text-lg font-semibold mb-4 text-green-300">✓ Detection Log (Adaptive)</h3>
+        <h3 className="text-lg font-semibold mb-4 text-green-300">
+          ✓ Detection Log (Adaptive)
+        </h3>
 
         {/* Stats */}
         <div className="grid grid-cols-4 gap-2 mb-4">
@@ -502,7 +648,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
           </div>
           <div className="bg-green-900/30 rounded p-2 text-center">
             <p className="text-xs text-gray-400">Completed</p>
-            <p className="text-lg font-bold text-green-300">{stats.completed}</p>
+            <p className="text-lg font-bold text-green-300">
+              {stats.completed}
+            </p>
           </div>
           <div className="bg-red-900/30 rounded p-2 text-center">
             <p className="text-xs text-gray-400">Late</p>
@@ -517,10 +665,13 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
         {/* Log entries */}
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {detectionLogs.length === 0 ? (
-            <p className="text-gray-400 text-center py-4">Waiting for activity detection...</p>
+            <p className="text-gray-400 text-center py-4">
+              Waiting for activity detection...
+            </p>
           ) : (
             detectionLogs.map((log, idx) => {
-              const statusDisplay = STATUS_DISPLAY[log.status] || STATUS_DISPLAY.Unexpected;
+              const statusDisplay =
+                STATUS_DISPLAY[log.status] || STATUS_DISPLAY.Unexpected;
               return (
                 <div
                   key={idx}
@@ -539,7 +690,9 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
                     <span>Delay: {log.delay_minutes}min</span>
                   </div>
                   {log.deadline !== "?" && (
-                    <div className="text-xs opacity-75">Deadline: {log.deadline}</div>
+                    <div className="text-xs opacity-75">
+                      Deadline: {log.deadline}
+                    </div>
                   )}
                 </div>
               );
@@ -551,13 +704,13 @@ export default function ActivityDetectorMonitor({ onActivityConfirmed }) {
       {/* ── Info box ── */}
       <div className="bg-blue-900/20 border border-blue-700/50 rounded-xl p-4 text-sm">
         <p className="text-blue-200">
-          💡 <strong>v4:</strong> Activities confirm after ~1 second of stable detection (was 3s),
-          feeding straight into schedule status marking (Completed / Early / Late / Missed).
-          Sitting/Resting, Standing, Sleeping, Walking, Drinking, and Taking Medications each
-          light up green the moment they're the confirmed activity.
+          💡 <strong>v4:</strong> Activities confirm after ~1 second of stable
+          detection (was 3s), feeding straight into schedule status marking
+          (Completed / Early / Late / Missed). Sitting/Resting, Standing,
+          Sleeping, Walking, Drinking, and Taking Medications each light up
+          green the moment they're the confirmed activity.
         </p>
       </div>
-
     </div>
   );
 }
