@@ -74,3 +74,16 @@ logs/
 
 # MongoDB dumps
 dump/
+
+# Ignore raw datasets and large video files
+data/raw_videos/
+data/processed/
+*.mp4
+*.avi
+*.mov
+
+# Ignore virtual environments & caches
+.venv/
+.kiro/
+.qodo/
+.vite/
