@@ -37,40 +37,26 @@ const timeToMinutes = (timeStr) => {
   return (h || 0) * 60 + (m || 0);
 };
 
-// FIX (Dashboard Schedule Sidebar & Detection Status Fix plan):
-// The backend (monitoring_service.py) now decides Completed vs Late using
-// each activity's own start_time/end_time boundary instead of a fixed
-// 20-minute cutoff, and once a log exists for {schedule_id, date} with a
-// final status it is locked (see FINAL_LOG_STATUSES / the dedup guard in
-// process_detection_event()). So the first thing this function does is
-// trust that persisted, locked display_status completely and return it
-// as-is — it must NEVER be recomputed or overridden once a log exists.
-//
-// The fallback branch below (no log written yet) mirrors the exact same
-// end_time boundary the backend uses, so a not-yet-detected activity shows
-// "Missed" the moment its window closes, "In Progress" while inside its
-// window, and "Upcoming" beforehand — consistent with the backend's rules,
-// with no 20-minute threshold anywhere in this calculation.
+const FINAL_STATUSES = ["Completed", "Early", "Late", "Missed", "Not Done", "Done", "Complete"];
+
 const computeStatus = (activity, log, nowMinutes) => {
-  // Final status from backend is locked — never override it
-  if (log && log.display_status) {
-    const s = String(log.display_status);
-    if (["Completed", "Early", "Late", "Missed", "Not Done", "Done"].includes(s)) {
-      return s === "Done" ? "Completed" : s;
-    }
+  const raw = log?.display_status || log?.status;
+  if (raw) {
+    const s = String(raw).trim();
+    if (["Completed", "Complete", "Done"].includes(s)) return "Completed";
+    if (s === "Early") return "Early";
+    if (s === "Late") return "Late";
+    if (s === "Missed") return "Missed";
+    if (s === "Not Done") return "Not Done";
+    if (FINAL_STATUSES.includes(s)) return s;
   }
 
   const startMin = timeToMinutes(activity.start_time);
   const endMin = timeToMinutes(activity.end_time);
 
-  // Window finished and never detected → Missed
   if (nowMinutes > endMin) return "Missed";
-
-  // Currently inside the window → In Progress
   if (nowMinutes >= startMin && nowMinutes <= endMin) return "In Progress";
-
-  // Before the window starts
-  return "Upcoming";
+  return "Pending"; // same label as sidebar
 };
 
 const statusConfig = {
@@ -80,12 +66,19 @@ const statusConfig = {
   Missed: { label: "Missed", bg: "bg-rose-500/15", text: "text-rose-400", border: "border-rose-500/40", dot: "bg-rose-400", icon: "❌" },
   "Not Done": { label: "Not Done", bg: "bg-orange-500/15", text: "text-orange-400", border: "border-orange-500/40", dot: "bg-orange-400", icon: "🚫" },
   "In Progress": { label: "In Progress", bg: "bg-blue-500/15", text: "text-blue-400", border: "border-blue-500/40", dot: "bg-blue-400 animate-pulse", icon: "🔄" },
+  Pending: { label: "Pending", bg: "bg-gray-500/15", text: "text-gray-400", border: "border-gray-600/40", dot: "bg-gray-500", icon: "🕒" },
   Upcoming: { label: "Upcoming", bg: "bg-gray-500/15", text: "text-gray-400", border: "border-gray-600/40", dot: "bg-gray-500", icon: "🕒" },
   Done: { label: "Completed", bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/40", dot: "bg-emerald-400", icon: "✅" },
 };
 
 const emptyCounts = () => ({
-  Completed: 0, Early: 0, Late: 0, Missed: 0, "In Progress": 0, Upcoming: 0,
+  Completed: 0,
+  Early: 0,
+  Late: 0,
+  Missed: 0,
+  "In Progress": 0,
+  Pending: 0,
+  Upcoming: 0,
 });
 
 export default function ScheduleProgress() {
@@ -169,6 +162,9 @@ export default function ScheduleProgress() {
     if (window.confirm("Are you sure you want to delete the current routine? All associated logs will be cleared.")) {
       try {
         await deleteSchedule(selectedSchedule.schedule_id);
+        try {
+          localStorage.removeItem(`lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`);
+        } catch { }
         toast.success("Routine deleted successfully", { icon: "🗑" });
         setSchedule([]);
         setLogs([]);
@@ -180,12 +176,37 @@ export default function ScheduleProgress() {
 
   const nowMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
 
+  // SAME locked statuses the sidebar uses
+  let lockedFromStorage = {};
+  if (selectedSchedule?.schedule_id) {
+    try {
+      const key = `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`;
+      const saved = localStorage.getItem(key);
+      if (saved) lockedFromStorage = JSON.parse(saved);
+    } catch {
+      lockedFromStorage = {};
+    }
+  }
+
   const activitiesWithStatus = (selectedSchedule?.activities || []).map((activity) => {
-    const log = logs.find(
+    // 1) Locked status from sidebar (localStorage) — highest priority
+    const locked = lockedFromStorage[activity.activity_name];
+    if (locked && ["Completed", "Early", "Late", "Missed", "Not Done"].includes(locked)) {
+      return { ...activity, log: null, status: locked };
+    }
+
+    // 2) Latest backend log
+    const matchingLogs = logs.filter(
       (l) =>
         l.activity_name === activity.activity_name &&
         (!l.date || l.date === todayStr)
     );
+    matchingLogs.sort((a, b) => {
+      const ta = new Date(a.completed_at || a.timestamp || a.detected_at || 0).getTime();
+      const tb = new Date(b.completed_at || b.timestamp || b.detected_at || 0).getTime();
+      return tb - ta;
+    });
+    const log = matchingLogs[0] || null;
     const status = computeStatus(activity, log, nowMinutes);
     return { ...activity, log, status };
   });
@@ -193,6 +214,8 @@ export default function ScheduleProgress() {
   const liveCounts = emptyCounts();
   activitiesWithStatus.forEach((a) => {
     if (liveCounts[a.status] !== undefined) liveCounts[a.status]++;
+    // Show Pending also under Upcoming tile for older UI
+    if (a.status === "Pending") liveCounts.Upcoming++;
   });
 
   const liveTotal = activitiesWithStatus.length;
@@ -208,6 +231,7 @@ export default function ScheduleProgress() {
       Late: src.Late ?? src.late ?? 0,
       Missed: src.Missed ?? src.missed ?? 0,
       "In Progress": src["In Progress"] ?? src.in_progress ?? 0,
+      Pending: src.Pending ?? src.pending ?? 0,
       Upcoming: src.Upcoming ?? src.upcoming ?? 0,
     };
   };
@@ -235,17 +259,20 @@ export default function ScheduleProgress() {
         <div className="text-xs text-gray-400 mt-1">In Progress</div>
       </div>
       <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 text-center">
-        <div className="text-2xl font-bold text-gray-400">{counts.Upcoming}</div>
-        <div className="text-xs text-gray-400 mt-1">Upcoming</div>
+        <div className="text-2xl font-bold text-gray-400">{counts.Pending || counts.Upcoming}</div>
+        <div className="text-xs text-gray-400 mt-1">Pending</div>
       </div>
     </div>
   );
 
   const renderActivityRow = (activity, idx) => {
-    const status = activity.status || activity.display_status || "Upcoming";
-    const cfg = statusConfig[status] || statusConfig.Upcoming;
+    const status = activity.status || activity.display_status || "Pending";
+    const cfg = statusConfig[status] || statusConfig.Pending;
     return (
-      <div key={idx} className={`relative flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-xl border ${cfg.border} ${cfg.bg} transition-all`}>
+      <div
+        key={idx}
+        className={`relative flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-xl border ${cfg.border} ${cfg.bg} transition-all`}
+      >
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <span className="text-2xl shrink-0">{getActivityIcon(activity.activity_name)}</span>
           <div className="min-w-0">
@@ -257,15 +284,18 @@ export default function ScheduleProgress() {
           </div>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${cfg.border} ${cfg.bg} ${cfg.text}`}>
+          <span
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${cfg.border} ${cfg.bg} ${cfg.text}`}
+          >
             <span className={`w-2 h-2 rounded-full ${cfg.dot}`}></span>
             {cfg.icon} {cfg.label}
           </span>
         </div>
         {(activity.log?.completed_at || activity.log?.timestamp || activity.completed_at) && (
           <div className="text-xs text-gray-500 sm:text-right w-full sm:w-auto">
-            {new Date(activity.log?.completed_at || activity.log?.timestamp || activity.completed_at)
-              .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {new Date(
+              activity.log?.completed_at || activity.log?.timestamp || activity.completed_at
+            ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </div>
         )}
       </div>
@@ -277,7 +307,9 @@ export default function ScheduleProgress() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 animate-slide-up">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Schedule Progress Tracking</h1>
-          <p className="text-gray-400 text-sm mt-1">Live + archived status — Early · Late · Missed · Completed</p>
+          <p className="text-gray-400 text-sm mt-1">
+            Live + archived status — Early · Late · Missed · Completed
+          </p>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <button
@@ -306,11 +338,10 @@ export default function ScheduleProgress() {
           <button
             key={tab.id}
             onClick={() => setViewMode(tab.id)}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-              viewMode === tab.id
-                ? "bg-blue-600 text-white shadow-md"
-                : "bg-gray-900/60 text-gray-400 border border-gray-700 hover:bg-gray-800"
-            }`}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${viewMode === tab.id
+              ? "bg-blue-600 text-white shadow-md"
+              : "bg-gray-900/60 text-gray-400 border border-gray-700 hover:bg-gray-800"
+              }`}
           >
             {tab.label}
           </button>
@@ -327,28 +358,45 @@ export default function ScheduleProgress() {
             <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-12 border border-gray-800/60 text-center">
               <p className="text-5xl mb-4">📭</p>
               <p className="text-gray-400 mb-4">No routine established yet.</p>
-              <button onClick={() => navigate("/routine-setup")} className="text-blue-400 hover:text-blue-300 text-sm font-medium transition">
+              <button
+                onClick={() => navigate("/routine-setup")}
+                className="text-blue-400 hover:text-blue-300 text-sm font-medium transition"
+              >
                 Set up a routine →
               </button>
             </div>
           ) : (
             <div className="space-y-8 animate-slide-up">
               {renderSummaryCards(liveCounts)}
+
               <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-6 border border-gray-800/60">
                 <div className="flex justify-between items-center mb-3">
                   <span className="text-sm font-medium text-gray-300">Overall Progress</span>
-                  <span className="text-sm font-semibold text-white">{liveDone}/{liveTotal} done · {livePct}%</span>
+                  <span className="text-sm font-semibold text-white">
+                    {liveDone}/{liveTotal} done · {livePct}%
+                  </span>
                 </div>
                 <div className="w-full h-3 bg-gray-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-emerald-500 to-sky-500 rounded-full transition-all duration-500" style={{ width: `${livePct}%` }} />
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 to-sky-500 rounded-full transition-all duration-500"
+                    style={{ width: `${livePct}%` }}
+                  />
                 </div>
                 <p className="text-xs text-gray-500 mt-2">
-                  Current time: {currentTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  Current time:{" "}
+                  {currentTime.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
                 </p>
               </div>
+
               <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-6 sm:p-8 border border-gray-800/60 shadow-lg">
                 <h2 className="text-lg font-semibold text-gray-100 flex items-center gap-3 mb-6">
-                  <span className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 text-sm">📊</span>
+                  <span className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 text-sm">
+                    📊
+                  </span>
                   Activity Status
                 </h2>
                 <div className="space-y-4">
@@ -367,9 +415,18 @@ export default function ScheduleProgress() {
         <div className="space-y-6 animate-slide-up">
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-sm text-gray-400">Select date:</label>
-            <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}
-              className="bg-gray-900 border border-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-            <button onClick={() => fetchDay(selectedDate)} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg">Load</button>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="bg-gray-900 border border-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <button
+              onClick={() => fetchDay(selectedDate)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg"
+            >
+              Load
+            </button>
           </div>
           {histLoading ? (
             <div className="flex justify-center py-16">
@@ -383,13 +440,20 @@ export default function ScheduleProgress() {
             <>
               {renderSummaryCards(normalizeArchiveCounts(dayReport))}
               <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-6 sm:p-8 border border-gray-800/60">
-                <h2 className="text-lg font-semibold text-gray-100 mb-4">Activities — {selectedDate}</h2>
+                <h2 className="text-lg font-semibold text-gray-100 mb-4">
+                  Activities — {selectedDate}
+                </h2>
                 <div className="space-y-4">
                   {(dayReport.activities || dayReport.items || []).map((a, i) =>
-                    renderActivityRow({ ...a, status: a.status || a.display_status || a.result }, i)
+                    renderActivityRow(
+                      { ...a, status: a.status || a.display_status || a.result },
+                      i
+                    )
                   )}
                   {!(dayReport.activities || dayReport.items || []).length && (
-                    <p className="text-center text-gray-500 py-6">No activity details stored for this day.</p>
+                    <p className="text-center text-gray-500 py-6">
+                      No activity details stored for this day.
+                    </p>
                   )}
                 </div>
               </div>
@@ -402,9 +466,18 @@ export default function ScheduleProgress() {
         <div className="space-y-6 animate-slide-up">
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-sm text-gray-400">Week starting:</label>
-            <input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)}
-              className="bg-gray-900 border border-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-            <button onClick={() => fetchWeek(weekStart)} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg">Load Week</button>
+            <input
+              type="date"
+              value={weekStart}
+              onChange={(e) => setWeekStart(e.target.value)}
+              className="bg-gray-900 border border-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <button
+              onClick={() => fetchWeek(weekStart)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg"
+            >
+              Load Week
+            </button>
           </div>
           {histLoading ? (
             <div className="flex justify-center py-16">
@@ -422,25 +495,35 @@ export default function ScheduleProgress() {
               </div>
               <div className="space-y-4">
                 <h3 className="text-sm font-medium text-gray-400">Per-Day Breakdown</h3>
-                {(weekReport.daily_reports || weekReport.days || weekReport.reports || []).map((day, idx) => {
-                  const c = normalizeArchiveCounts(day);
-                  const dateLabel = day.date || day.day || `Day ${idx + 1}`;
-                  return (
-                    <div key={idx} className="bg-gray-900/40 border border-gray-800/60 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-4">
-                      <div className="font-semibold text-white w-32 shrink-0">{dateLabel}</div>
-                      <div className="flex flex-wrap gap-3 text-xs">
-                        <span className="text-emerald-400">✅ {c.Completed}</span>
-                        <span className="text-sky-400">⏰ {c.Early}</span>
-                        <span className="text-amber-400">⏳ {c.Late}</span>
-                        <span className="text-rose-400">❌ {c.Missed}</span>
+                {(weekReport.daily_reports || weekReport.days || weekReport.reports || []).map(
+                  (day, idx) => {
+                    const c = normalizeArchiveCounts(day);
+                    const dateLabel = day.date || day.day || `Day ${idx + 1}`;
+                    return (
+                      <div
+                        key={idx}
+                        className="bg-gray-900/40 border border-gray-800/60 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-4"
+                      >
+                        <div className="font-semibold text-white w-32 shrink-0">{dateLabel}</div>
+                        <div className="flex flex-wrap gap-3 text-xs">
+                          <span className="text-emerald-400">✅ {c.Completed}</span>
+                          <span className="text-sky-400">⏰ {c.Early}</span>
+                          <span className="text-amber-400">⏳ {c.Late}</span>
+                          <span className="text-rose-400">❌ {c.Missed}</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSelectedDate(dateLabel);
+                            setViewMode("day");
+                          }}
+                          className="sm:ml-auto text-blue-400 hover:text-blue-300 text-xs font-medium"
+                        >
+                          View day →
+                        </button>
                       </div>
-                      <button onClick={() => { setSelectedDate(dateLabel); setViewMode("day"); }}
-                        className="sm:ml-auto text-blue-400 hover:text-blue-300 text-xs font-medium">
-                        View day →
-                      </button>
-                    </div>
-                  );
-                })}
+                    );
+                  }
+                )}
               </div>
             </>
           )}

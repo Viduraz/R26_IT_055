@@ -104,6 +104,16 @@ const normalizeNotifications = (payload) => {
   return [];
 };
 
+const saveLockedStatuses = (scheduleId, todayStr, statuses) => {
+  if (!scheduleId) return;
+  try {
+    localStorage.setItem(
+      `lockedStatuses_${scheduleId}_${todayStr}`,
+      JSON.stringify(statuses)
+    );
+  } catch { }
+};
+
 export default function ScheduleDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -140,8 +150,18 @@ export default function ScheduleDashboard() {
   }, []);
 
   useEffect(() => {
-    setLockedStatuses({});
-  }, [selectedSchedule?.schedule_id]);
+    if (!selectedSchedule?.schedule_id) {
+      setLockedStatuses({});
+      return;
+    }
+    const key = `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`;
+    try {
+      const saved = localStorage.getItem(key);
+      setLockedStatuses(saved ? JSON.parse(saved) : {});
+    } catch {
+      setLockedStatuses({});
+    }
+  }, [selectedSchedule?.schedule_id, todayStr]);
 
   useEffect(() => {
     if (!selectedSchedule?.activities?.length) return;
@@ -161,7 +181,11 @@ export default function ScheduleDashboard() {
           changed = true;
         }
       });
-      return changed ? next : prev;
+      if (changed) {
+        saveLockedStatuses(selectedSchedule.schedule_id, todayStr, next);
+        return next;
+      }
+      return prev;
     });
   }, [allLogs, selectedSchedule, todayStr]);
 
@@ -241,15 +265,27 @@ export default function ScheduleDashboard() {
       );
       if (updatedActivities.length === 0) {
         await deleteSchedule(currentSched.schedule_id);
+        try {
+          localStorage.removeItem(
+            `lockedStatuses_${currentSched.schedule_id}_${todayStr}`
+          );
+        } catch { }
         toast.success("All activities deleted. Routine cleared!", {
           icon: "🗑",
         });
         setSchedule([]);
         setShowDetector(false);
         setShowProgressSidebar(false);
+        setLockedStatuses({});
         return;
       }
       await createSchedule(updatedActivities, currentSched.description || "");
+      setLockedStatuses((prev) => {
+        const next = { ...prev };
+        delete next[activityName];
+        saveLockedStatuses(currentSched.schedule_id, todayStr, next);
+        return next;
+      });
       toast.success(`"${activityName}" deleted and schedule saved!`, {
         icon: "🗑",
       });
@@ -269,6 +305,11 @@ export default function ScheduleDashboard() {
     ) {
       try {
         await deleteSchedule(selectedSchedule.schedule_id);
+        try {
+          localStorage.removeItem(
+            `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`
+          );
+        } catch { }
         toast.success("Routine deleted successfully", { icon: "🗑" });
         setSchedule([]);
         setShowDetector(false);
@@ -278,6 +319,7 @@ export default function ScheduleDashboard() {
         setDeviations([]);
         setNotifications([]);
         setShowProgressSidebar(false);
+        setLockedStatuses({});
       } catch (err) {
         toast.error("Failed to delete routine");
       }
@@ -293,7 +335,6 @@ export default function ScheduleDashboard() {
         l.activity_name === activity.activity_name &&
         (!l.date || l.date === todayStr)
     );
-
     const logStatus = matchingLog?.display_status || matchingLog?.status;
     if (logStatus && FINAL_STATUSES.includes(logStatus)) {
       return logStatus;
@@ -383,13 +424,12 @@ export default function ScheduleDashboard() {
           <button
             onClick={handleStartTracking}
             disabled={!selectedSchedule}
-            className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${
-              showDetector
+            className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
                 ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
                 : selectedSchedule
                   ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
                   : "bg-gray-700 text-gray-400 cursor-not-allowed"
-            }`}
+              }`}
           >
             {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
           </button>
@@ -407,9 +447,8 @@ export default function ScheduleDashboard() {
         >
           {selectedSchedule && (
             <div
-              className={`mb-2 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${
-                showDetector ? "" : "opacity-95"
-              }`}
+              className={`mb-2 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${showDetector ? "" : "opacity-95"
+                }`}
             >
               <div className="flex justify-end px-4 pt-4">
                 <button
@@ -427,10 +466,18 @@ export default function ScheduleDashboard() {
                     info?.activity_name &&
                     FINAL_STATUSES.includes(info.status)
                   ) {
-                    setLockedStatuses((prev) => ({
-                      ...prev,
-                      [info.activity_name]: info.status,
-                    }));
+                    setLockedStatuses((prev) => {
+                      const next = {
+                        ...prev,
+                        [info.activity_name]: info.status,
+                      };
+                      saveLockedStatuses(
+                        selectedSchedule.schedule_id,
+                        todayStr,
+                        next
+                      );
+                      return next;
+                    });
                   }
                   fetchData();
                 }}
@@ -502,7 +549,6 @@ export default function ScheduleDashboard() {
         </div>
       )}
 
-      {/* Slide-in Schedule Progress sidebar */}
       {showProgressSidebar && (
         <>
           <div
