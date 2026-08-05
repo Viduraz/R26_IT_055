@@ -12,7 +12,13 @@ import TrainHAR from './pages/TrainHAR';
 
 function App() {
   return (
-    <BrowserRouter basename="/schedule">
+    <BrowserRouter
+      basename="/schedule"
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true,
+      }}
+    >
       <Layout>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -23,8 +29,8 @@ function App() {
           <Route path="/activity-log" element={<ActivityLog />} />
           <Route path="/data-collector" element={<DataCollector />} />
           <Route path="/schedule-progress" element={<ScheduleProgress />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
           <Route path="/train-har" element={<TrainHAR />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </BrowserRouter>
