@@ -105,13 +105,33 @@ const normalizeNotifications = (payload) => {
 };
 
 const saveLockedStatuses = (scheduleId, todayStr, statuses) => {
-  if (!scheduleId) return;
   try {
+    if (scheduleId) {
+      localStorage.setItem(
+        `lockedStatuses_${scheduleId}_${todayStr}`,
+        JSON.stringify(statuses)
+      );
+    }
+    // Stable fallback so statuses survive a new schedule_id after re-save
     localStorage.setItem(
-      `lockedStatuses_${scheduleId}_${todayStr}`,
+      `lockedStatuses_today_${todayStr}`,
       JSON.stringify(statuses)
     );
   } catch {}
+};
+
+const loadLockedStatuses = (scheduleId, todayStr) => {
+  try {
+    if (scheduleId) {
+      const primary = localStorage.getItem(
+        `lockedStatuses_${scheduleId}_${todayStr}`
+      );
+      if (primary) return JSON.parse(primary);
+    }
+    const fallback = localStorage.getItem(`lockedStatuses_today_${todayStr}`);
+    if (fallback) return JSON.parse(fallback);
+  } catch {}
+  return {};
 };
 
 const speakAlert = (status, activityName) => {
@@ -169,6 +189,7 @@ export default function ScheduleDashboard() {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -176,7 +197,33 @@ export default function ScheduleDashboard() {
     return () => clearInterval(clockInterval);
   }, []);
 
-  // Preload voices for speech
+  // From Routine Setup → open camera + use passed/cached schedule
+  useEffect(() => {
+    if (location.state?.fromSetup === true) {
+      setShowDetector(true);
+    }
+
+    const fromState = location.state?.schedule;
+    if (fromState?.activities?.length) {
+      setSchedule([fromState]);
+      setLoading(false);
+      setShowDetector(true);
+      return;
+    }
+
+    try {
+      const raw = sessionStorage.getItem("pendingSchedule");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.activities?.length) {
+          setSchedule([parsed]);
+          setLoading(false);
+          setShowDetector(true);
+        }
+      }
+    } catch {}
+  }, [location.state]);
+
   useEffect(() => {
     if ("speechSynthesis" in window) {
       window.speechSynthesis.getVoices();
@@ -187,17 +234,13 @@ export default function ScheduleDashboard() {
   }, []);
 
   useEffect(() => {
-    if (!selectedSchedule?.schedule_id) {
+    if (!selectedSchedule) {
       setLockedStatuses({});
       return;
     }
-    const key = `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`;
-    try {
-      const saved = localStorage.getItem(key);
-      setLockedStatuses(saved ? JSON.parse(saved) : {});
-    } catch {
-      setLockedStatuses({});
-    }
+    setLockedStatuses(
+      loadLockedStatuses(selectedSchedule.schedule_id, todayStr)
+    );
   }, [selectedSchedule?.schedule_id, todayStr]);
 
   useEffect(() => {
@@ -226,23 +269,19 @@ export default function ScheduleDashboard() {
     });
   }, [allLogs, selectedSchedule, todayStr]);
 
-  // Auto-lock Missed when window ends with no completion, and alert once
+  // Auto-lock Missed when window ends with no completion
   useEffect(() => {
     if (!selectedSchedule?.activities?.length) return;
-
     const nowMin = currentTime.getHours() * 60 + currentTime.getMinutes();
     let changed = false;
     const next = { ...lockedStatuses };
-
     selectedSchedule.activities.forEach((activity) => {
       const name = activity.activity_name;
-      if (next[name]) return; // already locked
-
+      if (next[name]) return;
       const endMin = timeToMinutes(activity.end_time);
       if (nowMin > endMin) {
         next[name] = "Missed";
         changed = true;
-
         const key = `${name}_Missed_${todayStr}`;
         if (!announcedStatusRef.current.has(key)) {
           announcedStatusRef.current.add(key);
@@ -263,7 +302,6 @@ export default function ScheduleDashboard() {
         }
       }
     });
-
     if (changed) {
       setLockedStatuses(next);
       saveLockedStatuses(selectedSchedule.schedule_id, todayStr, next);
@@ -292,7 +330,21 @@ export default function ScheduleDashboard() {
         getActivityLogs(),
       ]);
       setDeviations(devRes.data || []);
-      setSchedule(schedRes.data || []);
+
+      const list = Array.isArray(schedRes.data)
+        ? schedRes.data
+        : schedRes.data
+          ? [schedRes.data]
+          : [];
+
+      if (list.length > 0) {
+        setSchedule(list);
+        try {
+          sessionStorage.removeItem("pendingSchedule");
+        } catch {}
+      }
+      // If API empty → keep current schedule (local/pending). Do NOT wipe.
+
       const newNotifs = normalizeNotifications(notifRes.data);
       setNotifications(newNotifs);
       const newUnreadCount = newNotifs.filter((n) => !n.read).length;
@@ -361,6 +413,8 @@ export default function ScheduleDashboard() {
           localStorage.removeItem(
             `lockedStatuses_${currentSched.schedule_id}_${todayStr}`
           );
+          localStorage.removeItem(`lockedStatuses_today_${todayStr}`);
+          sessionStorage.removeItem("pendingSchedule");
         } catch {}
         toast.success("All activities deleted. Routine cleared!", {
           icon: "🗑",
@@ -401,6 +455,8 @@ export default function ScheduleDashboard() {
           localStorage.removeItem(
             `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`
           );
+          localStorage.removeItem(`lockedStatuses_today_${todayStr}`);
+          sessionStorage.removeItem("pendingSchedule");
         } catch {}
         toast.success("Routine deleted successfully", { icon: "🗑" });
         setSchedule([]);
@@ -420,7 +476,7 @@ export default function ScheduleDashboard() {
 
   const getSidebarStatus = (activity) => {
     const locked = lockedStatuses[activity.activity_name];
-    if (locked) return locked;
+    if (locked && FINAL_STATUSES.includes(locked)) return locked;
 
     const matchingLog = allLogs.find(
       (l) =>
@@ -573,7 +629,6 @@ export default function ScheduleDashboard() {
                       return next;
                     });
 
-                    // Big modal + voice for Late / Missed right after status is marked
                     if (info.status === "Late" || info.status === "Missed") {
                       const key = `${info.activity_name}_${info.status}_${todayStr}`;
                       if (!announcedStatusRef.current.has(key)) {
