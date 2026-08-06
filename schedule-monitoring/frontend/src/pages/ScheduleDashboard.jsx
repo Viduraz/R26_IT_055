@@ -111,7 +111,33 @@ const saveLockedStatuses = (scheduleId, todayStr, statuses) => {
       `lockedStatuses_${scheduleId}_${todayStr}`,
       JSON.stringify(statuses)
     );
-  } catch { }
+  } catch {}
+};
+
+const speakAlert = (status, activityName) => {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    const text =
+      status === "Missed"
+        ? `Missed activity alert. ${activityName} has been missed. Please look after the patient immediately.`
+        : `Late activity alert. ${activityName} is late. Please look after the patient and assist if needed.`;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 0.95;
+    u.pitch = 1.0;
+    u.volume = 1.0;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred =
+      voices.find(
+        (v) =>
+          v.lang?.startsWith("en") &&
+          /female|Samantha|Google US English/i.test(v.name)
+      ) || voices.find((v) => v.lang?.startsWith("en"));
+    if (preferred) u.voice = preferred;
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    console.warn("Speech failed:", e);
+  }
 };
 
 export default function ScheduleDashboard() {
@@ -131,6 +157,7 @@ export default function ScheduleDashboard() {
   const [activeAlert, setActiveAlert] = useState(null);
   const prevUnreadCount = useRef(0);
   const shownMissedRef = useRef(new Set());
+  const announcedStatusRef = useRef(new Set());
   const [lockedStatuses, setLockedStatuses] = useState({});
   const [currentTime, setCurrentTime] = useState(new Date());
   const [showProgressSidebar, setShowProgressSidebar] = useState(false);
@@ -147,6 +174,16 @@ export default function ScheduleDashboard() {
   useEffect(() => {
     const clockInterval = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(clockInterval);
+  }, []);
+
+  // Preload voices for speech
+  useEffect(() => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
   }, []);
 
   useEffect(() => {
@@ -189,6 +226,51 @@ export default function ScheduleDashboard() {
     });
   }, [allLogs, selectedSchedule, todayStr]);
 
+  // Auto-lock Missed when window ends with no completion, and alert once
+  useEffect(() => {
+    if (!selectedSchedule?.activities?.length) return;
+
+    const nowMin = currentTime.getHours() * 60 + currentTime.getMinutes();
+    let changed = false;
+    const next = { ...lockedStatuses };
+
+    selectedSchedule.activities.forEach((activity) => {
+      const name = activity.activity_name;
+      if (next[name]) return; // already locked
+
+      const endMin = timeToMinutes(activity.end_time);
+      if (nowMin > endMin) {
+        next[name] = "Missed";
+        changed = true;
+
+        const key = `${name}_Missed_${todayStr}`;
+        if (!announcedStatusRef.current.has(key)) {
+          announcedStatusRef.current.add(key);
+          setActiveAlert({
+            status: "Missed",
+            activityName: name,
+            message: `${name} was missed. Please look after the patient immediately.`,
+            time: currentTime.toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          });
+          speakAlert("Missed", name);
+          toast.error(`Missed: ${name} — please look after the patient`, {
+            icon: "❌",
+            duration: 6000,
+          });
+        }
+      }
+    });
+
+    if (changed) {
+      setLockedStatuses(next);
+      saveLockedStatuses(selectedSchedule.schedule_id, todayStr, next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTime, selectedSchedule?.schedule_id]);
+
   const handleStartTracking = () => {
     if (selectedSchedule) {
       setShowDetector((current) => !current);
@@ -222,19 +304,28 @@ export default function ScheduleDashboard() {
           icon: "⚠️",
           duration: 4000,
         });
-        const missedNotifs = newNotifs.filter(
+        const criticalNotifs = newNotifs.filter(
           (n) =>
             !n.read &&
-            n.status === "Missed" &&
+            (n.status === "Missed" ||
+              n.status === "Late" ||
+              n.alert_type === "missed" ||
+              n.alert_type === "late") &&
             !shownMissedRef.current.has(n.notification_id)
         );
-        if (missedNotifs.length > 0) {
-          const m = missedNotifs[0];
+        if (criticalNotifs.length > 0) {
+          const m = criticalNotifs[0];
           shownMissedRef.current.add(m.notification_id);
+          const status =
+            m.status === "Late" || m.alert_type === "late" ? "Late" : "Missed";
           setActiveAlert({
-            status: "Missed",
-            activityName: m.activity_name,
-            message: m.message,
+            status,
+            activityName: m.activity_name || m.task_name,
+            message:
+              m.message ||
+              (status === "Missed"
+                ? "Please look after the patient immediately."
+                : "Please look after the patient."),
             time: new Date(m.created_at || Date.now()).toLocaleString([], {
               month: "short",
               day: "numeric",
@@ -242,6 +333,7 @@ export default function ScheduleDashboard() {
               minute: "2-digit",
             }),
           });
+          speakAlert(status, m.activity_name || m.task_name || "activity");
         }
       }
       prevUnreadCount.current = newUnreadCount;
@@ -269,7 +361,7 @@ export default function ScheduleDashboard() {
           localStorage.removeItem(
             `lockedStatuses_${currentSched.schedule_id}_${todayStr}`
           );
-        } catch { }
+        } catch {}
         toast.success("All activities deleted. Routine cleared!", {
           icon: "🗑",
         });
@@ -309,7 +401,7 @@ export default function ScheduleDashboard() {
           localStorage.removeItem(
             `lockedStatuses_${selectedSchedule.schedule_id}_${todayStr}`
           );
-        } catch { }
+        } catch {}
         toast.success("Routine deleted successfully", { icon: "🗑" });
         setSchedule([]);
         setShowDetector(false);
@@ -424,12 +516,13 @@ export default function ScheduleDashboard() {
           <button
             onClick={handleStartTracking}
             disabled={!selectedSchedule}
-            className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${showDetector
+            className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 shadow-lg flex items-center gap-2 ${
+              showDetector
                 ? "bg-rose-500/10 text-rose-400 border border-rose-500/50 hover:bg-rose-500/20"
                 : selectedSchedule
                   ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30 hover:shadow-blue-900/50"
                   : "bg-gray-700 text-gray-400 cursor-not-allowed"
-              }`}
+            }`}
           >
             {showDetector ? "⏹ Stop Camera" : "▶ Start Live Tracking"}
           </button>
@@ -447,8 +540,9 @@ export default function ScheduleDashboard() {
         >
           {selectedSchedule && (
             <div
-              className={`mb-2 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${showDetector ? "" : "opacity-95"
-                }`}
+              className={`mb-2 rounded-2xl overflow-hidden shadow-2xl border border-gray-800 bg-gray-900/50 backdrop-blur-xl ${
+                showDetector ? "" : "opacity-95"
+              }`}
             >
               <div className="flex justify-end px-4 pt-4">
                 <button
@@ -478,6 +572,34 @@ export default function ScheduleDashboard() {
                       );
                       return next;
                     });
+
+                    // Big modal + voice for Late / Missed right after status is marked
+                    if (info.status === "Late" || info.status === "Missed") {
+                      const key = `${info.activity_name}_${info.status}_${todayStr}`;
+                      if (!announcedStatusRef.current.has(key)) {
+                        announcedStatusRef.current.add(key);
+                        setActiveAlert({
+                          status: info.status,
+                          activityName: info.activity_name,
+                          message:
+                            info.status === "Missed"
+                              ? `${info.activity_name} was missed. Please look after the patient immediately.`
+                              : `${info.activity_name} is late. Please look after the patient and assist if needed.`,
+                          time: new Date().toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          }),
+                        });
+                        speakAlert(info.status, info.activity_name);
+                        toast.error(
+                          `${info.status}: ${info.activity_name} — please look after the patient`,
+                          {
+                            icon: info.status === "Missed" ? "❌" : "⚠️",
+                            duration: 6000,
+                          }
+                        );
+                      }
+                    }
                   }
                   fetchData();
                 }}

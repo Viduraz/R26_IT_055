@@ -109,10 +109,10 @@ export default function ActivityDetectorMonitor({
       const currentTime = now.getHours() * 60 + now.getMinutes();
       let active = schedule.activities[0]?.activity_name || "Walking";
       for (const act of schedule.activities) {
-        const [startH, startM] = act.start_time.split(":").map(Number);
-        const [endH, endM] = act.end_time.split(":").map(Number);
-        const start = startH * 60 + startM;
-        const end = endH * 60 + endM;
+        const [startH, startM] = String(act.start_time).split(":").map(Number);
+        const [endH, endM] = String(act.end_time).split(":").map(Number);
+        const start = (startH || 0) * 60 + (startM || 0);
+        const end = (endH || 0) * 60 + (endM || 0);
         if (currentTime >= start && currentTime <= end) {
           active = act.activity_name;
           break;
@@ -153,23 +153,71 @@ export default function ActivityDetectorMonitor({
     }
   };
 
+  // Flexible matching so "Walking" matches "Walk", "Morning Walking", etc.
   const findScheduledActivity = (activityName) => {
-    if (!schedule?.activities) return null;
-    return schedule.activities.find(
-      (act) => act.activity_name.toLowerCase() === activityName.toLowerCase()
+    if (!schedule?.activities?.length) return null;
+
+    const detected = (activityName || "").toLowerCase().trim();
+
+    // 1) Exact match
+    let match = schedule.activities.find(
+      (act) => (act.activity_name || "").toLowerCase().trim() === detected
     );
+    if (match) return match;
+
+    // 2) Partial match
+    match = schedule.activities.find((act) => {
+      const name = (act.activity_name || "").toLowerCase().trim();
+      return name.includes(detected) || detected.includes(name);
+    });
+    if (match) return match;
+
+    // 3) Keyword groups
+    const keywords = {
+      walking: ["walk", "walking"],
+      eating: ["eat", "eating", "breakfast", "lunch", "dinner", "food"],
+      drinking: ["drink", "drinking", "water", "hydrate"],
+      sleeping: ["sleep", "sleeping", "bed", "nap"],
+      "sitting / rest": ["sit", "sitting", "rest", "resting"],
+      standing: ["stand", "standing"],
+      "taking medications": ["med", "medication", "pill", "tablet"],
+    };
+
+    for (const act of schedule.activities) {
+      const name = (act.activity_name || "").toLowerCase();
+      for (const [key, words] of Object.entries(keywords)) {
+        const detectedHits =
+          detected.includes(key) ||
+          key.includes(detected) ||
+          words.some((w) => detected.includes(w));
+        const scheduleHits =
+          words.some((w) => name.includes(w)) || name.includes(key);
+        if (detectedHits && scheduleHits) return act;
+      }
+    }
+
+    return null;
   };
 
   const decideStatusFromWindow = (activityName) => {
     const scheduledActivity = findScheduledActivity(activityName);
-    if (!scheduledActivity) return "Unexpected";
+
+    if (!scheduledActivity) {
+      console.warn(
+        "[Detector] No schedule match for:",
+        activityName,
+        "| schedule activities:",
+        schedule?.activities?.map((a) => a.activity_name)
+      );
+      return "Unexpected";
+    }
 
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes();
-    const [sH, sM] = scheduledActivity.start_time.split(":").map(Number);
-    const [eH, eM] = scheduledActivity.end_time.split(":").map(Number);
-    const startMin = sH * 60 + sM;
-    const endMin = eH * 60 + eM;
+    const [sH, sM] = String(scheduledActivity.start_time).split(":").map(Number);
+    const [eH, eM] = String(scheduledActivity.end_time).split(":").map(Number);
+    const startMin = (sH || 0) * 60 + (sM || 0);
+    const endMin = (eH || 0) * 60 + (eM || 0);
 
     if (nowMin < startMin) return "Early";
     if (nowMin > endMin) return "Late";
@@ -236,8 +284,12 @@ export default function ActivityDetectorMonitor({
 
     let activityStatus = decideStatusFromWindow(detectionData.activity_name);
 
+    // Prefer the scheduled activity name for locking (matches sidebar)
+    const matched = findScheduledActivity(detectionData.activity_name);
+    const lockedName = matched?.activity_name || detectionData.activity_name;
+
     const logEntry = {
-      activity: detectionData.activity_name,
+      activity: lockedName,
       confidence: (detectionData.confidence * 100).toFixed(0),
       status: activityStatus,
       time: new Date().toLocaleTimeString(),
@@ -249,7 +301,7 @@ export default function ActivityDetectorMonitor({
     try {
       if (schedule) {
         const response = await logDetectedActivity(schedule.schedule_id, {
-          activity_name: detectionData.activity_name,
+          activity_name: lockedName,
           confidence: detectionData.confidence,
           detected_at: detectionData.detected_at.toISOString(),
           signals: detectionData.signals,
@@ -295,7 +347,7 @@ export default function ActivityDetectorMonitor({
       );
 
       setConfirmedActivity({
-        name: detectionData.activity_name,
+        name: lockedName,
         status: logEntry.status,
         confidence: detectionData.confidence,
         time: new Date().toLocaleTimeString(),
@@ -303,7 +355,7 @@ export default function ActivityDetectorMonitor({
 
       if (onActivityConfirmed) {
         onActivityConfirmed({
-          activity_name: detectionData.activity_name,
+          activity_name: lockedName,
           status: logEntry.status,
         });
       }
@@ -317,7 +369,7 @@ export default function ActivityDetectorMonitor({
       lastLogTimeRef.current[key] = now;
 
       setConfirmedActivity({
-        name: detectionData.activity_name,
+        name: lockedName,
         status: logEntry.status,
         confidence: detectionData.confidence,
         time: new Date().toLocaleTimeString(),
@@ -325,7 +377,7 @@ export default function ActivityDetectorMonitor({
 
       if (onActivityConfirmed && FINAL_STATUSES.includes(logEntry.status)) {
         onActivityConfirmed({
-          activity_name: detectionData.activity_name,
+          activity_name: lockedName,
           status: logEntry.status,
         });
       }
@@ -392,8 +444,9 @@ export default function ActivityDetectorMonitor({
             📷 ML Activity Detection (Adaptive Thresholds)
           </h2>
           <span
-            className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
-              }`}
+            className={`inline-block w-3 h-3 rounded-full ${
+              isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
+            }`}
           />
         </div>
 
@@ -424,74 +477,83 @@ export default function ActivityDetectorMonitor({
           {isDetecting && liveFeatures && (
             <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.handToMouth) < 0.35
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  parseFloat(liveFeatures.handToMouth) < 0.35
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🍽️</span> HAND NEAR FACE
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.velocity) < 0.03
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  parseFloat(liveFeatures.velocity) < 0.03
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.torsoAlign) > 1.1
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  parseFloat(liveFeatures.torsoAlign) > 1.1
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🛏️</span> LYING DOWN
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sitting / rest"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Sitting / rest"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🪑</span> SITTING / RESTING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Standing"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Standing"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🧍</span> STANDING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sleeping"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Sleeping"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">😴</span> SLEEPING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Walking"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Walking"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🚶</span> WALKING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Drinking"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Drinking"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">🥤</span> DRINKING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Taking Medications"
-                  ? "bg-green-500/20 border-green-500 text-green-400"
-                  : "bg-gray-900 border-gray-700 text-gray-500"
-                  }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
+                  currentActivity?.activity_name === "Taking Medications"
+                    ? "bg-green-500/20 border-green-500 text-green-400"
+                    : "bg-gray-900 border-gray-700 text-gray-500"
+                }`}
               >
                 <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
@@ -539,16 +601,17 @@ export default function ActivityDetectorMonitor({
               </div>
               <div className="text-right">
                 <div
-                  className={`text-xs font-bold px-3 py-1 rounded-full border ${confirmedActivity.status === "Completed"
-                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                    : confirmedActivity.status === "Early"
-                      ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
-                      : confirmedActivity.status === "Late"
-                        ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                        : confirmedActivity.status === "Missed"
-                          ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                          : "text-blue-400 bg-blue-500/10 border-blue-500/20"
-                    }`}
+                  className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                    confirmedActivity.status === "Completed"
+                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                      : confirmedActivity.status === "Early"
+                        ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
+                        : confirmedActivity.status === "Late"
+                          ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                          : confirmedActivity.status === "Missed"
+                            ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                            : "text-blue-400 bg-blue-500/10 border-blue-500/20"
+                  }`}
                 >
                   {confirmedActivity.status}
                 </div>
@@ -565,10 +628,11 @@ export default function ActivityDetectorMonitor({
             <button
               onClick={startDetection}
               disabled={isLoading}
-              className={`flex-1 ${isLoading
-                ? "bg-gray-600 cursor-not-allowed"
-                : "bg-green-600 hover:bg-green-700"
-                } px-4 py-2 rounded font-semibold transition`}
+              className={`flex-1 ${
+                isLoading
+                  ? "bg-gray-600 cursor-not-allowed"
+                  : "bg-green-600 hover:bg-green-700"
+              } px-4 py-2 rounded font-semibold transition`}
             >
               {isLoading ? "⏳ Loading Models..." : "▶ Start Activity Detection"}
             </button>
