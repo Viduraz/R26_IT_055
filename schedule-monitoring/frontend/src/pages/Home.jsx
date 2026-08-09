@@ -2,7 +2,6 @@ import { useNavigate } from "react-router-dom";
 
 export default function Home() {
   const navigate = useNavigate();
-
   return (
     <div className="w-full pb-20">
       {/* Hero Section */}
@@ -10,7 +9,6 @@ export default function Home() {
         <div className="flex flex-col lg:flex-row gap-8 items-center bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
           <div className="absolute -top-24 -left-24 w-64 h-64 bg-blue-500/20 rounded-full blur-3xl pointer-events-none"></div>
           <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
-          
           <div className="flex-1 relative z-10">
             <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold rounded-full mb-4 uppercase tracking-widest">
               AI-Powered Monitoring
@@ -32,12 +30,11 @@ export default function Home() {
               </button>
             </div>
           </div>
-          
           <div className="w-full lg:w-5/12 relative z-10 flex justify-center">
             <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-emerald-500 rounded-2xl blur opacity-25 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
               <img 
-                src="/system-overview.png" 
+                src={`${import.meta.env.BASE_URL}system-overview.png`} 
                 alt="System Overview" 
                 className="relative rounded-2xl shadow-2xl border border-gray-700/50 w-full max-w-sm lg:max-w-md transform transition duration-500 hover:scale-[1.02]"
               />
@@ -55,7 +52,7 @@ export default function Home() {
           <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl overflow-hidden hover:-translate-y-1 transition duration-300 hover:shadow-xl hover:shadow-blue-900/20 group">
             <div className="h-48 overflow-hidden relative">
               <div className="absolute inset-0 bg-gradient-to-t from-gray-900/90 to-transparent z-10"></div>
-              <img src="/feature1.png" alt="Activity Detection" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
+              <img src={`${import.meta.env.BASE_URL}feature1.png`} alt="Activity Detection" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
             </div>
             <div className="p-6 relative z-20 -mt-8">
               <div className="flex items-center gap-2 mb-3">
@@ -67,11 +64,10 @@ export default function Home() {
               </p>
             </div>
           </div>
-          
           <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl overflow-hidden hover:-translate-y-1 transition duration-300 hover:shadow-xl hover:shadow-rose-900/20 group">
             <div className="h-48 overflow-hidden relative">
-               <div className="absolute inset-0 bg-gradient-to-t from-gray-900/90 to-transparent z-10"></div>
-              <img src="/feature2.png" alt="Smart Alerts" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
+              <div className="absolute inset-0 bg-gradient-to-t from-gray-900/90 to-transparent z-10"></div>
+              <img src={`${import.meta.env.BASE_URL}feature2.png`} alt="Smart Alerts" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
             </div>
             <div className="p-6 relative z-20 -mt-8">
               <div className="flex items-center gap-2 mb-3">
@@ -83,11 +79,10 @@ export default function Home() {
               </p>
             </div>
           </div>
-
           <div className="bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl overflow-hidden hover:-translate-y-1 transition duration-300 hover:shadow-xl hover:shadow-purple-900/20 group">
             <div className="h-48 overflow-hidden relative">
-               <div className="absolute inset-0 bg-gradient-to-t from-gray-900/90 to-transparent z-10"></div>
-              <img src="/feature3.png" alt="Routine Setup" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
+              <div className="absolute inset-0 bg-gradient-to-t from-gray-900/90 to-transparent z-10"></div>
+              <img src={`${import.meta.env.BASE_URL}feature3.png`} alt="Routine Setup" className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-500" />
             </div>
             <div className="p-6 relative z-20 -mt-8">
               <div className="flex items-center gap-2 mb-3">
