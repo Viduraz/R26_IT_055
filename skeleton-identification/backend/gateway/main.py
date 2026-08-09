@@ -31,7 +31,7 @@ from config import settings
 from database.connection import MongoDB
 from services.identification.predictor import Predictor
 from services.identification.trainer import ModelTrainer
-from gateway.routes import users, identification, stream
+from gateway.routes import users, identification, stream, alerts
 
 log = structlog.get_logger()
 
@@ -99,6 +99,7 @@ app.add_middleware(
 app.include_router(users.router)
 app.include_router(identification.router)
 app.include_router(stream.router)
+app.include_router(alerts.router)
 
 
 # ── Frontend static files ────────────────────────────────────────────────

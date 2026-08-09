@@ -66,7 +66,7 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950 p-4">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)] p-10 w-full max-w-md">
+      <div className={`bg-gray-900 border border-gray-700 rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)] p-10 w-full transition-all duration-300 ${requiresFaceAuth ? "max-w-2xl" : "max-w-md"}`}>
         
         {!requiresFaceAuth ? (
           <>

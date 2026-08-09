@@ -68,6 +68,11 @@ class EnrollFrameRequest(BaseModel):
     gait_features: Optional[List[float]] = None
 
 
+class EnrollUserImagesRequest(BaseModel):
+    user_id: str
+    frames: List[str]
+
+
 class TrainRequest(BaseModel):
     model_type: str = "ensemble"  # svm | lstm | ensemble
     epochs: int = 100
@@ -191,6 +196,65 @@ async def enroll_frame(req: EnrollFrameRequest):
         "frames_collected": count,
         "status": status,
         "progress": min(count / min_frames * 100, 100),
+    }
+
+
+@router.post("/enroll/user-images")
+async def enroll_user_images(req: EnrollUserImagesRequest):
+    """Extract MediaPipe static features from Base64 images and store to user feature profile."""
+    from services.video_processing.processor import VideoProcessor
+    from services.pose_estimation.estimator import PoseEstimator
+    from services.feature_extraction.static_features import StaticFeatureExtractor
+    from config import settings
+
+    user = await UserCRUD.get_by_id(req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    pose = PoseEstimator(
+        static_image_mode=True,
+        model_complexity=settings.mediapipe_model_complexity,
+        min_detection_confidence=settings.min_detection_confidence,
+        min_tracking_confidence=settings.min_tracking_confidence,
+    )
+    static_ext = StaticFeatureExtractor()
+    processor = VideoProcessor()
+
+    processed_count = 0
+    try:
+        for base64_frame in req.frames:
+            frame_bgr = processor.base64_to_frame(base64_frame)
+            if frame_bgr is None:
+                continue
+            rgb = processor.preprocess_frame(frame_bgr)
+            all_kps = pose.estimate(rgb)
+            if all_kps is None:
+                continue
+            body_kps = pose.get_body_keypoints(all_kps)
+            if body_kps is None:
+                continue
+            raw_features = static_ext.extract_all(body_kps)
+            if raw_features is None:
+                continue
+            static_vector = static_ext.to_vector(raw_features)
+
+            await FeatureProfileCRUD.upsert(
+                user_id=req.user_id,
+                static_vector=static_vector,
+            )
+            processed_count += 1
+    finally:
+        pose.close()
+
+    profile = await FeatureProfileCRUD.get_by_user(req.user_id)
+    count = profile["sample_count"] if profile else 0
+    await UserCRUD.update_enrollment_status(req.user_id, "completed", count)
+
+    return {
+        "user_id": req.user_id,
+        "processed_frames": processed_count,
+        "total_samples": count,
+        "status": "completed",
     }
 
 #model training logic

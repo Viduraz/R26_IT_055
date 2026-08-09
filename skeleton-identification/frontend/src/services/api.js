@@ -67,6 +67,32 @@ export async function fetchStats() {
   return res.json();
 }
 
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+
+/**
+ * Fire a WhatsApp alert for a newly-seen unknown person. Never throws —
+ * a missing/broken Twilio setup should never disrupt the live feed, so
+ * failures just resolve to { sent: false, reason }.
+ */
+export async function notifyUnknownPerson({ snapshot, confidence, source, peopleInFrame, detectedAt }) {
+  try {
+    const res = await fetch(`${API_BASE}/api/alerts/notify-unknown`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshot: snapshot || null,
+        confidence,
+        source,
+        people_in_frame: peopleInFrame,
+        detected_at: detectedAt,
+      }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { sent: false, reason: e.message || String(e) };
+  }
+}
+
 // ─── Report ──────────────────────────────────────────────────────────────────
 
 export async function downloadReportPdf() {

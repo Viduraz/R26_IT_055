@@ -17,7 +17,7 @@ websockets>=12.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 motor>=3.4.0                # Async MongoDB driver
-pymongo>=4.6.0
+pymongo>=4.9.0,<5.0.0       # motor>=3.7 requires pymongo>=4.9 (uses pymongo.cursor_shared internally)
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
 
@@ -35,6 +35,7 @@ httpx>=0.27.0               # Async HTTP (notifier webhooks)
 pillow>=10.2.0
 joblib>=1.3.0
 reportlab>=4.2.0
+twilio>=9.0.0                # WhatsApp alerts for unrecognized persons
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=8.1.0
