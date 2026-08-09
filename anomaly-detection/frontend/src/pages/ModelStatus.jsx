@@ -3,6 +3,7 @@
  * ML pipeline health dashboard — model weights, thresholds, engine status.
  */
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import axios from "axios";
 
 const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
@@ -14,8 +15,10 @@ export default function ModelStatus() {
 
   const load = async () => {
     setLoading(true);
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      const { data } = await axios.get(`${ANOMALY_API}/model-status`);
+      const { data } = await axios.get(`${ANOMALY_API}/model-status`, { headers: authHeaders });
       setStatus(data);
       setError("");
     } catch (e) {
@@ -57,14 +60,14 @@ export default function ModelStatus() {
         {/* Nav */}
         <div className="flex gap-2 mb-6 text-sm">
           {[["Dashboard", "/"], ["History", "/history"], ["Model Status", "/model-status"]].map(([label, href]) => (
-            <a key={href} href={href}
+            <Link key={href} to={href}
               className={`px-4 py-1.5 rounded-lg border transition-colors ${
                 href === "/model-status"
                   ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
                   : "bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
               }`}>
               {label}
-            </a>
+            </Link>
           ))}
         </div>
 

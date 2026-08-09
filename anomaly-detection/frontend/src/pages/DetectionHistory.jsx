@@ -3,6 +3,7 @@
  * Full event history table with severity color coding and auto-refresh.
  */
 import { useEffect, useState, useCallback } from "react";
+import { Link } from "react-router-dom";
 import axios from "axios";
 
 const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
@@ -32,8 +33,10 @@ export default function DetectionHistory() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      const { data } = await axios.get(`${ANOMALY_API}/history`);
+      const { data } = await axios.get(`${ANOMALY_API}/history`, { headers: authHeaders });
       setLogs(Array.isArray(data) ? data : []);
       setError("");
     } catch (e) {
@@ -66,14 +69,14 @@ export default function DetectionHistory() {
         {/* Nav */}
         <div className="flex gap-2 mb-5 text-sm">
           {[["Dashboard", "/"], ["History", "/history"], ["Model Status", "/model-status"]].map(([label, href]) => (
-            <a key={href} href={href}
+            <Link key={href} to={href}
               className={`px-4 py-1.5 rounded-lg border transition-colors ${
                 href === "/history"
                   ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
                   : "bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
               }`}>
               {label}
-            </a>
+            </Link>
           ))}
         </div>
 

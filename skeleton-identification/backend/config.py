@@ -14,12 +14,12 @@ class Settings(BaseSettings):
 
     # ── MongoDB ───────────────────────────────────────────────────────────────
     mongodb_uri: str = "mongodb://localhost:27017"
-    mongodb_db: str = "skeleton_id"
-    use_local_db: bool = True
+    mongodb_db: str = Field(default="skeleton_id", validation_alias="mongodb_db_name")
+    use_local_db: bool = False
     local_db_path: str = "./data/local_db.json"
 
     # ── Service Ports ─────────────────────────────────────────────────────────
-    gateway_port: int = 8000
+    gateway_port: int = 8007
     video_service_port: int = 8001
     pose_service_port: int = 8002
     feature_service_port: int = 8003

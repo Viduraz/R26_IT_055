@@ -4,6 +4,16 @@ import { useNavigate, Link } from "react-router-dom";
 import { loginUser, loginWithFace } from "../services/authApi";
 import FaceLoginStep from "../components/FaceLoginStep";
 
+const getBaseUrl = () => {
+  // If we are directly on the auth service port 5173, redirect back to gateway port 5178
+  if (window.location.port === "5173") {
+    return "http://localhost:5178";
+  }
+  return import.meta.env.MODE === "tunnel"
+    ? window.location.origin
+    : (import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178");
+};
+
 export default function Login() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: "", password: "" });
@@ -21,11 +31,8 @@ export default function Login() {
       const data = await loginUser(form.email, form.password);
       // Validated instantly (admin or family)
       localStorage.setItem("access_token", data.access_token);
-      // In tunnel mode the auth & gateway UIs share the same Cloudflare domain,
-      // so we stay on the current origin. In local dev they're on different ports.
-      const _base = import.meta.env.MODE === "tunnel"
-        ? window.location.origin
-        : (import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178");
+      
+      const _base = getBaseUrl();
       window.location.href = `${_base}/auth-callback?token=${data.access_token}`;
     } catch (err) {
       const errorMsg = err.response?.data?.detail;
@@ -46,9 +53,8 @@ export default function Login() {
     try {
       const data = await loginWithFace(form.email, form.password, liveFaceSample, liveSkeletonSample);
       localStorage.setItem("access_token", data.access_token);
-      const _base = import.meta.env.MODE === "tunnel"
-        ? window.location.origin
-        : (import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178");
+      
+      const _base = getBaseUrl();
       window.location.href = `${_base}/auth-callback?token=${data.access_token}`;
     } catch (err) {
       setError(err.response?.data?.detail || "Biometric verification failed. Please try again.");
@@ -56,6 +62,7 @@ export default function Login() {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950 p-4">
