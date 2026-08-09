@@ -42,6 +42,21 @@ const STATUS_DISPLAY = {
   },
 };
 
+// Some backend responses may nest the activity array under a different key
+// (e.g. "tasks" or "items" instead of "activities"), or the schedule prop
+// itself may be an array of activities rather than an object wrapping one.
+// This normalizes any of those shapes into a plain array so the rest of the
+// component doesn't have to care which shape it received.
+function extractActivitiesArray(rawSchedule) {
+  if (!rawSchedule) return [];
+  if (Array.isArray(rawSchedule)) return rawSchedule;
+  if (Array.isArray(rawSchedule.activities)) return rawSchedule.activities;
+  if (Array.isArray(rawSchedule.tasks)) return rawSchedule.tasks;
+  if (Array.isArray(rawSchedule.items)) return rawSchedule.items;
+  if (Array.isArray(rawSchedule.schedule_items)) return rawSchedule.schedule_items;
+  return [];
+}
+
 export default function ActivityDetectorMonitor({
   onActivityConfirmed,
   schedule: scheduleProp,
@@ -83,10 +98,22 @@ export default function ActivityDetectorMonitor({
 
   useEffect(() => {
     if (scheduleProp) {
+      // TEMP DIAGNOSTIC — remove once the "activities: undefined" bug is
+      // confirmed fixed. This prints exactly what shape the parent is
+      // handing us, so we can see whether the array lives under a
+      // different key than "activities".
+      console.log("[Detector] scheduleProp received:", scheduleProp);
+
       setSchedule(scheduleProp);
-      setDebugInfo(
-        `✓ Loaded schedule with ${scheduleProp.activities?.length || 0} activities`
-      );
+      const activities = extractActivitiesArray(scheduleProp);
+      setDebugInfo(`✓ Loaded schedule with ${activities.length} activities`);
+      if (activities.length === 0) {
+        console.warn(
+          "[Detector] scheduleProp had no recognizable activities array. " +
+            "Keys present:",
+          Object.keys(scheduleProp || {})
+        );
+      }
     } else {
       fetchSchedule();
     }
@@ -102,13 +129,14 @@ export default function ActivityDetectorMonitor({
   }, [autoStart]);
 
   useEffect(() => {
-    if (!schedule?.activities?.length) return;
+    const activities = extractActivitiesArray(schedule);
+    if (!activities.length) return;
 
     const updateExpected = () => {
       const now = new Date();
       const currentTime = now.getHours() * 60 + now.getMinutes();
-      let active = schedule.activities[0]?.activity_name || "Walking";
-      for (const act of schedule.activities) {
+      let active = activities[0]?.activity_name || "Walking";
+      for (const act of activities) {
         const [startH, startM] = String(act.start_time).split(":").map(Number);
         const [endH, endM] = String(act.end_time).split(":").map(Number);
         const start = (startH || 0) * 60 + (startM || 0);
@@ -137,12 +165,18 @@ export default function ActivityDetectorMonitor({
   const fetchSchedule = async () => {
     try {
       const res = await getSchedule();
+      console.log("[Detector] getSchedule() response:", res);
       const schedules = res.data || [];
       if (schedules.length > 0) {
         setSchedule(schedules[0]);
-        setDebugInfo(
-          `✓ Loaded schedule with ${schedules[0].activities.length} activities`
-        );
+        const activities = extractActivitiesArray(schedules[0]);
+        setDebugInfo(`✓ Loaded schedule with ${activities.length} activities`);
+        if (activities.length === 0) {
+          console.warn(
+            "[Detector] Fetched schedule had no recognizable activities array. Keys present:",
+            Object.keys(schedules[0] || {})
+          );
+        }
       } else {
         setSchedule(null);
         setDebugInfo("⚠️ No schedule found. Create one first!");
@@ -155,18 +189,19 @@ export default function ActivityDetectorMonitor({
 
   // Flexible matching so "Walking" matches "Walk", "Morning Walking", etc.
   const findScheduledActivity = (activityName) => {
-    if (!schedule?.activities?.length) return null;
+    const activities = extractActivitiesArray(schedule);
+    if (!activities.length) return null;
 
     const detected = (activityName || "").toLowerCase().trim();
 
     // 1) Exact match
-    let match = schedule.activities.find(
+    let match = activities.find(
       (act) => (act.activity_name || "").toLowerCase().trim() === detected
     );
     if (match) return match;
 
     // 2) Partial match
-    match = schedule.activities.find((act) => {
+    match = activities.find((act) => {
       const name = (act.activity_name || "").toLowerCase().trim();
       return name.includes(detected) || detected.includes(name);
     });
@@ -183,7 +218,7 @@ export default function ActivityDetectorMonitor({
       "taking medications": ["med", "medication", "pill", "tablet"],
     };
 
-    for (const act of schedule.activities) {
+    for (const act of activities) {
       const name = (act.activity_name || "").toLowerCase();
       for (const [key, words] of Object.entries(keywords)) {
         const detectedHits =
@@ -203,11 +238,14 @@ export default function ActivityDetectorMonitor({
     const scheduledActivity = findScheduledActivity(activityName);
 
     if (!scheduledActivity) {
+      const activities = extractActivitiesArray(schedule);
       console.warn(
         "[Detector] No schedule match for:",
         activityName,
         "| schedule activities:",
-        schedule?.activities?.map((a) => a.activity_name)
+        activities.map((a) => a.activity_name),
+        "| raw schedule object:",
+        schedule
       );
       return "Unexpected";
     }

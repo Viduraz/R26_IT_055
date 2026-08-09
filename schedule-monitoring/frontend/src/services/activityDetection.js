@@ -3,7 +3,7 @@
  * Activity Detection Service
  *
  * Primary path:
- *  1. LSTM model loaded from /mediapipe_activity_model/tfjs/model.json.
+ *  1. LSTM model loaded from <BASE_URL>mediapipe_activity_model/tfjs/model.json.
  *
  * Fallback path:
  *  2. Threshold classifier based on BlazePose landmark geometry.
@@ -22,8 +22,12 @@ const CONFIDENCE_THRESHOLD = 0.50;
 const ANKLE_CONFIDENCE_THRESHOLD = 0.35;
 const HISTORY_SIZE = 12;
 const LSTM_SEQ_LEN = 30;
-const LSTM_MODEL_PATH = '/schedule/mediapipe_activity_model/tfjs/model.json';
-const LSTM_STATS_PATH = '/schedule/mediapipe_activity_model/tfjs/norm_stats.json';
+
+// Built from Vite's BASE_URL so this never goes stale if the base path
+// (currently "/schedule/") ever changes. import.meta.env.BASE_URL already
+// includes the trailing slash.
+const LSTM_MODEL_PATH = `${import.meta.env.BASE_URL}mediapipe_activity_model/tfjs/model.json`;
+const LSTM_STATS_PATH = `${import.meta.env.BASE_URL}mediapipe_activity_model/tfjs/norm_stats.json`;
 
 let LSTM_ACTIVITY_NAMES = [];
 
@@ -289,9 +293,9 @@ function getObjectMemoryStatus() {
 }
 
 async function loadLSTMModel() {
-  console.log('Loading LSTM-HAR model …');
+  console.log('Loading LSTM-HAR model from', LSTM_MODEL_PATH, '…');
   const statsRes = await fetch(LSTM_STATS_PATH);
-  if (!statsRes.ok) throw new Error(`norm_stats.json not found at ${LSTM_STATS_PATH}`);
+  if (!statsRes.ok) throw new Error(`norm_stats.json not found at ${LSTM_STATS_PATH} (status ${statsRes.status})`);
   const stats = await statsRes.json();
   LSTM_ACTIVITY_NAMES = Array.isArray(stats.class_names) && stats.class_names.length > 0
     ? stats.class_names
@@ -505,6 +509,7 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
 }
 
 async function detectPoseLoop() {
+  // Guard #1: bail out before doing any work if we've already been torn down.
   if (!isRunning || !detector || !videoElement) return;
 
   try {
@@ -513,16 +518,29 @@ async function detectPoseLoop() {
     let poses = [];
 
     try {
+      // Guard #2: re-check right before each detector call. stopPoseDetection()
+      // can null these out while we're paused at an `await`, so a check made
+      // only once at the top of the function is not enough.
+      if (!isRunning || !detector) return;
       poses = await detector.estimatePoses(videoElement);
+
+      if (!isRunning || !faceDetector) return;
       faces = await faceDetector.estimateFaces(videoElement);
-      if (Math.random() < 0.5 || lastDetectedObjects.length === 0) {
+
+      if (!isRunning) return;
+      if (objectDetector && (Math.random() < 0.5 || lastDetectedObjects.length === 0)) {
         objects = await objectDetector.detect(videoElement);
+        if (!isRunning) return;
         lastDetectedObjects = objects;
         updateObjectMemory(objects, Date.now());
       }
     } catch (e) {
       console.error(e);
     }
+
+    // Guard #3: something may have stopped us while the inner try/catch above
+    // was running. Don't touch canvases/state after teardown.
+    if (!isRunning || !videoElement) return;
 
     if (poses && poses.length > 0) {
       const pose = poses[0];
