@@ -137,5 +137,31 @@ services:
       - gateway-backend
     restart: unless-stopped
 
+  # ─── Caregiver Marketplace ──────────────────────────────
+  marketplace-backend:
+    build: ./caregiver-marketplace/backend
+    ports:
+      - "8006:8006"
+    env_file: .env
+    environment:
+      - ANOMALY_SERVICE_URL=http://anomaly-backend:8003
+      - TRACKING_SERVICE_URL=http://tracking-backend:8002
+      - SCHEDULE_SERVICE_URL=http://schedule-backend:8004
+    depends_on:
+      - mongodb
+      - anomaly-backend
+      - tracking-backend
+      - schedule-backend
+    restart: unless-stopped
+
+  marketplace-frontend:
+    build: ./caregiver-marketplace/frontend
+    ports:
+      - "5179:5179"
+    depends_on:
+      - marketplace-backend
+    restart: unless-stopped
+
 volumes:
   mongodb_data:
+

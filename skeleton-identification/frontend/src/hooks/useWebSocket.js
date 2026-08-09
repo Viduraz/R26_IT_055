@@ -84,6 +84,7 @@ export function useWebSocket(refs, state, cbs) {
         frame: base64,
         mode: isEnrolling ? 'enroll' : 'identify',
         user_id: isEnrolling ? enrollUserId : null,
+        enroll_type: stateRef.current.enrollType || 'skeleton',
       }));
 
       waitingRef.current = true;

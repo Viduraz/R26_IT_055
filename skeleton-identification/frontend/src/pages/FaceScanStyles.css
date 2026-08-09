@@ -1,0 +1,818 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Face Biometric Scanner — Premium Enterprise Dashboard Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Keyframes ─────────────────────────────────────────────────────────────── */
+
+@keyframes faceScanPulse {
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.02);
+    opacity: 1;
+  }
+}
+
+@keyframes faceScanLine {
+  0% {
+    top: 8%;
+    opacity: 0;
+  }
+
+  8% {
+    opacity: 0.6;
+  }
+
+  92% {
+    opacity: 0.6;
+  }
+
+  100% {
+    top: 88%;
+    opacity: 0;
+  }
+}
+
+@keyframes faceGlowPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 24px rgba(6, 182, 212, 0.15), inset 0 0 24px rgba(6, 182, 212, 0.04);
+    border-color: rgba(6, 182, 212, 0.55);
+  }
+
+  50% {
+    box-shadow: 0 0 48px rgba(6, 182, 212, 0.35), inset 0 0 36px rgba(6, 182, 212, 0.08);
+    border-color: rgba(6, 182, 212, 0.85);
+  }
+}
+
+@keyframes dotPulse {
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+}
+
+@keyframes successPop {
+  0% {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+
+  60% {
+    transform: scale(1.05);
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes arrowBounceRight {
+
+  0%,
+  100% {
+    transform: translateY(-50%) translateX(0);
+  }
+
+  50% {
+    transform: translateY(-50%) translateX(8px);
+  }
+}
+
+@keyframes arrowBounceLeft {
+
+  0%,
+  100% {
+    transform: translateY(-50%) translateX(0);
+  }
+
+  50% {
+    transform: translateY(-50%) translateX(-8px);
+  }
+}
+
+@keyframes arrowBounceUp {
+
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  50% {
+    transform: translateX(-50%) translateY(-8px);
+  }
+}
+
+@keyframes arrowBounceDown {
+
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  50% {
+    transform: translateX(-50%) translateY(8px);
+  }
+}
+
+@keyframes borderRotate {
+  0% {
+    --angle: 0deg;
+  }
+
+  100% {
+    --angle: 360deg;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes subtleFloat {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* ── Page Layout ───────────────────────────────────────────────────────────── */
+
+.face-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 20px 24px;
+  gap: 16px;
+  overflow-y: auto;
+  animation: fadeInUp 0.5s ease-out;
+}
+
+.face-page-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.face-page-header h1 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.face-page-header .subtitle {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.face-page-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 1024px) {
+  .face-page-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Left Panel ────────────────────────────────────────────────────────────── */
+
+.face-left-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.face-left-panel::-webkit-scrollbar {
+  width: 3px;
+}
+
+.face-left-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+/* ── Premium Card ──────────────────────────────────────────────────────────── */
+
+.face-card {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.face-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.2), rgba(139, 92, 246, 0.15), transparent);
+}
+
+.face-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.face-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  letter-spacing: 0.01em;
+  margin-bottom: 16px;
+}
+
+.face-card-title .icon-wrap {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.face-card-title .icon-wrap.cyan {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.15), rgba(6, 182, 212, 0.05));
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  color: #06b6d4;
+}
+
+.face-card-title .icon-wrap.violet {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(139, 92, 246, 0.05));
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  color: #8b5cf6;
+}
+
+.face-card-title .icon-wrap.emerald {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.05));
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+/* ── Premium Buttons ───────────────────────────────────────────────────────── */
+
+.face-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: none;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.face-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent);
+}
+
+.face-btn:hover::after {
+  opacity: 1;
+}
+
+.face-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.face-btn-primary {
+  background: linear-gradient(135deg, #06b6d4, #0891b2);
+  color: #0f172a;
+  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.25);
+}
+
+.face-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(6, 182, 212, 0.4);
+  transform: translateY(-1px);
+}
+
+.face-btn-scan {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(139, 92, 246, 0.3);
+  font-size: 0.85rem;
+  padding: 14px 16px;
+}
+
+.face-btn-scan:hover:not(:disabled) {
+  box-shadow: 0 6px 28px rgba(139, 92, 246, 0.45);
+  transform: translateY(-1px);
+}
+
+.face-btn-danger {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.25);
+}
+
+.face-btn-danger:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(239, 68, 68, 0.4);
+  transform: translateY(-1px);
+}
+
+.face-btn-sm {
+  padding: 10px 14px;
+  font-size: 0.75rem;
+}
+
+/* ── Camera Toggle ─────────────────────────────────────────────────────────── */
+
+.cam-toggle-group {
+  display: flex;
+  gap: 8px;
+}
+
+.cam-toggle {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(15, 23, 42, 0.5);
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  text-align: center;
+}
+
+.cam-toggle:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+}
+
+.cam-toggle.active {
+  background: rgba(6, 182, 212, 0.1);
+  border-color: rgba(6, 182, 212, 0.3);
+  color: #06b6d4;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.1);
+}
+
+/* ── Scanner Container ─────────────────────────────────────────────────────── */
+
+.face-scanner-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.face-scan-container {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 420px;
+  border-radius: 20px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #080d19, #0c1222);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.face-scan-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  border-radius: 20px;
+}
+
+.face-scan-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* ── Oval Guide ────────────────────────────────────────────────────────────── */
+
+.face-oval-guide {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -52%);
+  width: 56%;
+  height: 72%;
+  border-radius: 20px;
+  border: 2.5px solid rgba(6, 182, 212, 0.4);
+  transition: border-color 0.5s ease, box-shadow 0.5s ease;
+}
+
+.face-oval-guide.scanning {
+  animation: faceGlowPulse 2.5s ease-in-out infinite;
+}
+
+.face-oval-guide.success {
+  border-color: rgba(16, 185, 129, 0.8);
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.3), inset 0 0 24px rgba(16, 185, 129, 0.08);
+}
+
+.face-oval-guide.warning {
+  border-color: rgba(245, 158, 11, 0.6);
+  box-shadow: 0 0 24px rgba(245, 158, 11, 0.2);
+}
+
+/* ── Scan Line ─────────────────────────────────────────────────────────────── */
+
+.face-scan-line {
+  position: absolute;
+  left: 28%;
+  width: 44%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.7), transparent);
+  animation: faceScanLine 2.8s linear infinite;
+  z-index: 15;
+}
+
+/* ── Direction Arrows ──────────────────────────────────────────────────────── */
+
+.direction-indicator {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(6, 182, 212, 0.85);
+  filter: drop-shadow(0 0 12px rgba(6, 182, 212, 0.4));
+}
+
+.direction-indicator svg {
+  width: 36px;
+  height: 36px;
+}
+
+.direction-indicator.right {
+  right: 5%;
+  top: 50%;
+  animation: arrowBounceRight 1.2s ease-in-out infinite;
+}
+
+.direction-indicator.left {
+  left: 5%;
+  top: 50%;
+  animation: arrowBounceLeft 1.2s ease-in-out infinite;
+}
+
+.direction-indicator.up {
+  top: 5%;
+  left: 50%;
+  animation: arrowBounceUp 1.2s ease-in-out infinite;
+}
+
+.direction-indicator.down {
+  bottom: 12%;
+  left: 50%;
+  animation: arrowBounceDown 1.2s ease-in-out infinite;
+}
+
+/* ── Instruction Banner ────────────────────────────────────────────────────── */
+
+.face-instruction {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  padding: 32px 20px 20px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8) 40%);
+  text-align: center;
+}
+
+.face-instruction h3 {
+  color: #f1f5f9;
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+}
+
+.face-instruction p {
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+/* ── Step Dots ─────────────────────────────────────────────────────────────── */
+
+.step-dots {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  transition: all 0.4s ease;
+}
+
+.step-dot.active {
+  width: 24px;
+  border-radius: 4px;
+  background: rgba(6, 182, 212, 0.8);
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.4);
+}
+
+.step-dot.completed {
+  background: rgba(16, 185, 129, 0.7);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+
+/* ── Frames Badge ──────────────────────────────────────────────────────────── */
+
+.frames-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 20;
+  padding: 6px 14px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.frames-badge .count {
+  color: #06b6d4;
+  font-weight: 700;
+}
+
+/* ── Scan Status Badge ─────────────────────────────────────────────────────── */
+
+.scan-status-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 20;
+  padding: 5px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Completion Overlay ────────────────────────────────────────────────────── */
+
+.scan-complete-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: successPop 0.5s ease-out;
+}
+
+.scan-complete-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(6, 182, 212, 0.15));
+  border: 2px solid rgba(16, 185, 129, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: #10b981;
+}
+
+.scan-complete-icon svg {
+  width: 32px;
+  height: 32px;
+}
+
+/* ── Progress Steps List ───────────────────────────────────────────────────── */
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  transition: all 0.3s ease;
+}
+
+.step-row.active {
+  background: rgba(6, 182, 212, 0.06);
+  border: 1px solid rgba(6, 182, 212, 0.15);
+}
+
+.step-row.done {
+  opacity: 0.5;
+}
+
+.step-number {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #475569;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.step-number.active {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: rgba(6, 182, 212, 0.3);
+  color: #06b6d4;
+}
+
+.step-number.done {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #10b981;
+}
+
+/* ── Progress Bar (Custom) ─────────────────────────────────────────────────── */
+
+.face-progress-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.face-progress-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #8b5cf6, #06b6d4, #10b981);
+  background-size: 200% 100%;
+  animation: shimmer 3s linear infinite;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Status Bar (below scanner) ────────────────────────────────────────────── */
+
+.face-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  animation: fadeInUp 0.3s ease-out;
+}
+
+/* ── Idle Scanner Placeholder ──────────────────────────────────────────────── */
+
+.scanner-idle-content {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.scanner-idle-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.1), rgba(139, 92, 246, 0.08));
+  border: 1px solid rgba(6, 182, 212, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  animation: subtleFloat 4s ease-in-out infinite;
+}
+
+.scanner-idle-icon svg {
+  width: 24px;
+  height: 24px;
+  color: #06b6d4;
+}
+
+/* ── Progress Ring ─────────────────────────────────────────────────────────── */
+
+.progress-ring {
+  transform: rotate(-90deg);
+}
+
+.progress-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.06);
+}
+
+.progress-ring-fill {
+  fill: none;
+  stroke: url(#progressGradient);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}

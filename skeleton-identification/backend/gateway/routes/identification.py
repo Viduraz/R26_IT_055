@@ -135,7 +135,7 @@ async def verify_frame(req: VerifyFrameRequest):
     finally:
         pose.close()
 
-
+#Live Identification (The "Brain" in action)
 @router.post("/identify")
 async def identify(req: IdentifyRequest):
     """Identify a person from extracted features."""
@@ -161,7 +161,7 @@ async def identify(req: IdentifyRequest):
 
     return result
 
-
+#enrollment logic
 @router.post("/enroll/frame")
 async def enroll_frame(req: EnrollFrameRequest):
     """Add a single enrollment frame's features for a user."""
@@ -193,7 +193,7 @@ async def enroll_frame(req: EnrollFrameRequest):
         "progress": min(count / min_frames * 100, 100),
     }
 
-
+#model training logic
 @router.post("/train")
 async def train_model(req: TrainRequest):
     """Trigger model training using all enrolled user data."""

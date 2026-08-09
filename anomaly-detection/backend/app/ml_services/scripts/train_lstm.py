@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from app.ml_services.models.lstm_model import _build_model, LSTM_WEIGHTS_PATH
 
 # Configuration
-INPUT_SIZE = 40
+INPUT_SIZE = 48
 SEQ_LEN = 30
 NUM_CLASSES = 4
 BATCH_SIZE = 64
@@ -29,6 +29,7 @@ _IDX_WRIST_L_VEL = 19
 _IDX_WRIST_R_VEL = 20
 _IDX_HEAD_DROP = 21
 _IDX_POSE_ENERGY = 22
+_IDX_AVG_WRIST_VEL = 47
 
 def generate_synthetic_data(num_samples=2000):
     """
@@ -111,6 +112,7 @@ def generate_synthetic_data(num_samples=2000):
                 seq[:, _IDX_WRIST_R_VEL] = np.random.uniform(0.03, 0.12, SEQ_LEN)
                 seq[:, _IDX_POSE_ENERGY] = np.random.uniform(0.03, 0.09, SEQ_LEN)
                 seq[:, _IDX_ASPECT_RATIO] = np.random.uniform(0.4, 0.7, SEQ_LEN)
+                seq[:, _IDX_AVG_WRIST_VEL] = np.random.uniform(0.05, 0.15, SEQ_LEN) # High jerk / avg vel
                 
             elif label == 3: # prolonged_inactivity
                 # Stable but close to zero velocity and energy
