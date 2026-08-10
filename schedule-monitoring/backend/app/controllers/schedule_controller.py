@@ -26,6 +26,10 @@ archive (see schedule_service.py's _archive_schedule_as_report /
 get_report_by_date / get_reports_for_week) so the frontend Reports page can
 show Done/Late/Missed counts for any past day or a 7-day week, not just the
 currently-active schedule.
+
+FIX (this revision) — _shape_detection_response() no longer returns the
+literal string "Unexpected" for a no-match detection event. See that
+function's docstring below for the full reasoning.
 """
 from fastapi import HTTPException
 from app.services.schedule_service import ScheduleService
@@ -59,13 +63,27 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
     MonitoringService.process_detection_event() using each activity's own
     end_time, not LATE_THRESHOLD_MINUTES. This field is kept only so any
     existing frontend code reading response.data.deadline doesn't break.
+
+    FIX: this used to return "status": "Unexpected" whenever
+    process_detection_event() found no matching schedule entry (empty
+    results, or a raw status somehow outside STATUS_TO_DISPLAY's keys).
+    That's not a real status in the app's vocabulary (Early/Completed/
+    Late/Missed) — it was only ever meant as a "no backend match, let the
+    frontend decide" signal. Returning it as a literal string meant that if
+    the frontend's own fallback logic had any gap, "Unexpected" could leak
+    straight onto the screen — which is exactly what happened. Now this
+    returns "status": None instead — falsy, so
+    ActivityDetectorMonitor.jsx's
+    `if (backendStatus && FINAL_STATUSES.includes(backendStatus))` check
+    cleanly falls through to its own locally-computed Early/Completed/Late
+    every time, with no ambiguous placeholder string in between.
     """
     results = monitoring_result.get("results", [])
 
     if not results:
         return {
             **monitoring_result,
-            "status": "Unexpected",
+            "status": None,
             "adaptive_grace_minutes": EARLY_GRACE_MINUTES,
             "delay_minutes": LATE_THRESHOLD_MINUTES,
             "deadline": None,
@@ -73,7 +91,7 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
 
     match = results[0]
     lower_status = match.get("status", "")
-    display_status = STATUS_TO_DISPLAY.get(lower_status, "Unexpected")
+    display_status = STATUS_TO_DISPLAY.get(lower_status)  # None if truly unmapped
 
     deadline_iso = None
     end_time = match.get("end_time")

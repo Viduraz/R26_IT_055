@@ -4,12 +4,31 @@
  *
  * Primary path:
  *  1. LSTM model loaded from <BASE_URL>mediapipe_activity_model/tfjs/model.json.
+ *     Only trusted when confidence >= LSTM_CONFIDENCE_THRESHOLD; otherwise
+ *     falls back to the threshold classifier for that frame.
  *
  * Fallback path:
  *  2. Threshold classifier based on BlazePose landmark geometry.
  *
  * This version uses the 33-landmark BlazePose schema so it matches the
  * MediaPipe CSV pipeline used for training.
+ *
+ * CHANGES vs previous version:
+ *  - smoothPredictions() now actually smooths (majority vote over a rolling
+ *    window) instead of always returning the raw per-frame result.
+ *  - LSTM predictions below LSTM_CONFIDENCE_THRESHOLD fall back to the
+ *    threshold classifier instead of being trusted at any confidence.
+ *  - Walking vs Standing no longer overlap: Walking now requires actual
+ *    movement (velocity above a floor + leg asymmetry), Standing owns the
+ *    low-velocity/straight-leg case. Previously "straight legs + low
+ *    velocity" (i.e. standing still) was being classified as Walking
+ *    because that branch was checked first with a wider velocity band.
+ *  - Ankle-confidence gating now actually changes the geometry used: when
+ *    ankles are unreliable, leg-angle features fall back to hip-angle
+ *    estimation instead of trusting extrapolated ankle coordinates.
+ *  - Object detection runs on a fixed cadence (every 2nd frame) instead of
+ *    a 50/50 coin flip, so Eating/Drinking object context doesn't randomly
+ *    drop out.
  */
 
 import * as tf from '@tensorflow/tfjs';
@@ -18,10 +37,16 @@ import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detec
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
 const USE_LSTM = true;
-const CONFIDENCE_THRESHOLD = 0.50;
+const CONFIDENCE_THRESHOLD = 0.50;       // used for alignment / UI feedback
+const LSTM_CONFIDENCE_THRESHOLD = 0.55;  // below this, fall back to threshold classifier
 const ANKLE_CONFIDENCE_THRESHOLD = 0.35;
 const HISTORY_SIZE = 12;
 const LSTM_SEQ_LEN = 30;
+const SMOOTHING_WINDOW = 5;
+const SMOOTHING_MAJORITY = 3; // out of SMOOTHING_WINDOW, need this many agreeing to switch
+const OBJECT_DETECT_EVERY_N_FRAMES = 2;
+const WALKING_MIN_VELOCITY = 0.018; // must show actual movement to count as walking
+const WALKING_MIN_LEG_ASYMMETRY = 6; // degrees; walking gait alternates leg angles
 
 // Built from Vite's BASE_URL so this never goes stale if the base path
 // (currently "/schedule/") ever changes. import.meta.env.BASE_URL already
@@ -44,9 +69,11 @@ let canvasElement = null;
 let expectedActivityRef = null;
 let onAlignmentChangeCallback = null;
 let currentAlignment = false;
+let frameCounter = 0;
 
 let poseHistory = [];
-let activityHistory = [];
+let activityHistory = [];       // raw per-frame results, used for majority-vote smoothing
+let stableActivity = null;      // last activity that actually won the smoothing vote
 let featureHistory = [];
 
 let lstmModel = null;
@@ -157,6 +184,26 @@ function calculateWristOscillation(currentKeypoints) {
   return wristCount > 0 ? wristMovement / wristCount : 0;
 }
 
+/**
+ * Returns a leg angle, falling back to a hip-angle-derived estimate when the
+ * ankle keypoint isn't confidently tracked (MoveNet/BlazePose extrapolate
+ * occluded ankles into "standing straight" positions, which previously
+ * inflated seated poses into the standing/walking angle range).
+ */
+function getReliableLegAngle(hip, knee, ankle, shoulderMid, hipMid) {
+  const ankleConfident = ankle && ankle.score > ANKLE_CONFIDENCE_THRESHOLD;
+  if (ankleConfident) {
+    return { angle: calculateAngle(hip, knee, ankle), source: 'ankle' };
+  }
+  // Fallback: use torso-hip-knee angle as a proxy. A seated person has a
+  // strong hip bend (torso over hip is roughly perpendicular to thigh);
+  // a standing person has torso and thigh roughly in line.
+  if (shoulderMid && hipMid && knee) {
+    return { angle: calculateAngle(shoulderMid, hipMid, knee), source: 'hip_fallback' };
+  }
+  return { angle: 90, source: 'unknown' }; // neutral/seated-biased default, never "standing straight"
+}
+
 function extractThresholdFeatures(keypoints) {
   if (!keypoints || keypoints.length < 33) return null;
 
@@ -184,21 +231,31 @@ function extractThresholdFeatures(keypoints) {
   const shoulderMidY = (leftShoulder.y + rightShoulder.y) / 2;
   const hipMidX = (leftHip.x + rightHip.x) / 2;
   const hipMidY = (leftHip.y + rightHip.y) / 2;
+  const shoulderMid = { x: shoulderMidX, y: shoulderMidY };
+  const hipMid = { x: hipMidX, y: hipMidY };
   const torsoDX = Math.abs(hipMidX - shoulderMidX);
   const torsoDY = Math.abs(hipMidY - shoulderMidY);
   const torsoHeight = torsoDY;
   const torsoAlignment = torsoDX / (torsoDY + 0.001);
   features.push(torsoHeight);
 
-  const leftLegAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
-  const rightLegAngle = calculateAngle(rightHip, rightKnee, rightAnkle);
+  const leftLegResult = getReliableLegAngle(leftHip, leftKnee, leftAnkle, shoulderMid, hipMid);
+  const rightLegResult = getReliableLegAngle(rightHip, rightKnee, rightAnkle, shoulderMid, hipMid);
+  const leftLegAngle = leftLegResult.angle;
+  const rightLegAngle = rightLegResult.angle;
+  const anklesConfident = leftLegResult.source === 'ankle' && rightLegResult.source === 'ankle';
   features.push(leftLegAngle, rightLegAngle);
 
   const leftArmAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
   const rightArmAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
   features.push(leftArmAngle, rightArmAngle);
 
-  const bodyHeight = Math.abs(Math.max(leftAnkle.y, rightAnkle.y) - nose.y);
+  // bodyHeight also depends on ankle y — only trust it when ankles are confident,
+  // otherwise approximate using hip y (prevents extrapolated ankles inflating this).
+  const bodyHeight = anklesConfident
+    ? Math.abs(Math.max(leftAnkle.y, rightAnkle.y) - nose.y)
+    : Math.abs(hipMidY - nose.y) * 1.6; // rough scale factor hip->full-body
+
   features.push(bodyHeight);
 
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
@@ -229,6 +286,7 @@ function extractThresholdFeatures(keypoints) {
 
   features.push(calculateWristOscillation(keypoints));
   features.push(torsoAlignment);
+  features.push(anklesConfident ? 1 : 0); // exposed so classifyActivity can use it directly
 
   return features;
 }
@@ -307,7 +365,7 @@ async function loadLSTMModel() {
   lstmModel.predict(dummy).dispose();
   dummy.dispose();
   lstmReady = true;
-  console.log('✓ LSTM-HAR model loaded');
+  console.log('✓ LSTM-HAR model loaded. Trained classes:', LSTM_ACTIVITY_NAMES);
 }
 
 function classifyWithLSTM(history) {
@@ -339,14 +397,10 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     torsoHeight, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
     bodyHeight, shoulderWidth, handToMouth, velocity, legAsymmetry,
     hipHeight, wristHeight, elbowAboveShoulder, wristOscillation,
-    torsoAlignment
+    torsoAlignment, anklesConfidentFlag
   ] = features;
 
-  const latestPose = poseSequence && poseSequence[poseSequence.length - 1];
-  const lowerBodyVisible = latestPose && [23, 24, 25, 26, 27, 28].filter(i => latestPose[i] && latestPose[i].score > 0.35).length >= 4;
-  const leftAnkleConfident = latestPose && latestPose[27] && latestPose[27].score > ANKLE_CONFIDENCE_THRESHOLD;
-  const rightAnkleConfident = latestPose && latestPose[28] && latestPose[28].score > ANKLE_CONFIDENCE_THRESHOLD;
-  const anklesConfident = leftAnkleConfident && rightAnkleConfident;
+  const anklesConfident = anklesConfidentFlag === 1;
   const now = Date.now();
 
   const hasCup = objects && objects.some(obj => ['cup', 'bottle', 'wine glass'].includes(obj.class));
@@ -359,6 +413,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   if (hasBed) actionMemory.lastBedSeen = now;
   const sawBedRecently = (now - actionMemory.lastBedSeen) < 20000;
 
+  const latestPose = poseSequence && poseSequence[poseSequence.length - 1];
   const shoulderMidPt = latestPose && latestPose[11] && latestPose[12]
     ? { x: (latestPose[11].x + latestPose[12].x) / 2, y: (latestPose[11].y + latestPose[12].y) / 2 } : null;
   const hipMidPt = latestPose && latestPose[23] && latestPose[24]
@@ -380,13 +435,15 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   const didPillGestureRecently = (now - actionMemory.lastEmptyHandToMouth) < 12000;
   const objectMemory = getObjectMemoryStatus();
 
+  const legsStraight = leftLegAngle > 150 && rightLegAngle > 150;
+
   let activity = null;
   let confidence = 0;
   let signals = { source: 'threshold' };
 
   if (
     (torsoAlignment > 1.1 && velocity < 0.04) ||
-    (lowerBodyVisible && hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02) ||
+    (hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02) ||
     (torsoAlignment > 0.9 && bodyIsStraight && sawBedRecently && velocity < 0.05)
   ) {
     activity = 'Sleeping';
@@ -417,18 +474,25 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       recentCup: sawCupRecently,
       source: 'threshold',
     };
-  } else if ((leftLegAngle > 150 && rightLegAngle > 150) && velocity < 0.05 && bodyHeight > 0.55) {
+  } else if (
+    legsStraight && bodyHeight > 0.55 &&
+    velocity >= WALKING_MIN_VELOCITY &&
+    legAsymmetry >= WALKING_MIN_LEG_ASYMMETRY
+  ) {
+    // Walking now REQUIRES actual movement + alternating leg angles.
+    // Straight legs + near-zero velocity used to fall in here by mistake —
+    // that case now belongs to Standing below.
     activity = 'Walking';
-    confidence = 0.70;
-    signals = { velocity: velocity.toFixed(3), legAsymmetry: legAsymmetry.toFixed(1) };
+    confidence = anklesConfident ? 0.80 : 0.62;
+    signals = { velocity: velocity.toFixed(3), legAsymmetry: legAsymmetry.toFixed(1), anklesConfident };
+  } else if (legsStraight && velocity < WALKING_MIN_VELOCITY) {
+    activity = 'Standing';
+    confidence = anklesConfident ? 0.85 : 0.68;
+    signals = { posture: 'upright', velocity: velocity.toFixed(3), anklesConfident };
   } else if ((leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.04) {
     activity = 'Sitting / rest';
     confidence = anklesConfident ? 0.86 : 0.78;
     signals = { posture: 'seated', legAsymmetry: legAsymmetry.toFixed(1), anklesConfident };
-  } else if (leftLegAngle > 155 && rightLegAngle > 155 && velocity < 0.04) {
-    activity = 'Standing';
-    confidence = 0.82;
-    signals = { posture: 'upright', velocity: velocity.toFixed(3) };
   } else if (didPillGestureRecently && didDrinkGestureRecently && isSwallowing && velocity < 0.08) {
     activity = 'Taking Medications';
     confidence = 0.88;
@@ -499,6 +563,7 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
 
     isRunning = true;
     isInitializing = false;
+    frameCounter = 0;
     detectPoseLoop();
     return { detector };
   } catch (error) {
@@ -528,7 +593,11 @@ async function detectPoseLoop() {
       faces = await faceDetector.estimateFaces(videoElement);
 
       if (!isRunning) return;
-      if (objectDetector && (Math.random() < 0.5 || lastDetectedObjects.length === 0)) {
+      frameCounter++;
+      // Fixed cadence instead of a 50/50 coin flip — Eating/Drinking depend on
+      // consistent object context, so a random drop-out every other frame
+      // was hurting them for no benefit.
+      if (objectDetector && (frameCounter % OBJECT_DETECT_EVERY_N_FRAMES === 0 || lastDetectedObjects.length === 0)) {
         objects = await objectDetector.detect(videoElement);
         if (!isRunning) return;
         lastDetectedObjects = objects;
@@ -600,14 +669,27 @@ async function detectPoseLoop() {
           if (featureHistory.length > LSTM_SEQ_LEN) featureHistory.shift();
         }
 
-        const activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
-          ? classifyWithLSTM(featureHistory)
-          : classifyActivity(thresholdFeatures, poseHistory, 0, lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles);
+        let activityResult = null;
+        if (lstmReady && featureHistory.length >= LSTM_SEQ_LEN) {
+          const lstmResult = classifyWithLSTM(featureHistory);
+          if (lstmResult && lstmResult.confidence >= LSTM_CONFIDENCE_THRESHOLD) {
+            activityResult = lstmResult;
+          } else {
+            // LSTM is unsure this frame — fall back to the geometry-based
+            // classifier instead of trusting a low-confidence guess.
+            activityResult = classifyActivity(thresholdFeatures, poseHistory, 0, lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles);
+            if (activityResult) {
+              activityResult.signals = { ...activityResult.signals, lstmLowConfidence: lstmResult ? lstmResult.confidence : null };
+            }
+          }
+        } else {
+          activityResult = classifyActivity(thresholdFeatures, poseHistory, 0, lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles);
+        }
 
         if (activityResult) {
           smoothedActivity = smoothPredictions(activityResult, activityHistory);
-          activityHistory.push(smoothedActivity);
-          if (activityHistory.length > 10) activityHistory.shift();
+          activityHistory.push(activityResult);
+          if (activityHistory.length > SMOOTHING_WINDOW) activityHistory.shift();
 
           if (onActivityCallback) {
             onActivityCallback({
@@ -669,12 +751,48 @@ async function detectPoseLoop() {
   }
 }
 
+/**
+ * Real majority-vote smoothing. A single noisy frame (e.g. one frame of
+ * "Walking" while someone shifts in their chair) no longer flips the
+ * reported activity — the new activity has to win a majority of the last
+ * SMOOTHING_WINDOW raw predictions before we report it as the stable
+ * activity. Until then we keep reporting the last stable activity (with
+ * the new frame's confidence/signals attached so the UI still feels live).
+ */
 function smoothPredictions(activityResult, history) {
-  if (!history.length) return activityResult;
-  const recent = history.slice(-5);
-  const same = recent.filter(entry => entry.activity === activityResult.activity);
-  if (same.length >= 3) return activityResult;
-  return activityResult;
+  if (!stableActivity) {
+    stableActivity = activityResult;
+    return activityResult;
+  }
+
+  const recent = [...history.slice(-(SMOOTHING_WINDOW - 1)), activityResult];
+  const counts = {};
+  for (const entry of recent) {
+    counts[entry.activity] = (counts[entry.activity] || 0) + 1;
+  }
+
+  let winner = stableActivity.activity;
+  let winnerCount = 0;
+  for (const [act, count] of Object.entries(counts)) {
+    if (count > winnerCount) {
+      winner = act;
+      winnerCount = count;
+    }
+  }
+
+  const hasMajority = winnerCount >= Math.min(SMOOTHING_MAJORITY, recent.length);
+
+  if (hasMajority && winner !== stableActivity.activity) {
+    // New activity has earned the switch.
+    const winningEntry = [...recent].reverse().find(e => e.activity === winner) || activityResult;
+    stableActivity = winningEntry;
+  } else if (hasMajority && winner === activityResult.activity) {
+    // Same activity continues, but keep the latest confidence/signals fresh.
+    stableActivity = activityResult;
+  }
+  // else: no majority yet — keep reporting stableActivity as-is, ignore the blip.
+
+  return stableActivity;
 }
 
 export function stopPoseDetection() {
@@ -693,6 +811,8 @@ export function stopPoseDetection() {
   mouthHistory = [];
   poseHistory = [];
   activityHistory = [];
+  stableActivity = null;
   featureHistory = [];
   currentAlignment = false;
+  frameCounter = 0;
 }
