@@ -1,6 +1,6 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { getWsUrl, getIpWsUrl } from '../services/api';
-import { drawSkeleton, clearCanvas } from '../utils/skeleton';
+import { drawSkeleton, drawPersons, clearCanvas } from '../utils/skeleton';
 
 /**
  * useWebSocket — manages the WebSocket lifecycle, frame sending, and skeleton rendering.
@@ -29,9 +29,25 @@ export function useWebSocket(refs, state, cbs) {
   const offscreenCtx = useRef(offscreenCanvas.current.getContext('2d'));
 
   const handleResult = useCallback((data) => {
-    const { isEnrolling } = stateRef.current;
+    const { isEnrolling, detectMode } = stateRef.current;
     const canvasRef = isEnrolling ? refs.enrollCanvasRef : refs.canvasRef;
     const canvas = canvasRef?.current;
+
+    // Multi-person mode is its own, independent rendering path — driven by
+    // data.persons (bounding boxes), not the single-person keypoints/detected
+    // fields, so it's handled separately before any single-person logic runs.
+    if (detectMode === 'multi') {
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (data.persons && data.persons.length > 0) {
+          drawPersons(ctx, data.persons, canvas.width, canvas.height);
+        } else {
+          clearCanvas(ctx, canvas.width, canvas.height);
+        }
+      }
+      cbs.onResult?.({ ...data, detected: !!(data.persons && data.persons.length > 0) });
+      return;
+    }
 
     if (!data.detected) {
       if (canvas) clearCanvas(canvas.getContext('2d'), canvas.width, canvas.height);
@@ -85,6 +101,7 @@ export function useWebSocket(refs, state, cbs) {
         mode: isEnrolling ? 'enroll' : 'identify',
         user_id: isEnrolling ? enrollUserId : null,
         enroll_type: stateRef.current.enrollType || 'skeleton',
+        detect_mode: stateRef.current.detectMode || 'single',
       }));
 
       waitingRef.current = true;
@@ -130,7 +147,11 @@ export function useWebSocket(refs, state, cbs) {
       cbs.onStatusChange?.(true);
       waitingRef.current = false;
       if (isIpCam && rtspUrl) {
-        wsRef.current.send(JSON.stringify({ cmd: 'set_rtsp', url: rtspUrl }));
+        wsRef.current.send(JSON.stringify({
+          cmd: 'set_rtsp',
+          url: rtspUrl,
+          detect_mode: stateRef.current.detectMode || 'single',
+        }));
       }
       if (!isIpCam && stateRef.current.isStreaming) {
         scheduleFrame();
