@@ -1,12 +1,12 @@
 import React, { useEffect } from 'react';
-import { EXTERNAL_AUTH_URL } from '../routes/paths';
 
-// Cleanly handles Option B cross-microservice auth redirection
+// Routes auth requests through the reverse proxy path /auth/<type>
+// This works both locally (proxy on :8080) and over the Cloudflare tunnel.
 const AuthRedirect = ({ type }) => {
   useEffect(() => {
-    // Replaces browser history so the "Back" button functions natively 
-    // without trapping the user in a redirect loop
-    window.location.replace(`${EXTERNAL_AUTH_URL}/${type}`);
+    // Use relative path so it resolves correctly under any domain (local or tunnel)
+    // The reverse proxy routes /auth/* -> http://localhost:5173
+    window.location.replace(`/auth/${type}`);
   }, [type]);
 
   return (
