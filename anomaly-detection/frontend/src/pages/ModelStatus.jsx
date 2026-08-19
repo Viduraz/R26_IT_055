@@ -3,15 +3,15 @@
  * ML pipeline health dashboard — model weights, thresholds, engine status.
  */
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import axios from "axios";
+import Navbar from "../components/Navbar";
 
 const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
 
 export default function ModelStatus() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState("");
+  const [error, setError] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -31,19 +31,19 @@ export default function ModelStatus() {
   useEffect(() => { load(); }, []);
 
   const StatusDot = ({ value }) => (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2 py-0.5 rounded-full border ${
-      value === "loaded"
+    <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2 py-0.5 rounded-full border ${value === "loaded"
         ? "bg-emerald-900/40 border-emerald-500/50 text-emerald-300"
         : "bg-red-900/30 border-red-500/40 text-red-400"
-    }`}>
+      }`}>
       <span className={`w-2 h-2 rounded-full ${value === "loaded" ? "bg-emerald-500" : "bg-red-500"}`} />
       {value === "loaded" ? "Loaded" : "Not Found"}
     </span>
   );
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="max-w-4xl mx-auto">
+    <div className="min-h-screen bg-gray-950 text-white">
+      <Navbar />
+      <div className="max-w-4xl mx-auto p-6">
 
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
@@ -57,27 +57,13 @@ export default function ModelStatus() {
           </button>
         </div>
 
-        {/* Nav */}
-        <div className="flex gap-2 mb-6 text-sm">
-          {[["Dashboard", "/"], ["History", "/history"], ["Model Status", "/model-status"]].map(([label, href]) => (
-            <Link key={href} to={href}
-              className={`px-4 py-1.5 rounded-lg border transition-colors ${
-                href === "/model-status"
-                  ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
-                  : "bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
-              }`}>
-              {label}
-            </Link>
-          ))}
-        </div>
-
         {error && (
           <div className="bg-red-900/30 border border-red-500/50 text-red-300 text-sm p-4 rounded-2xl mb-5">{error}</div>
         )}
 
         {loading ? (
           <div className="flex justify-center py-20 text-gray-500 gap-3">
-            <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"/>
+            <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             Loading status…
           </div>
         ) : status && (
@@ -132,7 +118,7 @@ export default function ModelStatus() {
               <div className="flex items-center justify-between">
                 <span className="text-white font-bold">Status</span>
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2 py-0.5 rounded-full border bg-emerald-900/40 border-emerald-500/50 text-emerald-300">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"/>Always Active
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />Always Active
                 </span>
               </div>
               <div className="mt-3 space-y-1.5 font-mono text-xs text-gray-500">
@@ -151,7 +137,7 @@ export default function ModelStatus() {
                   ["Anomaly route", "POST /api/anomaly/process"],
                   ["Decision mode", status.lstm_weights === "loaded" && status.autoencoder_weights === "loaded"
                     ? "Hybrid (Rule+LSTM+AE)" : status.lstm_weights === "loaded"
-                    ? "Rule + LSTM"  : "Rule Engine Only"],
+                      ? "Rule + LSTM" : "Rule Engine Only"],
                 ].map(([k, v]) => (
                   <div key={k} className="bg-gray-800 rounded-xl p-3">
                     <p className="text-gray-500 text-xs mb-1">{k}</p>
