@@ -66,9 +66,10 @@ async def update_caregiver_profile(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only caregivers can update their marketplace profile"
         )
-    
+
+    user_id = current_user.get("sub") or current_user.get("id", "")
     success = await caregiver_service.update_marketplace_profile(
-        user_id=current_user["id"],
+        user_id=user_id,
         updates=updates.dict(exclude_unset=True)
     )
     

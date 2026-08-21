@@ -22,6 +22,9 @@ async def create_booking(
     """
     Create a new caregiver booking. Generates a unique Patient ID and sends it to the user.
     """
+    # JWT stores user ID as 'sub'; fall back to 'id' for compatibility
+    user_id = current_user.get("sub") or current_user.get("id", "")
+
     # Prevent caregivers from booking other caregivers
     if current_user.get("role") == "caregiver":
         raise HTTPException(
@@ -31,7 +34,7 @@ async def create_booking(
 
     # Convert request to dict and create booking
     booking = await booking_service.create_booking(
-        family_user_id=current_user["id"],
+        family_user_id=user_id,
         payload=request.dict()
     )
 
@@ -93,9 +96,10 @@ async def list_bookings(current_user: dict = Depends(get_current_user)):
     """
     Get all bookings related to the logged-in user (family member or caregiver).
     """
+    user_id = current_user.get("sub") or current_user.get("id", "")
     return await booking_service.get_bookings_for_user(
-        user_id=current_user["id"],
-        role=current_user["role"]
+        user_id=user_id,
+        role=current_user.get("role", "family_member")
     )
 
 
@@ -132,9 +136,10 @@ async def cancel_booking(
     """
     Cancel an active booking. Only the family member who made the booking can cancel it.
     """
+    user_id = current_user.get("sub") or current_user.get("id", "")
     success = await booking_service.cancel_booking(
         booking_id=booking_id,
-        user_id=current_user["id"]
+        user_id=user_id
     )
     if not success:
         raise HTTPException(
