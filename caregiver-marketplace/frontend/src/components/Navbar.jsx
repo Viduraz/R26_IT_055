@@ -2,13 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { LogOut, Home, Calendar, Monitor, Search, User } from "lucide-react";
 
-const AUTH_URL = import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173";
-
-// Build a clean login URL — Auth service always uses /login (no /auth prefix)
-const getLoginUrl = () => {
-  const isProxied = window.location.port === "8080" || window.location.port === "";
-  return isProxied ? "/auth/login" : `${AUTH_URL}/login`;
-};
+// Build a clean login URL using the current origin so it works on localhost proxy and Cloudflare tunnel
+const getLoginUrl = () => `${window.location.origin}/auth/login`;
 
 const Navbar = () => {
   const location = useLocation();
@@ -36,7 +31,7 @@ const Navbar = () => {
     window.location.href = getLoginUrl();
   };
 
-  const gatewayUrl = import.meta.env.VITE_GATEWAY_FRONTEND_URL || "http://localhost:5178";
+  const gatewayUrl = `${window.location.origin}/`;
   const isActive = (path) => location.pathname === path;
 
   // First letter avatar colour based on name

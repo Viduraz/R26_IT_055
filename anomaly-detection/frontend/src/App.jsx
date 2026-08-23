@@ -8,7 +8,7 @@ import ToastNotification from "./components/ToastNotification";
 const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem("access_token");
   if (!token) {
-    window.location.href = `${import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173"}/login`;
+    window.location.href = `${window.location.origin}/auth/login`;
     return null;
   }
   return children;

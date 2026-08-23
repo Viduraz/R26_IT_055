@@ -56,6 +56,9 @@ function getRouteTarget(url) {
   if (url.startsWith('/api/schedule') || url.startsWith('/api/monitoring')) {
     return { host: '127.0.0.1', port: 8004 };
   }
+  if (url.startsWith('/api/geofence')) {
+    return { host: '127.0.0.1', port: 8002 };
+  }
   if (url.startsWith('/api/gateway') || url.startsWith('/api/dashboard')) {
     return { host: '127.0.0.1', port: 8005 };
   }

@@ -17,7 +17,7 @@ anomalyApi.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem("access_token");
-      window.location.href = `${import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173"}/login`;
+      window.location.href = `${window.location.origin}/auth/login`;
     }
     return Promise.reject(error);
   }

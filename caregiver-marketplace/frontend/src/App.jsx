@@ -8,16 +8,11 @@ import MyBookings from "./pages/MyBookings";
 import PatientMonitor from "./pages/PatientMonitor";
 import ReviewPage from "./pages/ReviewPage";
 
-// Route Guard that redirects to the primary Auth Service (port 5173) if no access token exists.
+// Route Guard that redirects to the primary Auth Service if no access token exists.
 const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem("access_token");
   if (!token) {
-    const isProxied = window.location.port === "8080" || window.location.port === "";
-    const authUrl = import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173";
-    const loginUrl = isProxied
-      ? "/auth/login"
-      : (authUrl.endsWith("/auth") ? `${authUrl}/login` : `${authUrl}/auth/login`);
-    window.location.href = loginUrl;
+    window.location.href = `${window.location.origin}/auth/login`;
     return null;
   }
   return children;

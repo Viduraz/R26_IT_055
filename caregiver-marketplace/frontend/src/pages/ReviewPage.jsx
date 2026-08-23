@@ -67,8 +67,7 @@ function ReviewForm({ caregiverId, onSuccess }) {
         e.preventDefault();
         if (rating === 0) { setError("Please select a rating."); return; }
         if (!hasToken) {
-            const authUrl = import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173";
-            window.location.href = `${authUrl}/auth/login`;
+            window.location.href = `${window.location.origin}/auth/login`;
             return;
         }
         setSubmitting(true);
