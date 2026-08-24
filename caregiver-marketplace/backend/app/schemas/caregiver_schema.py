@@ -51,6 +51,8 @@ class CaregiverPublicProfile(BaseModel):
     rating: Optional[float] = 0.0
     total_reviews: Optional[int] = 0
     face_verification_status: Optional[str] = None
+    verification_status: Optional[str] = "pending"   # admin-controlled field
     caregiver_license_or_staff_id: Optional[str] = None
     contact_number: Optional[str] = None
     created_at: Optional[str] = None
+

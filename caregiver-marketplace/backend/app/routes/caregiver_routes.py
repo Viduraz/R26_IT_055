@@ -80,3 +80,46 @@ async def update_caregiver_profile(
         )
         
     return {"status": "success", "message": "Caregiver profile updated successfully"}
+
+
+@router.patch("/caregivers/{caregiver_id}/verify", response_model=dict)
+async def verify_caregiver(
+    caregiver_id: str,
+    current_user: dict = Depends(get_current_user),
+    action: str = "approved",
+):
+    """
+    Admin-only: approve or reject a caregiver.
+    action query param: 'approved' (default) | 'rejected'
+    Only users with role 'admin' can call this endpoint.
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can verify caregivers.",
+        )
+
+    if action not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="action must be 'approved' or 'rejected'.",
+        )
+
+    success = await caregiver_service.verify_caregiver(
+        user_id=caregiver_id,
+        action=action,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Caregiver not found or already in that state.",
+        )
+
+    return {
+        "status": "success",
+        "caregiver_id": caregiver_id,
+        "verification_status": action,
+        "message": f"Caregiver has been {action}.",
+    }
+

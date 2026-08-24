@@ -19,7 +19,11 @@ async def validate_patient(
     """
     Validate if a given Patient ID is active and authorized for the logged-in user.
     """
-    booking = await monitor_service.validate_patient_id(patient_id, current_user["id"])
+    # JWT encodes the user's MongoDB _id under the standard 'sub' key.
+    # Using current_user["id"] caused a KeyError → 500 on every call.
+    booking = await monitor_service.validate_patient_id(
+        patient_id, current_user.get("sub", "")
+    )
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -41,7 +45,9 @@ async def get_patient_live_status(
     """
     Fetch aggregated live status for the patient. Must be authorized.
     """
-    booking = await monitor_service.validate_patient_id(patient_id, current_user["id"])
+    booking = await monitor_service.validate_patient_id(
+        patient_id, current_user.get("sub", "")
+    )
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
