@@ -111,6 +111,9 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
 
 def get_schedule(user: dict):
     """Get current schedule for the user."""
+    # Persist missed activities before ScheduleService checks whether the
+    # routine has finished, so the archive contains the final statuses.
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
     return _svc.get_schedule(user.get("user_id"))
 
 
@@ -130,6 +133,11 @@ def create_schedule(user: dict, payload):
 def delete_schedule(user: dict, schedule_id: str):
     """Delete a schedule."""
     return _svc.delete_schedule(user.get("user_id", "dev-user"), schedule_id)
+
+
+def update_schedule(user: dict, schedule_id: str, data: dict):
+    """Update an active schedule without creating an archive entry."""
+    return _svc.update_schedule(schedule_id, data)
 
 
 def log_detected_activity(user: dict, schedule_id: str, payload):
@@ -197,12 +205,18 @@ def get_reports(user: dict):
 def get_day_report(user: dict, date: str):
     """Get the archived Done/Late/Missed/Total counts for one specific
     calendar day (YYYY-MM-DD), e.g. Monday's finished routine."""
-    return _svc.get_report_by_date(user.get("user_id"), date)
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
+    _svc._expire_finished_or_stale_schedules(user.get("user_id"))
+    user_id = user.get("user_id")
+    report = _svc.get_report_by_date(user_id, date)
+    return report or _svc.get_current_day_report(user_id, date)
 
 
 def get_week_report(user: dict, start_date: str):
     """Get 7 days of archived reports plus summed weekly totals,
     starting at start_date (YYYY-MM-DD)."""
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
+    _svc._expire_finished_or_stale_schedules(user.get("user_id"))
     return _svc.get_reports_for_week(user.get("user_id"), start_date)
 
 

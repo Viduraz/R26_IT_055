@@ -366,12 +366,20 @@ export default function ActivityDetectorMonitor({
 
     let activityStatus = decideStatusFromWindow(detectionData.activity_name);
 
-    // No honest status to give this detection (schedule has zero
-    // activities) — don't log a fake "Unexpected" row, just skip it.
+    // No honest status to give this detection. Distinguish between a truly
+    // missing schedule and a loaded schedule whose current activities do not
+    // include the detected action, so the UI message reflects reality.
     if (!activityStatus) {
-      setDebugInfo(
-        `⚠️ Detected ${detectionData.activity_name}, but no schedule is loaded — not logged.`
-      );
+      const hasSchedule = !!schedule && extractActivitiesArray(schedule).length > 0;
+      if (hasSchedule) {
+        setDebugInfo(
+          `⚠️ Detected ${detectionData.activity_name}, but it is not part of the loaded schedule — not logged.`
+        );
+      } else {
+        setDebugInfo(
+          `⚠️ Detected ${detectionData.activity_name}, but no schedule is loaded — not logged.`
+        );
+      }
       return;
     }
 

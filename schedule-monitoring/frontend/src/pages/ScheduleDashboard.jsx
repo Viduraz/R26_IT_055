@@ -6,7 +6,7 @@ import {
   getNotifications,
   getActivityLogs,
   deleteSchedule,
-  createSchedule,
+  updateSchedule,
 } from "../services/scheduleApi";
 import ActivityDetectorMonitor from "../components/ActivityDetectorMonitor";
 import AlertModal from "../components/AlertModal";
@@ -273,13 +273,17 @@ export default function ScheduleDashboard() {
   useEffect(() => {
     if (!selectedSchedule?.activities?.length) return;
     const nowMin = currentTime.getHours() * 60 + currentTime.getMinutes();
+    const scheduleEndMin = Math.max(
+      ...selectedSchedule.activities.map((activity) =>
+        timeToMinutes(activity.end_time)
+      )
+    );
     let changed = false;
     const next = { ...lockedStatuses };
     selectedSchedule.activities.forEach((activity) => {
       const name = activity.activity_name;
       if (next[name]) return;
-      const endMin = timeToMinutes(activity.end_time);
-      if (nowMin > endMin) {
+      if (nowMin > scheduleEndMin) {
         next[name] = "Missed";
         changed = true;
         const key = `${name}_Missed_${todayStr}`;
@@ -342,8 +346,17 @@ export default function ScheduleDashboard() {
         try {
           sessionStorage.removeItem("pendingSchedule");
         } catch {}
+      } else {
+        // The backend removes a routine after archiving its final report.
+        // Clear local UI state as soon as that lifecycle transition is seen.
+        setSchedule([]);
+        setShowDetector(false);
+        setShowProgressSidebar(false);
+        setLockedStatuses({});
+        try {
+          sessionStorage.removeItem("pendingSchedule");
+        } catch {}
       }
-      // If API empty → keep current schedule (local/pending). Do NOT wipe.
 
       const newNotifs = normalizeNotifications(notifRes.data);
       setNotifications(newNotifs);
@@ -425,7 +438,14 @@ export default function ScheduleDashboard() {
         setLockedStatuses({});
         return;
       }
-      await createSchedule(updatedActivities, currentSched.description || "");
+      const response = await updateSchedule(currentSched.schedule_id, {
+        activities: updatedActivities,
+        description: currentSched.description || "",
+      });
+      const savedSchedule = response?.data?.activities
+        ? response.data
+        : { ...currentSched, activities: updatedActivities };
+      setSchedule([savedSchedule]);
       setLockedStatuses((prev) => {
         const next = { ...prev };
         delete next[activityName];
@@ -435,7 +455,7 @@ export default function ScheduleDashboard() {
       toast.success(`"${activityName}" deleted and schedule saved!`, {
         icon: "🗑",
       });
-      fetchData();
+      await fetchData();
     } catch (e) {
       console.error("Failed to delete activity:", e);
       toast.error("Failed to delete activity.");
@@ -490,10 +510,14 @@ export default function ScheduleDashboard() {
 
     const nowMin = currentTime.getHours() * 60 + currentTime.getMinutes();
     const startMin = timeToMinutes(activity.start_time);
-    const endMin = timeToMinutes(activity.end_time);
+    const scheduleEndMin = Math.max(
+      ...(selectedSchedule?.activities || []).map((item) =>
+        timeToMinutes(item.end_time)
+      )
+    );
 
-    if (nowMin > endMin) return "Missed";
-    if (nowMin >= startMin && nowMin <= endMin) return "In Progress";
+    if (nowMin > scheduleEndMin) return "Missed";
+    if (nowMin >= startMin && nowMin <= scheduleEndMin) return "In Progress";
     return "Pending";
   };
 
@@ -710,16 +734,13 @@ export default function ScheduleDashboard() {
           {!selectedSchedule && (
             <div className="bg-gray-900/40 backdrop-blur-md rounded-2xl p-12 border border-gray-800/60 text-center text-gray-500">
               <p className="mb-4 text-4xl">📭</p>
-              <p>
-                {schedule.length === 0
-                  ? "No routine established yet."
-                  : "Set up a routine to start live monitoring."}
-              </p>
+              <p>Day off — no schedule is active today.</p>
               <button
+                type="button"
                 onClick={() => navigate("/routine-setup")}
-                className="mt-4 text-blue-400 hover:text-blue-300 text-sm font-medium transition"
+                className="mt-6 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-500 transition-colors"
               >
-                Set up a routine →
+                Set a Schedule
               </button>
             </div>
           )}
@@ -752,7 +773,7 @@ export default function ScheduleDashboard() {
               {!selectedSchedule ? (
                 <div className="text-center text-gray-500 py-12">
                   <p className="text-3xl mb-3">📭</p>
-                  <p>No routine established yet.</p>
+                  <p>Day off — no schedule is active today.</p>
                 </div>
               ) : (
                 <>

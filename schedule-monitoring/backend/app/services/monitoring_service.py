@@ -205,6 +205,7 @@ class MonitoringService:
                 # activity's own end_min — no extra cap needed since that
                 # naturally bounds how early a detection could plausibly be.
                 chrono = sorted(valid, key=lambda v: v["start_min"])
+                schedule_end_min = max(entry["end_min"] for entry in valid)
                 early_window_by_idx = {}
                 prev_end_min = None
                 for i, entry in enumerate(chrono):
@@ -228,6 +229,7 @@ class MonitoringService:
                         "start_time": act.get("start_time"),
                         "end_time": act.get("end_time"),
                         "early_window_start_min": early_window_by_idx[idx],
+                        "schedule_end_min": schedule_end_min,
                         "caregiver_required": bool(act.get("caregiver_required", doc.get("caregiver_required", False))),
                         "priority": act.get("priority", doc.get("priority", "medium")),
                     })
@@ -247,6 +249,7 @@ class MonitoringService:
                     # Legacy single-activity schedule — no siblings to bound
                     # it, so treat it like a routine's "first" activity.
                     "early_window_start_min": start_min - FIRST_ACTIVITY_EARLY_GRACE_MINUTES,
+                    "schedule_end_min": self._time_to_minutes(doc["end_time"]),
                     "caregiver_required": bool(doc.get("caregiver_required", False)),
                     "priority": doc.get("priority", "medium"),
                 })
@@ -272,7 +275,7 @@ class MonitoringService:
         matched_task_types = ACTIVITY_TO_TASK_TYPES.get(activity, [activity])
         schedules    = self._active_schedules(patient_id)
         today_str    = ts.strftime("%Y-%m-%d")
-        now_minutes  = ts.hour * 60 + ts.minute
+        now_seconds  = ts.hour * 3600 + ts.minute * 60 + ts.second
 
         results = []
         for sched in schedules:
@@ -288,9 +291,9 @@ class MonitoringService:
             # the previous activity's end_time for every activity after
             # that) — NOT a flat EARLY_GRACE_MINUTES subtraction from
             # start_min anymore.
-            window_open  = sched.get("early_window_start_min", start_min - EARLY_GRACE_MINUTES)
-            window_close = end_min + 30
-            if now_minutes < window_open or now_minutes > window_close:
+            window_open = sched.get("early_window_start_min", start_min - EARLY_GRACE_MINUTES) * 60
+            window_close = sched.get("schedule_end_min", end_min) * 60
+            if now_seconds < window_open or now_seconds > window_close:
                 continue
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
@@ -313,9 +316,9 @@ class MonitoringService:
             # Completed/Late boundary is this activity's own end_time, not a
             # fixed threshold. Early is anything before start_time that
             # still falls within the early-window floor checked above.
-            if now_minutes < start_min:
+            if now_seconds < start_min * 60:
                 status = "early"
-            elif now_minutes <= end_min:
+            elif now_seconds < start_min * 60 + 30:
                 status = "done"        # within scheduled window = Completed
             else:
                 status = "late"        # after end_time = Late
@@ -373,25 +376,35 @@ class MonitoringService:
                 "end_time":    sched.get("end_time"),
             })
 
+        if results:
+            from app.services.schedule_service import ScheduleService
+            for schedule_id in {result.get("schedule_id", "").split("::")[0] for result in results}:
+                ScheduleService().finalize_if_complete(schedule_id)
+
         return {"matched": len(results), "results": results}
 
     def evaluate_missed_tasks(self, patient_id: str = "patient_001") -> dict:
-        """Scan all active schedules for this patient and write a "missed"
-        log (once) for any activity whose end_time has already passed with
-        no log entry recorded yet. Safe to call repeatedly/on every poll —
-        the find_one() check below prevents duplicate rows."""
+        """Mark activities missed after the late detection allowance expires.
+        This keeps the late state available after the scheduled window closes."""
         schedules    = self._active_schedules(patient_id)
         now          = datetime.now()
-        now_minutes  = now.hour * 60 + now.minute
+        now_seconds  = now.hour * 3600 + now.minute * 60 + now.second
         today_str    = now.strftime("%Y-%m-%d")
         missed_count = 0
 
         from app.services.notification_service import NotificationService
         ns = NotificationService()
 
+        schedule_end_by_id = {
+            sched.get("source_schedule_id", sched.get("schedule_id")): sched.get(
+                "schedule_end_min", self._time_to_minutes(sched["end_time"])
+            )
+            for sched in schedules
+        }
+
         for sched in schedules:
-            end_min = self._time_to_minutes(sched["end_time"])
-            if now_minutes <= end_min:
+            source_schedule_id = sched.get("source_schedule_id", sched.get("schedule_id"))
+            if now_seconds <= schedule_end_by_id[source_schedule_id] * 60:
                 continue
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
@@ -457,7 +470,8 @@ class MonitoringService:
                 caregiver_pres = log.get("caregiver_present", False)
             else:
                 end_min = self._time_to_minutes(sched["end_time"])
-                if now_minutes > end_min:
+                schedule_end_min = sched.get("schedule_end_min", self._time_to_minutes(sched["end_time"]))
+                if now_minutes > schedule_end_min:
                     status = "missed"
 
             tasks.append({
