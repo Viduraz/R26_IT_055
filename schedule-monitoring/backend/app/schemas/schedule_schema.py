@@ -3,15 +3,26 @@ schedule-monitoring/backend/app/schemas/schedule_schema.py
 Pydantic schemas for schedule validation and serialization.
 """
 
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional, List, Dict
+
+
+_HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 class ActivitySchema(BaseModel):
     activity_name: str
     start_time: str   # HH:MM
     end_time: str     # HH:MM
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _validate_time_format(cls, v: str) -> str:
+        if not _HHMM_RE.match(v):
+            raise ValueError(f"Time must be in HH:MM format (00:00–23:59), got: {v!r}")
+        return v
 
 
 class CreateScheduleSchema(BaseModel):

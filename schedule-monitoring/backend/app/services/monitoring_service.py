@@ -70,14 +70,14 @@ def _logs_col():
 # siblings to bound them, and as the frontend-facing "adaptive_grace_minutes"
 # display field) — see FIRST_ACTIVITY_EARLY_GRACE_MINUTES below for the
 # value actually used for a routine's first activity.
+# How many minutes before start_time the FIRST activity of a routine
+# may be detected and still count as "early". Subsequent activities have
+# no fixed cap — bounded by the previous activity's end_time instead.
+# Also surfaced as the legacy "adaptive_grace_minutes" frontend field.
 EARLY_GRACE_MINUTES = 10
 
-# How many minutes before start_time the FIRST activity of a routine (by
-# start_time) may be detected and still count as "early". Every activity
-# after the first has no fixed cap — see _active_schedules()'s
-# early_window_start_min computation, which bounds it by the previous
-# activity's end_time instead.
-FIRST_ACTIVITY_EARLY_GRACE_MINUTES = 10
+# Alias kept so schedule_controller.py import continues to work unchanged.
+FIRST_ACTIVITY_EARLY_GRACE_MINUTES = EARLY_GRACE_MINUTES
 
 # NOTE: no longer used to decide Completed vs Late (that boundary is each
 # activity's own end_time — see process_detection_event()) — retained only
@@ -262,12 +262,12 @@ class MonitoringService:
 
         ts = event.get("timestamp")
         if ts is None:
-            ts = datetime.now()
+            ts = datetime.utcnow()
         elif isinstance(ts, str):
             try:
                 ts = datetime.fromisoformat(ts.replace("Z", ""))
             except Exception:
-                ts = datetime.now()
+                ts = datetime.utcnow()
 
         matched_task_types = ACTIVITY_TO_TASK_TYPES.get(activity, [activity])
         schedules    = self._active_schedules(patient_id)
@@ -295,18 +295,15 @@ class MonitoringService:
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
 
-            # Dedup guard: fetch by the plain two-key equality query (which
-            # the mock DB supports) and filter for a final status in Python,
-            # instead of relying on a Mongo $in operator the mock DB doesn't
-            # reliably support.
-            same_day_logs = list(_logs_col().find({
+            # Dedup guard: check if a final-status log already exists
+            # for this schedule+date.  We read it atomically before deciding
+            # to write, so parallel callers (poll + sweep thread) can't
+            # both pass the guard and write duplicate rows.
+            existing = _logs_col().find_one({
                 "schedule_id": schedule_id,
                 "date": today_str,
-            }))
-            existing = next(
-                (l for l in same_day_logs if l.get("status") in FINAL_LOG_STATUSES),
-                None,
-            )
+                "status": {"$in": list(FINAL_LOG_STATUSES)},
+            })
             if existing:
                 continue
 
@@ -339,7 +336,7 @@ class MonitoringService:
                 "caregiver_id":      caregiver_id,
                 "confidence":        confidence,
                 "status":            status,
-                "created_at":        datetime.now(),
+                "created_at":        datetime.utcnow(),
             }
             _logs_col().insert_one(log_entry)
 
@@ -378,10 +375,14 @@ class MonitoringService:
     def evaluate_missed_tasks(self, patient_id: str = "patient_001") -> dict:
         """Scan all active schedules for this patient and write a "missed"
         log (once) for any activity whose end_time has already passed with
-        no log entry recorded yet. Safe to call repeatedly/on every poll —
-        the find_one() check below prevents duplicate rows."""
+        no log entry recorded yet.
+
+        Uses update_one with upsert=True (keyed on schedule_id + date) instead
+        of a separate find_one → insert_one, which eliminates the race window
+        between the background sweep thread and concurrent HTTP poll calls.
+        """
         schedules    = self._active_schedules(patient_id)
-        now          = datetime.now()
+        now          = datetime.utcnow()
         now_minutes  = now.hour * 60 + now.minute
         today_str    = now.strftime("%Y-%m-%d")
         missed_count = 0
@@ -396,24 +397,33 @@ class MonitoringService:
 
             schedule_id = str(sched.get("schedule_id", sched.get("_id", "")))
 
-            if _logs_col().find_one({"schedule_id": schedule_id, "date": today_str}):
-                continue
+            # Atomic upsert: only inserts when no log exists for this
+            # schedule_id+date yet; concurrent callers both lose the race
+            # to the same upsert key and skip the notification safely.
+            result = _logs_col().update_one(
+                {"schedule_id": schedule_id, "date": today_str},
+                {"$setOnInsert": {
+                    "log_id":            str(uuid.uuid4()),
+                    "patient_id":        patient_id,
+                    "schedule_id":       schedule_id,
+                    "task_name":         sched.get("task_name", ""),
+                    "activity_name":     sched.get("activity_name", sched.get("task_name", "")),
+                    "task_type":         sched.get("task_type", ""),
+                    "date":              today_str,
+                    "scheduled_range":   f"{sched['start_time']} – {sched['end_time']}",
+                    "detected_at":       None,
+                    "caregiver_present": False,
+                    "caregiver_required": sched.get("caregiver_required", False),
+                    "status":            "missed",
+                    "created_at":        now,
+                }},
+                upsert=True,
+            )
+            # upserted_id is set only when a new document was inserted,
+            # not when an existing one was matched.
+            if not result.upserted_id:
+                continue  # already existed — another caller beat us
 
-            _logs_col().insert_one({
-                "log_id":            str(uuid.uuid4()),
-                "patient_id":        patient_id,
-                "schedule_id":       schedule_id,
-                "task_name":         sched.get("task_name", ""),
-                "activity_name":     sched.get("activity_name", sched.get("task_name", "")),
-                "task_type":         sched.get("task_type", ""),
-                "date":              today_str,
-                "scheduled_range":   f"{sched['start_time']} – {sched['end_time']}",
-                "detected_at":       None,
-                "caregiver_present": False,
-                "caregiver_required": sched.get("caregiver_required", False),
-                "status":            "missed",
-                "created_at":        now,
-            })
             _schedules_col().update_one(
                 {"schedule_id": sched.get("source_schedule_id", schedule_id)},
                 {"$set": {"today_status": "missed"}},
@@ -437,7 +447,7 @@ class MonitoringService:
         self.evaluate_missed_tasks(patient_id)
 
         schedules   = self._active_schedules(patient_id)
-        now         = datetime.now()
+        now         = datetime.utcnow()
         today_str   = now.strftime("%Y-%m-%d")
         now_minutes = now.hour * 60 + now.minute
 

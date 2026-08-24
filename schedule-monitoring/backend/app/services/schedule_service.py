@@ -78,15 +78,7 @@ def _archives():
 
 
 def _delete_many(collection, query: dict):
-    delete_many = getattr(collection, "delete_many", None)
-    if callable(delete_many):
-        return delete_many(query)
-    data = getattr(collection, "data", None)
-    if isinstance(data, list):
-        original_len = len(data)
-        collection.data = [doc for doc in data if not all(doc.get(key) == value for key, value in query.items())]
-        return type("DeleteResult", (), {"deleted_count": original_len - len(collection.data)})()
-    return type("DeleteResult", (), {"deleted_count": 0})()
+    return collection.delete_many(query)
 
 
 def _delete_logs_for_schedule(base_schedule_id: str):
@@ -129,7 +121,7 @@ def _delete_logs_for_schedule(base_schedule_id: str):
 # your leader a Late/Missed notification within minutes instead of waiting
 # for a real 8am slot). Set it to False for real usage — real start_time/
 # end_time from the owner's input will then be preserved untouched.
-TESTING_MODE = True
+TESTING_MODE = False
 
 # FIX: was DURATION_MINUTES=3.0 / START_OFFSET_MINUTES=2.0 — the entire
 # schedule (across all activities) closed within ~9-11 minutes of creation,
@@ -337,9 +329,10 @@ class ScheduleService:
     def get_activity_logs(self, user_id: str = None, limit: int = 100):
         """Get activity logs. Logs themselves are written exclusively by
         MonitoringService — this is a read-only view for the dashboard."""
-        query = {"user_id": user_id} if user_id else {}
         if user_id:
             query = {"$or": [{"user_id": user_id}, {"patient_id": user_id}]}
+        else:
+            query = {}
         logs = list(_activity_logs().find(query).sort("created_at", -1).limit(limit))
         for log in logs:
             log["_id"] = str(log["_id"])

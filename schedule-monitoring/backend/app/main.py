@@ -1,10 +1,6 @@
 """
 schedule-monitoring/backend/app/main.py
 """
-
-"""
-schedule-monitoring/backend/app/main.py
-"""
 import time
 import threading
 from fastapi import FastAPI
@@ -34,14 +30,32 @@ app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitorin
 
 
 # ── Background sweep thread ────────────────────────────────────────────────
+from shared.backend.config.database import get_db
+
+
+def _get_all_patient_ids() -> list:
+    """Return every distinct patient/user ID that has an active schedule."""
+    docs = list(get_db()["schedules"].find({}, {"patient_id": 1, "user_id": 1}))
+    ids = set()
+    for d in docs:
+        pid = d.get("patient_id") or d.get("user_id")
+        if pid:
+            ids.add(pid)
+    return list(ids) or ["patient_001"]  # fallback so sweep is never a no-op
+
+
 def _missed_task_sweep():
-    """Runs every 60 s; marks tasks MISSED once their time window closes."""
+    """Runs every 60 s; marks tasks MISSED once their time window closes
+    for every patient that currently has an active schedule."""
     svc = MonitoringService()
     while True:
         try:
-            result = svc.evaluate_missed_tasks("patient_001")
-            if result["missed_marked"]:
-                print(f"[sweep] marked {result['missed_marked']} task(s) as MISSED")
+            total_missed = 0
+            for patient_id in _get_all_patient_ids():
+                result = svc.evaluate_missed_tasks(patient_id)
+                total_missed += result["missed_marked"]
+            if total_missed:
+                print(f"[sweep] marked {total_missed} task(s) as MISSED")
         except Exception as exc:
             print(f"[sweep] error: {exc}")
         time.sleep(60)
