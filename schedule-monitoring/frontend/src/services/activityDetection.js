@@ -204,9 +204,19 @@ function extractThresholdFeatures(keypoints) {
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
   features.push(shoulderWidth);
 
+  // Use actual mouth-corner landmarks (9 = left mouth, 10 = right mouth)
+  // instead of the nose, so the wrist must reach true mouth level to trigger.
+  const mouthLandmarkL = keypoints[9];
+  const mouthLandmarkR = keypoints[10];
+  const mLx = mouthLandmarkL?.x ?? nose.x;
+  const mLy = mouthLandmarkL?.y ?? nose.y;
+  const mRx = mouthLandmarkR?.x ?? nose.x;
+  const mRy = mouthLandmarkR?.y ?? nose.y;
+  const mouthX = (mLx + mRx) / 2;
+  const mouthY = (mLy + mRy) / 2;
   const minHandToMouth = Math.min(
-    euclideanDistance(leftWrist, { x: nose.x, y: nose.y }),
-    euclideanDistance(rightWrist, { x: nose.x, y: nose.y })
+    euclideanDistance(leftWrist, { x: mouthX, y: mouthY }),
+    euclideanDistance(rightWrist, { x: mouthX, y: mouthY })
   );
   features.push(minHandToMouth);
 
@@ -600,9 +610,30 @@ async function detectPoseLoop() {
           if (featureHistory.length > LSTM_SEQ_LEN) featureHistory.shift();
         }
 
-        const activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
+        // Step 1 — Base classification: LSTM (pose-only) if ready, otherwise threshold.
+        let activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
           ? classifyWithLSTM(featureHistory)
-          : classifyActivity(thresholdFeatures, poseHistory, 0, lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles);
+          : null;
+
+        // Step 2 — Object-context override: run the threshold classifier regardless
+        // so COCO-SSD cup/food evidence is always evaluated.  When it sees a cup or
+        // food item near the mouth with high confidence, that beats the pose-only LSTM.
+        const objectResult = classifyActivity(
+          thresholdFeatures, poseHistory, 0,
+          lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles
+        );
+
+        if (
+          objectResult &&
+          ['Eating', 'Drinking'].includes(objectResult.activity) &&
+          objectResult.confidence >= 0.80
+        ) {
+          // Strong object evidence — override whatever the LSTM said.
+          activityResult = objectResult;
+        } else if (!activityResult) {
+          // LSTM not ready yet — fall back to threshold.
+          activityResult = objectResult;
+        }
 
         if (activityResult) {
           smoothedActivity = smoothPredictions(activityResult, activityHistory);
@@ -672,8 +703,21 @@ async function detectPoseLoop() {
 function smoothPredictions(activityResult, history) {
   if (!history.length) return activityResult;
   const recent = history.slice(-5);
-  const same = recent.filter(entry => entry.activity === activityResult.activity);
+  const same = recent.filter(e => e.activity === activityResult.activity);
+
+  // Current frame has 3+ matching frames in recent history — trust it.
   if (same.length >= 3) return activityResult;
+
+  // Not enough support — return the most frequent label from recent history
+  // instead of emitting a potentially flickery one-frame spike.
+  const freq = {};
+  for (const e of recent) freq[e.activity] = (freq[e.activity] || 0) + 1;
+  const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+  if (sorted.length > 0) {
+    const dominantActivity = sorted[0][0];
+    const dominantEntry = [...recent].reverse().find(e => e.activity === dominantActivity);
+    if (dominantEntry) return dominantEntry;
+  }
   return activityResult;
 }
 

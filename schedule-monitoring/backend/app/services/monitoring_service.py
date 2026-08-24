@@ -121,10 +121,33 @@ ACTIVITY_TO_TASK_TYPES: dict[str, list[str]] = {
     "bathing":       ["caregiver_assisted"],
 }
 
+# Canonical map: every label the frontend (LSTM model or threshold classifier)
+# can emit → internal activity key used in ACTIVITY_TO_TASK_TYPES.
+# All matching is done after .lower() so casing doesn't matter.
 FRONTEND_LABEL_TO_ACTIVITY: dict[str, str] = {
-    "sitting / rest":      "sitting",
+    # Eating variants
+    "eating":              "eating",
+    "meal":                "eating",
+    "feeding":             "eating",
+    "hand_to_mouth":       "eating",
+    # Drinking variants
+    "drinking":            "drinking",
+    "hydration":           "drinking",
+    # Medication variants
     "taking medications":  "medication",
-    "standing":            "rest",
+    "taking_medications":  "medication",
+    "medication":          "medication",
+    # Sleep/rest variants
+    "sleeping":            "sleeping",
+    "sleep":               "sleeping",
+    "lying":               "lying",
+    # Rest/sitting variants
+    "sitting / rest":      "sitting",
+    "sitting":             "sitting",
+    "rest":                "rest",
+    "standing":            "walking",     # standing maps to exercise/walk bucket
+    "walking":             "walking",
+    "movement":            "walking",
 }
 
 
