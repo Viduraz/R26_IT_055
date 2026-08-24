@@ -71,7 +71,7 @@ def log_alert(event: dict, person_id: str, caregiver_id: str,
     # ── Persist to MongoDB ────────────────────────────────────────────────────
     try:
         db = get_db()
-        db["anomaly_alerts"].insert_one({**doc, "_id_omit": True})
+        db["anomaly_alerts"].insert_one({**doc})
         db["anomaly_logs"].insert_one({**doc, "anomaly_detected": True})
     except Exception as e:
         print(f"[WARN] alert_service MongoDB write failed: {repr(e)}")

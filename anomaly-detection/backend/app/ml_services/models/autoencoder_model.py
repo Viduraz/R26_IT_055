@@ -17,7 +17,7 @@ AE_WEIGHTS_PATH = os.path.join(
 
 _ae = None
 _ae_loaded = False
-INPUT_DIM   = 40    # must match feature_engineer output size
+INPUT_DIM   = 48    # must match feature_engineer output size
 SEQ_LEN     = 30    # must match SEQUENCE_WINDOW
 
 
@@ -78,7 +78,7 @@ def get_autoencoder():
 def reconstruction_error(sequence: list) -> float | None:
     """
     Args:
-        sequence: list of np.ndarray feature vectors, each shape (40,)
+        sequence: list of np.ndarray feature vectors, each shape (48,)
     Returns:
         Mean squared reconstruction error (float), or None if model unavailable.
         High error → anomaly.
@@ -89,8 +89,8 @@ def reconstruction_error(sequence: list) -> float | None:
 
     try:
         import torch
-        arr = np.stack(sequence[-SEQ_LEN:], axis=0)          # (30, 40)
-        x   = torch.tensor(arr.flatten(), dtype=torch.float32).unsqueeze(0)  # (1, 1200)
+        arr = np.stack(sequence[-SEQ_LEN:], axis=0)          # (30, 48)
+        x   = torch.tensor(arr.flatten(), dtype=torch.float32).unsqueeze(0)  # (1, 1440)
         with torch.no_grad():
             recon = model(x)
         mse = float(((recon - x) ** 2).mean().item())

@@ -3,6 +3,7 @@ caregiver-marketplace/backend/app/services/caregiver_service.py
 Queries the existing `users` collection for caregivers and manages
 marketplace profile fields.
 """
+import traceback
 from bson import ObjectId
 from shared.backend.config.database import get_db
 
@@ -49,11 +50,16 @@ class CaregiverService:
             results = []
             for doc in cursor:
                 doc["id"] = str(doc.pop("_id"))
-                if "created_at" in doc:
-                    doc["created_at"] = str(doc["created_at"])
+                # Safely serialise any non-JSON-friendly fields
+                for k, v in list(doc.items()):
+                    if isinstance(v, ObjectId):
+                        doc[k] = str(v)
+                    elif hasattr(v, "isoformat"):  # datetime
+                        doc[k] = v.isoformat()
                 results.append(doc)
             return results
         except Exception as e:
+            traceback.print_exc()
             print(f"[ERROR] caregiver_service.search: {repr(e)}")
             return []
 

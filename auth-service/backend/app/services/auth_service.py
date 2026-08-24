@@ -58,9 +58,8 @@ class AuthService:
                     detail="Face samples are required for Caregiver registration."
                 )
             
-            # Send base64 samples to Face Verification Service to extract embeddings
+            # 1. Send face samples to Face Verification Service
             try:
-                # Expand timeout to 60s because MTCNN + Resnet CPU inference on 5 images takes time
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     resp = await client.post(
                         f"{self._face_service_url}/api/face/enroll",
@@ -71,31 +70,50 @@ class AuthService:
                     user_doc["face_embeddings"] = embed_data.get("embedding")
                     user_doc["face_verification_status"] = "enrolled"
                     user_doc["face_verification_required"] = True
-            
             except httpx.HTTPStatusError as e:
-                # Pull the verbose error message from the Face ML Service if it failed validation
-                try:
-                    error_msg = e.response.json().get("detail", e.response.text)
-                except:
-                    error_msg = e.response.text
+                try: error_msg = e.response.json().get("detail", e.response.text)
+                except: error_msg = e.response.text
                 print(f"[ERROR] Face Model Error response: {error_msg}")
-                raise HTTPException(
-                    status_code=e.response.status_code,
-                    detail=f"Face Model Error: {error_msg}"
-                )
-            except httpx.RequestError as e:
-                print(f"[ERROR] Failed to reach Face ML Service: {repr(e)}")
-                # Catches ReadTimeout, ConnectError, etc which usually have blank str(e)
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to reach Face ML Service: {repr(e)}"
-                )
+                raise HTTPException(status_code=e.response.status_code, detail=f"Face Model Error: {error_msg}")
             except Exception as e:
                 print(f"[ERROR] Unexpected error processing face samples: {repr(e)}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to process face samples: {repr(e)}"
-                )
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to process face samples: {repr(e)}")
+
+            # 2. Send skeleton samples to Skeleton Identification Service & trigger model training
+            if payload.skeleton_samples and len(payload.skeleton_samples) > 0:
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        # Create user in Skeleton system
+                        sk_user_resp = await client.post(
+                            f"{self._skeleton_service_url}/api/users/",
+                            json={
+                                "name": payload.name,
+                                "email": payload.email,
+                                "role": payload.role,
+                                "notes": f"Caregiver ID: {payload.caregiver_license_or_staff_id or 'N/A'}"
+                            }
+                        )
+                        if sk_user_resp.status_code in (200, 201):
+                            sk_user_data = sk_user_resp.json()
+                            sk_user_id = sk_user_data.get("user_id")
+
+                            if sk_user_id:
+                                # Extract keypoint features & upsert profile
+                                enroll_resp = await client.post(
+                                    f"{self._skeleton_service_url}/api/enroll/user-images",
+                                    json={"user_id": sk_user_id, "frames": payload.skeleton_samples}
+                                )
+                                print(f"[INFO] Skeleton enrollment status: {enroll_resp.status_code}")
+                                
+                                # Retrain SVM/LSTM ensemble model for the newly registered user
+                                train_resp = await client.post(
+                                    f"{self._skeleton_service_url}/api/train",
+                                    json={"model_type": "ensemble"}
+                                )
+                                print(f"[INFO] Skeleton AI training triggered: {train_resp.status_code}")
+                                user_doc["skeleton_verification_status"] = "enrolled"
+                except Exception as e:
+                    print(f"[WARNING] Skeleton enrollment / training connection issue: {repr(e)}")
         else:
             user_doc["face_verification_required"] = False
 
