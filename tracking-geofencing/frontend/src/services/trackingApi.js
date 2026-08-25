@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: "http://localhost:8002",
+  baseURL: "",
   timeout: 10000,
 });
 
@@ -35,8 +35,8 @@ API.interceptors.response.use(
 // Health check (no auth needed)
 export async function checkBackendHealth() {
   try {
-    const res = await axios.get("http://localhost:8002/health", { timeout: 5000 });
-    return res.data && res.data.status === "ok";
+    const res = await axios.get("/api/tracking/diagnostics", { timeout: 5000 });
+    return res.status === 200;
   } catch {
     return false;
   }

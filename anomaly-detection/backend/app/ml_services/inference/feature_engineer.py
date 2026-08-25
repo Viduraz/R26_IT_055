@@ -9,7 +9,6 @@ Phase 3 additions (same 40-dim output, enriched signals):
     - Center of Mass (CoM) displacement & stability score
     - Motion Energy Score (total displacement over frame)
 
-Output feature set (40 values per frame):
     [0–7]   Joint angles (shoulder, elbow, knee, hip) normalised /180
     [8]     Torso angle from vertical normalised /90
     [9–10]  Hip slope, shoulder slope
@@ -22,7 +21,8 @@ Output feature set (40 values per frame):
     [21]    Head drop speed
     [22]    Pose energy (total displacement)
     [23–38] Raw key joint positions (16 floats: nose, shoulders, hips, wrists, hip_cx/cy)
-    [39]    Avg wrist velocity (Phase 1 compat, now also used as motion energy proxy)
+    [39]    CoM stability score
+    [40–47] 8 NEW Kinematic/Spatial Features (BB Area, Wrist Dist, Ankle Dist, Head Floor, Torso H, Body CX, Body CY norm, Avg Vel)
 
 PHASE 3 enriched signals embedded into existing indices:
     [8]     Now uses 3D torso tilt (incorporates z-depth for better fall detection)
@@ -71,10 +71,10 @@ def engineer_features(raw: list, prev_raw: list = None) -> np.ndarray:
         raw:      Current frame landmarks — list of 33 × [x, y, z, vis]
         prev_raw: Previous frame landmarks (optional, enables velocity features)
     Returns:
-        np.ndarray of shape (40,)
+        np.ndarray of shape (48,)
     """
     if not raw or len(raw) < 29:
-        return np.zeros(40, dtype=np.float32)
+        return np.zeros(48, dtype=np.float32)
 
     def lm(idx):
         return raw[idx][:2]   # [x, y]
@@ -166,6 +166,16 @@ def engineer_features(raw: list, prev_raw: list = None) -> np.ndarray:
         com_displacement = body_velocity
         com_stability    = max(0.0, 1.0 - com_displacement * 20.0)  # 0=moving, 1=still
 
+    # ── 9. New Physics / Spatial Features (Phase 4 98% Target) ───────────────
+    bb_area       = body_w * body_h
+    wrist_dist    = _dist(lm(_L_WRIST), lm(_R_WRIST))
+    ankle_dist    = _dist(lm(_L_ANKLE), lm(_R_ANKLE))
+    head_floor    = 1.0 - raw[_NOSE][1]  # roughly distance from bottom of frame
+    torso_h       = _dist((sho_cx, sho_cy), (hip_cx, hip_cy))
+    norm_body_cx  = body_cx * 2.0 - 1.0
+    norm_body_cy  = body_cy * 2.0 - 1.0
+    avg_wrist_vel = (wrist_l_vel + wrist_r_vel) / 2.0
+
     # ── Assemble feature vector (40 dims) ─────────────────────────────────────
     features = np.array([
         # [0–7] Joint angles
@@ -210,6 +220,15 @@ def engineer_features(raw: list, prev_raw: list = None) -> np.ndarray:
         hip_cx,                hip_cy,
         # [39] CoM stability score (Phase 3)
         com_stability,
+        # [40-47] Phase 4 Physics Features
+        bb_area,
+        wrist_dist,
+        ankle_dist,
+        head_floor,
+        torso_h,
+        norm_body_cx,
+        norm_body_cy,
+        avg_wrist_vel,
     ], dtype=np.float32)
 
     return np.clip(features, -5.0, 5.0)

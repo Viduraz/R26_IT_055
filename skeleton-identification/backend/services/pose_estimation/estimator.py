@@ -74,6 +74,7 @@ class PoseEstimator:
         model_complexity: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
+        num_poses: int = 1,
     ):
         # Resolve model path
         model_dir = Path(__file__).resolve().parent.parent.parent / "models"
@@ -103,7 +104,7 @@ class PoseEstimator:
         options = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=running_mode,
-            num_poses=1,
+            num_poses=num_poses,
             min_pose_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
             min_pose_presence_confidence=min_detection_confidence,
@@ -122,31 +123,8 @@ class PoseEstimator:
             mode=running_mode.name,
         )
 
-    def estimate(self, rgb_frame: np.ndarray) -> Optional[List[Dict]]:
-        """Extract all 33 keypoints from an RGB frame.
-
-        Args:
-            rgb_frame: RGB image as numpy array (H, W, 3)
-
-        Returns:
-            List of 33 keypoint dicts, or None if no person detected.
-        """
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
-        if self._static:
-            results = self.landmarker.detect(mp_image)
-        else:
-            self._frame_timestamp_ms += 33  # ~30fps
-            results = self.landmarker.detect_for_video(
-                mp_image, self._frame_timestamp_ms
-            )
-
-        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
-            return None
-
-        # Take the first detected pose
-        landmarks = results.pose_landmarks[0]
-
+    def _landmarks_to_keypoints(self, landmarks) -> List[Dict]:
+        """Convert a single MediaPipe pose's landmark list into our keypoint dicts."""
         keypoints = []
         for idx, landmark in enumerate(landmarks):
             kp = Keypoint(
@@ -158,8 +136,47 @@ class PoseEstimator:
                 visibility=float(landmark.visibility),
             )
             keypoints.append(asdict(kp))
-
         return keypoints
+
+    def _detect(self, rgb_frame: np.ndarray):
+        """Run the landmarker and return the raw MediaPipe result."""
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        if self._static:
+            return self.landmarker.detect(mp_image)
+        self._frame_timestamp_ms += 33  # ~30fps
+        return self.landmarker.detect_for_video(mp_image, self._frame_timestamp_ms)
+
+    def estimate(self, rgb_frame: np.ndarray) -> Optional[List[Dict]]:
+        """Extract all 33 keypoints from an RGB frame.
+
+        Args:
+            rgb_frame: RGB image as numpy array (H, W, 3)
+
+        Returns:
+            List of 33 keypoint dicts for the first detected pose, or None if
+            no person detected.
+        """
+        results = self._detect(rgb_frame)
+
+        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
+            return None
+
+        return self._landmarks_to_keypoints(results.pose_landmarks[0])
+
+    def estimate_multi(self, rgb_frame: np.ndarray) -> List[List[Dict]]:
+        """Extract keypoints for EVERY detected person in the frame.
+
+        Only meaningful when this estimator was constructed with num_poses > 1
+        — with the default num_poses=1 this just returns a single-item list.
+
+        Returns:
+            List of per-person keypoint lists (each shaped like estimate()'s
+            return value). Empty list if nobody is detected.
+        """
+        results = self._detect(rgb_frame)
+        if not results.pose_landmarks:
+            return []
+        return [self._landmarks_to_keypoints(landmarks) for landmarks in results.pose_landmarks]
 
     def get_body_keypoints(
         self, all_keypoints: List[Dict], min_visibility: float = 0.3

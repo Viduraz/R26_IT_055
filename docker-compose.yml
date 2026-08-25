@@ -1,7 +1,14 @@
 version: "3.9"
 
+networks:
+  eldercare-net:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+
 services:
-  # ─── MongoDB ─────────────────────────────────────────────
+  # ─── MongoDB ─────────────────────────────────────────────────────────────────
   mongodb:
     image: mongo:latest
     ports:
@@ -10,132 +17,270 @@ services:
       MONGO_INITDB_DATABASE: secure_elder_care
     volumes:
       - mongodb_data:/data/db
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
-  # ─── Auth Service ───────────────────────────────────────
+  # ─── Auth Service ─────────────────────────────────────────────────────────────
   auth-backend:
-    build: ./auth-service/backend
+    build:
+      context: .
+      dockerfile: auth-service/backend/Dockerfile
     ports:
       - "8000:8000"
     env_file: .env
-
-    depends_on:
-      - mongodb
     environment:
-      # Override face service URL to use Docker-internal DNS (not localhost)
       - FACE_SERVICE_URL=http://face-backend:8001
-
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   auth-frontend:
-    build: ./auth-service/frontend
+    build:
+      context: .
+      dockerfile: auth-service/frontend/Dockerfile
     ports:
       - "5173:5173"
     depends_on:
-      - auth-backend
+      auth-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-  # ─── Face Verification ──────────────────────────────────
+  # ─── Face Verification ───────────────────────────────────────────────────────
   face-backend:
-    build: ./face-verification/backend
+    build:
+      context: .
+      dockerfile: face-verification/backend/Dockerfile
     ports:
       - "8001:8001"
     env_file: .env
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   face-frontend:
-    build: ./face-verification/frontend
+    build:
+      context: .
+      dockerfile: face-verification/frontend/Dockerfile
     ports:
       - "5174:5174"
     depends_on:
-      - face-backend
+      face-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-  # ─── Tracking & Geofencing ──────────────────────────────
+  # ─── Tracking & Geofencing ───────────────────────────────────────────────────
   tracking-backend:
-    build: ./tracking-geofencing/backend
+    build:
+      context: .
+      dockerfile: tracking-geofencing/backend/Dockerfile
     ports:
       - "8002:8002"
     env_file: .env
+    volumes:
+      # YOLOv8 model weight — read-only mount
+      - ./tracking-geofencing/backend/yolov8n.pt:/app/tracking-geofencing/backend/yolov8n.pt:ro
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8002/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   tracking-frontend:
-    build: ./tracking-geofencing/frontend
+    build:
+      context: .
+      dockerfile: tracking-geofencing/frontend/Dockerfile
     ports:
       - "5175:5175"
     depends_on:
-      - tracking-backend
+      tracking-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-  # ─── Anomaly Detection ──────────────────────────────────
+  # ─── Anomaly Detection ───────────────────────────────────────────────────────
   anomaly-backend:
-    build: ./anomaly-detection/backend
+    build:
+      context: .
+      dockerfile: anomaly-detection/backend/Dockerfile
     ports:
       - "8003:8003"
     env_file: .env
+    volumes:
+      # LSTM + Autoencoder model weights — read-only mounts
+      - ./anomaly-detection/backend/app/ml_services/trained_models:/app/anomaly-detection/backend/app/ml_services/trained_models:ro
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8003/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   anomaly-frontend:
-    build: ./anomaly-detection/frontend
+    build:
+      context: .
+      dockerfile: anomaly-detection/frontend/Dockerfile
     ports:
       - "5176:5176"
     depends_on:
-      - anomaly-backend
+      anomaly-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-  # ─── Schedule Monitoring ────────────────────────────────
+  # ─── Schedule Monitoring ─────────────────────────────────────────────────────
   schedule-backend:
-    build: ./schedule-monitoring/backend
+    build:
+      context: .
+      dockerfile: schedule-monitoring/backend/Dockerfile
     ports:
       - "8004:8004"
     env_file: .env
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8004/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   schedule-frontend:
-    build: ./schedule-monitoring/frontend
+    build:
+      context: .
+      dockerfile: schedule-monitoring/frontend/Dockerfile
     ports:
       - "5177:5177"
     depends_on:
-      - schedule-backend
+      schedule-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-  # ─── Gateway Dashboard ──────────────────────────────────
+  # ─── Gateway Dashboard ───────────────────────────────────────────────────────
   gateway-backend:
-    build: ./gateway-dashboard/backend
+    build:
+      context: .
+      dockerfile: gateway-dashboard/backend/Dockerfile
     ports:
       - "8005:8005"
     env_file: .env
     environment:
-      # Use Docker-internal DNS names so containers can call each other
+      # Use Docker-internal DNS so containers call each other by service name
       - AUTH_SERVICE_URL=http://auth-backend:8000
       - FACE_SERVICE_URL=http://face-backend:8001
       - TRACKING_SERVICE_URL=http://tracking-backend:8002
       - ANOMALY_SERVICE_URL=http://anomaly-backend:8003
       - SCHEDULE_SERVICE_URL=http://schedule-backend:8004
     depends_on:
-      - mongodb
-      - auth-backend
-      - face-backend
-      - tracking-backend
-      - anomaly-backend
-      - schedule-backend
+      mongodb:
+        condition: service_healthy
+      auth-backend:
+        condition: service_healthy
+      face-backend:
+        condition: service_healthy
+      tracking-backend:
+        condition: service_healthy
+      anomaly-backend:
+        condition: service_healthy
+      schedule-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8005/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   gateway-frontend:
-    build: ./gateway-dashboard/frontend
+    build:
+      context: .
+      dockerfile: gateway-dashboard/frontend/Dockerfile
     ports:
       - "5178:5178"
     depends_on:
-      - gateway-backend
+      gateway-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
     restart: unless-stopped
 
-volumes:
-  mongodb_data:
+  # ─── Caregiver Marketplace ───────────────────────────────────────────────────
+  marketplace-backend:
+    build:
+      context: .
+      dockerfile: caregiver-marketplace/backend/Dockerfile
+    ports:
+      - "8006:8006"
+    env_file: .env
+    environment:
+      - ANOMALY_SERVICE_URL=http://anomaly-backend:8003
+      - TRACKING_SERVICE_URL=http://tracking-backend:8002
+      - SCHEDULE_SERVICE_URL=http://schedule-backend:8004
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      anomaly-backend:
+        condition: service_healthy
+      tracking-backend:
+        condition: service_healthy
+      schedule-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8006/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  marketplace-frontend:
+    build:
+      context: .
+      dockerfile: caregiver-marketplace/frontend/Dockerfile
+    ports:
+      - "5179:5179"
+    depends_on:
+      marketplace-backend:
+        condition: service_healthy
+    networks: [ eldercare-net ]
+    restart: unless-stopped

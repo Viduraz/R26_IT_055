@@ -8,45 +8,68 @@ const net = require('net');
 
 const PORT = 8080;
 
-// Helper to determine the target address and port for a path
+// Helper to determine the target address and port for a given URL.
+// Vite dev servers with `base` configured expect the full prefixed path to arrive.
+// Do NOT strip path prefixes — Vite handles that internally.
 function getRouteTarget(url) {
-  if (url.startsWith('/auth/')) {
-    return { host: '127.0.0.1', port: 5173 }; // Auth Frontend
+  // ── Frontends ─────────────────────────────────────────────────────────────
+  // IMPORTANT: Do NOT strip the base prefix here.
+  // Each Vite dev server has `base` set (e.g. base: "/auth/") and expects the
+  // full prefixed path to arrive (e.g. /auth/login). Vite strips the base itself
+  // internally. Stripping here causes Vite to receive /login without the base,
+  // triggering its "public base URL" 404 error.
+  if (url.startsWith('/auth/') || url === '/auth') {
+    return { host: '127.0.0.1', port: 5173 };
   }
-  if (url.startsWith('/face/')) {
-    return { host: '127.0.0.1', port: 5174 }; // Face Frontend
+  if (url.startsWith('/face/') || url === '/face') {
+    return { host: '127.0.0.1', port: 5174 };
   }
-  if (url.startsWith('/tracking/')) {
-    return { host: '127.0.0.1', port: 5175 }; // Tracking Frontend
+  if (url.startsWith('/tracking/') || url === '/tracking') {
+    return { host: '127.0.0.1', port: 5175 };
   }
-  if (url.startsWith('/anomaly/')) {
-    return { host: '127.0.0.1', port: 5176 }; // Anomaly Frontend
+  if (url.startsWith('/anomaly/') || url === '/anomaly') {
+    return { host: '127.0.0.1', port: 5176 };
   }
-  if (url.startsWith('/schedule/')) {
-    return { host: '127.0.0.1', port: 5177 }; // Schedule Frontend
+  if (url.startsWith('/schedule/') || url === '/schedule') {
+    return { host: '127.0.0.1', port: 5177 };
+  }
+  if (url.startsWith('/marketplace/') || url === '/marketplace') {
+    return { host: '127.0.0.1', port: 5179 };
+  }
+  if (url.startsWith('/skeleton/')) {
+    return { host: '127.0.0.1', port: 3000 }; // Skeleton has its own base='/skeleton/'
   }
 
-  // APIs
+  // ── APIs (no prefix stripping — backends expect the full /api/... path) ───
   if (url.startsWith('/api/auth')) {
-    return { host: '127.0.0.1', port: 8000 }; // Auth Backend
+    return { host: '127.0.0.1', port: 8000 };
   }
   if (url.startsWith('/api/face')) {
-    return { host: '127.0.0.1', port: 8001 }; // Face Backend
+    return { host: '127.0.0.1', port: 8001 };
   }
   if (url.startsWith('/api/tracking')) {
-    return { host: '127.0.0.1', port: 8002 }; // Tracking Backend
+    return { host: '127.0.0.1', port: 8002 };
   }
   if (url.startsWith('/api/anomaly')) {
-    return { host: '127.0.0.1', port: 8003 }; // Anomaly Backend
+    return { host: '127.0.0.1', port: 8003 };
   }
   if (url.startsWith('/api/schedule') || url.startsWith('/api/monitoring')) {
-    return { host: '127.0.0.1', port: 8004 }; // Schedule Backend
+    return { host: '127.0.0.1', port: 8004 };
+  }
+  if (url.startsWith('/api/geofence')) {
+    return { host: '127.0.0.1', port: 8002 };
   }
   if (url.startsWith('/api/gateway') || url.startsWith('/api/dashboard')) {
-    return { host: '127.0.0.1', port: 8005 }; // Gateway Backend
+    return { host: '127.0.0.1', port: 8005 };
+  }
+  if (url.startsWith('/api/marketplace')) {
+    return { host: '127.0.0.1', port: 8006 };
+  }
+  if (url.startsWith('/api/skeleton')) {
+    return { host: '127.0.0.1', port: 8007 };
   }
 
-  // Fallback to Gateway Frontend (served at root /)
+  // ── Fallback: Gateway Dashboard (served at root '/') ─────────────────────
   return { host: '127.0.0.1', port: 5178 };
 }
 
@@ -54,7 +77,7 @@ function getRouteTarget(url) {
 const server = http.createServer((req, res) => {
   const target = getRouteTarget(req.url);
 
-  console.log(`[HTTP Proxy] ${req.method} ${req.url} -> http://${target.host}:${target.port}`);
+  console.log(`[HTTP Proxy] ${req.method} ${req.url} -> http://${target.host}:${target.port}${req.url}`);
 
   // Set up proxy request headers (ensure host points to target)
   const headers = { ...req.headers };
@@ -84,14 +107,14 @@ const server = http.createServer((req, res) => {
 server.on('upgrade', (req, socket, head) => {
   const target = getRouteTarget(req.url);
 
-  console.log(`[WS Proxy] UPGRADE ${req.url} -> ws://${target.host}:${target.port}`);
+  console.log(`[WS Proxy] UPGRADE ${req.url} -> ws://${target.host}:${target.port}${req.url}`);
 
   const targetSocket = net.connect(target.port, target.host, () => {
     // Reconstruct raw HTTP handshake request headers
     let rawRequest = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const key = req.rawHeaders[i];
-      const val = req.rawHeaders[i+1];
+      const val = req.rawHeaders[i + 1];
       if (key.toLowerCase() === 'host') {
         rawRequest += `Host: ${target.host}:${target.port}\r\n`;
       } else {
@@ -130,13 +153,18 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  - /tracking/* -> http://localhost:5175  (Tracking UI)`);
   console.log(`  - /anomaly/*  -> http://localhost:5176  (Anomaly UI)`);
   console.log(`  - /schedule/* -> http://localhost:5177  (Schedule UI)`);
+  console.log(`  - /marketplace/* -> http://localhost:5179  (Marketplace UI)`);
+  console.log(`  - /skeleton/*  -> http://localhost:3000  (Skeleton-ID UI)`);
   console.log(`  - /api/auth   -> http://localhost:8000  (Auth Backend)`);
   console.log(`  - /api/face   -> http://localhost:8001  (Face Backend)`);
   console.log(`  - /api/track  -> http://localhost:8002  (Tracking Backend)`);
   console.log(`  - /api/anom   -> http://localhost:8003  (Anomaly Backend)`);
   console.log(`  - /api/sched  -> http://localhost:8004  (Schedule Backend)`);
   console.log(`  - /api/gate   -> http://localhost:8005  (Gateway Backend)`);
+  console.log(`  - /api/marketplace -> http://localhost:8006 (Marketplace Backend)`);
+  console.log(`  - /api/skeleton -> http://localhost:8007 (Skeleton-ID Backend)`);
   console.log(`  - /* (Root)   -> http://localhost:5178  (Gateway UI)`);
+
   console.log(`================================================================\n`);
 
   // ── Keepalive ping ──────────────────────────────────────────────────────
@@ -146,7 +174,7 @@ server.listen(PORT, '0.0.0.0', () => {
     const req = http.get(`http://127.0.0.1:${PORT}/_proxy_keepalive`, (res) => {
       res.resume(); // Drain the response to free memory
     });
-    req.on('error', () => {}); // Silently ignore — proxy might be momentarily busy
+    req.on('error', () => { }); // Silently ignore — proxy might be momentarily busy
     req.end();
   }, 30_000);
 });

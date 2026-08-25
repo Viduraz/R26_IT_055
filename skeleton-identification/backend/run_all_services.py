@@ -12,15 +12,35 @@ import sys
 import os
 from pathlib import Path
 
+# ── Windows Unicode fix ───────────────────────────────────────────────────────
+# PowerShell defaults to cp1252 which cannot encode box-drawing chars or emoji.
+# Reconfigure stdout/stderr to UTF-8 so the startup banner prints correctly.
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # backend/ directory IS the Python root (contains config.py, gateway/, services/, etc.)
 project_root = Path(__file__).resolve().parent   # → research-skeleton/backend/
 sys.path.insert(0, str(project_root))
 os.chdir(str(project_root))
 
-# Load .env from research-skeleton/ root (one level above backend/)
+# Load .env from workspace root (two levels above backend/) or fall back to project root
 from dotenv import load_dotenv
-_env_file = project_root.parent / ".env"         # → research-skeleton/.env
-load_dotenv(dotenv_path=str(_env_file))
+_env_file = project_root.parent.parent / ".env"  # → workspace root .env
+if _env_file.exists():
+    print(f"Loading environment from root .env: {_env_file}")
+    load_dotenv(dotenv_path=str(_env_file))
+else:
+    _env_file = project_root.parent / ".env"      # → research-skeleton/.env
+    print(f"Loading environment from local .env: {_env_file}")
+    load_dotenv(dotenv_path=str(_env_file))
 
 from config import settings
 

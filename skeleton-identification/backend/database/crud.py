@@ -40,7 +40,7 @@ class UserCRUD:
 
     @classmethod
     async def list_all(cls) -> List[Dict]:
-        cursor = cls._col().find({}, {"_id": 0})
+        cursor = cls._col().find({"user_id": {"$exists": True}}, {"_id": 0})
         return await cursor.to_list(length=100)
 
     @classmethod
@@ -68,12 +68,12 @@ class UserCRUD:
 
     @classmethod
     async def count(cls) -> int:
-        return await cls._col().count_documents({})
+        return await cls._col().count_documents({"user_id": {"$exists": True}})
 
     @classmethod
     async def clear_all(cls):
         """Reset the collection (danger!)."""
-        await cls._col().delete_many({})
+        await cls._col().delete_many({"user_id": {"$exists": True}})
         log.info("users_cleared")
 
 
