@@ -19,32 +19,6 @@ from app.database.db import get_database
 #                "max_area_in_zone": float, "last_area": float } }
 person_exit_tracker: dict = {}
 
-# ── Caregiver Mobile Location Tracker (in-memory singleton) ────────
-caregiver_mobile_location: dict = {
-    "lat": None,
-    "lng": None,
-    "accuracy": None,
-    "battery": None,
-    "last_updated": None,
-    "active": False,
-}
-
-
-async def update_mobile_location(lat: float, lng: float, accuracy: float = None, battery: int = None) -> dict:
-    """Update live caregiver smartphone GPS location."""
-    caregiver_mobile_location["lat"] = lat
-    caregiver_mobile_location["lng"] = lng
-    caregiver_mobile_location["accuracy"] = accuracy
-    caregiver_mobile_location["battery"] = battery
-    caregiver_mobile_location["last_updated"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    caregiver_mobile_location["active"] = True
-    return caregiver_mobile_location
-
-
-async def get_mobile_location() -> dict:
-    """Retrieve latest caregiver smartphone GPS location."""
-    return caregiver_mobile_location
-
 
 def _point_in_polygon(centroid: tuple, polygon: list) -> bool:
     """Check if centroid (x, y) is inside polygon [[x,y], ...]."""

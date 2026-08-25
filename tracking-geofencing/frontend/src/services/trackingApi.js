@@ -71,8 +71,9 @@ export const geofenceApi = {
   },
   resolveAlert: (alertId) => API.put(`/api/geofence/alerts/${alertId}/resolve`),
   clearAlerts: () => API.delete("/api/geofence/alerts"),
-  sendMobileLocation: (lat, lng, accuracy, battery) => API.post("/api/geofence/mobile-location", { lat, lng, accuracy, battery }),
-  getMobileLocation: () => API.get("/api/geofence/mobile-location"),
+  pushMobileGps: (lat, lng, accuracy, sessionId) =>
+    API.post("/api/geofence/mobile-gps", { lat, lng, accuracy, session_id: sessionId }),
+  getMobileGps: () => API.get("/api/geofence/mobile-gps"),
 };
 
 export default API;

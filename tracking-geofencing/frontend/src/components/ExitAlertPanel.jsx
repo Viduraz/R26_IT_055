@@ -52,6 +52,9 @@ const formatTime = (ts) => {
   }
 };
 
+// Get local PC IP for QR code (user must be on same LAN as phone)
+const MOBILE_URL = `http://${window.location.hostname}:5175/mobile`;
+
 export default function ExitAlertPanel({ toastRef, monitoring = false }) {
   // Geolocation and Coordinates State
   const [baselineCoords, setBaselineCoords] = useState({ lat: 6.9271, lng: 79.8612 }); // Colombo fallback
@@ -60,9 +63,13 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
   const [geoStatus, setGeoStatus] = useState("loading");
   const [isLocked, setIsLocked] = useState(false);
   const [gpsBreaches, setGpsBreaches] = useState([]);
-  const [showQrModal, setShowQrModal] = useState(false);
-  const [isMobileStreamActive, setIsMobileStreamActive] = useState(false);
-  const [mobileBattery, setMobileBattery] = useState(null);
+
+  // Mobile GPS state
+  const [mobileCoords, setMobileCoords] = useState(null);
+  const [mobileActive, setMobileActive] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  const mobileCoordsRef = useRef(null);
+  const mobileHasAlertedRef = useRef(false);
 
   const radarCanvasRef = useRef(null);
   const radarSweepRef = useRef(0);
@@ -80,77 +87,35 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
     liveCoordsRef.current = liveCoords;
   }, [liveCoords]);
 
-  // ── Poll Mobile Phone GPS from Backend Stream ─────────────────────
-  useEffect(() => {
-    if (!monitoring) return;
 
-    const pollMobileGPS = async () => {
-      try {
-        const res = await geofenceApi.getMobileLocation();
-        if (res && res.data && res.data.active && typeof res.data.lat === "number" && typeof res.data.lng === "number") {
-          const mobileLat = res.data.lat;
-          const mobileLng = res.data.lng;
-          const coords = { lat: mobileLat, lng: mobileLng };
-
-          // Update EMA coordinates
-          const prev = liveCoordsRef.current;
-          let nextCoords = coords;
-          if (prev && prev.lat !== 6.9271 && prev.lng !== 79.8612) {
-            const alpha = 0.3;
-            nextCoords = {
-              lat: prev.lat * (1 - alpha) + mobileLat * alpha,
-              lng: prev.lng * (1 - alpha) + mobileLng * alpha,
-            };
-          }
-
-          setLiveCoords(nextCoords);
-          setGeoStatus("mobile-active");
-          setIsMobileStreamActive(true);
-          if (res.data.battery) setMobileBattery(res.data.battery);
-
-          // Lock baseline on first valid coordinate
-          if (!isLocked) {
-            setBaselineCoords(coords);
-            baselineCoordsRef.current = coords;
-            setIsLocked(true);
-          }
-        }
-      } catch (err) {
-        console.warn("Mobile location poll error:", err);
-      }
-    };
-
-    pollMobileGPS();
-    const interval = setInterval(pollMobileGPS, 1500);
-    return () => clearInterval(interval);
-  }, [monitoring, isLocked]);
-
-  // ── Browser Local Geolocation Fallback (if no mobile paired) ──────
+  // ── PC Geolocation Tracking (Activated strictly on monitoring) ──
   useEffect(() => {
     let watchId = null;
     let isLockedLocal = false;
 
     if (!monitoring) {
+      // Clear geofence states when monitoring is off
       setGeoStatus("loading");
       setIsLocked(false);
       hasAlertedRef.current = false;
       trajectoryRef.current = [];
       setGpsBreaches([]);
-      setIsMobileStreamActive(false);
       return;
     }
 
-    if (navigator.geolocation && !isMobileStreamActive) {
+    if (navigator.geolocation) {
       setGeoStatus("loading");
 
+      // Start watching position continuously with high accuracy
       watchId = navigator.geolocation.watchPosition(
         (position) => {
-          if (position && position.coords && !isMobileStreamActive) {
+          if (position && position.coords) {
             const lat = position.coords.latitude;
             const lng = position.coords.longitude;
             if (typeof lat === "number" && typeof lng === "number" && !isNaN(lat) && !isNaN(lng)) {
               const coords = { lat, lng };
 
+              // Apply Exponential Moving Average (EMA) to smooth out coordinate jitter
               const prev = liveCoordsRef.current;
               let nextCoords = coords;
               if (prev && prev.lat !== 6.9271 && prev.lng !== 79.8612) {
@@ -164,6 +129,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
               setLiveCoords(nextCoords);
               setGeoStatus("granted");
 
+              // Lock the baseline center on the very first received real location
               const currentBaseline = isLockedLocal ? baselineCoordsRef.current : coords;
 
               if (!isLockedLocal) {
@@ -171,8 +137,10 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
                 baselineCoordsRef.current = coords;
                 setIsLocked(true);
                 isLockedLocal = true;
+                console.log("[GPS] Geofence baseline coordinates locked:", coords);
               }
 
+              // Calculate radar coordinates relative to the locked baseline
               const dLatMeters = (nextCoords.lat - currentBaseline.lat) * 111320;
               const radLat = (currentBaseline.lat * Math.PI) / 180;
               const dLngMeters = (nextCoords.lng - currentBaseline.lng) * 111320 * Math.cos(radLat);
@@ -185,6 +153,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
               const px = dLngMeters * scale_val;
               const py = -dLatMeters * scale_val;
 
+              // Only append to trajectory history if the movement is significant (avoids static jitter)
               const newPoint = [cx_val + px, cy_val + py];
               const lastPoint = trajectoryRef.current[trajectoryRef.current.length - 1];
               if (!lastPoint || Math.hypot(newPoint[0] - lastPoint[0], newPoint[1] - lastPoint[1]) > 0.5) {
@@ -198,21 +167,54 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         },
         (error) => {
           console.warn("[GPS] watchPosition failed:", error);
-          if (!isMobileStreamActive) setGeoStatus("denied");
+          setGeoStatus("denied");
         },
         { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
       );
     } else {
-      if (!isMobileStreamActive) setGeoStatus("not-supported");
+      setGeoStatus("not-supported");
     }
 
     return () => {
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
     };
-  }, [monitoring, isMobileStreamActive]);
+  }, [monitoring]);
+
+  // ── Mobile GPS Polling (every 2s when monitoring) ─────────────────────────
+  useEffect(() => {
+    if (!monitoring) {
+      setMobileCoords(null);
+      setMobileActive(false);
+      mobileCoordsRef.current = null;
+      mobileHasAlertedRef.current = false;
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const res = await geofenceApi.getMobileGps();
+        if (res && res.data && typeof res.data.lat === "number" && typeof res.data.lng === "number") {
+          const mc = { lat: res.data.lat, lng: res.data.lng, accuracy: res.data.accuracy };
+          mobileCoordsRef.current = mc;
+          setMobileCoords(mc);
+          setMobileActive(true);
+        }
+      } catch {
+        // 404 means no mobile connected — silently ignore
+        setMobileActive(false);
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [monitoring]);
 
   const currentDistance = monitoring && isLocked ? getHaversineDistance(baselineCoords, liveCoords) : 0;
   const isBreached = !!(monitoring && typeof currentDistance === "number" && !isNaN(currentDistance) && currentDistance > 10.0);
+
+  const mobileDistance = monitoring && isLocked && mobileCoords ? getHaversineDistance(baselineCoords, mobileCoords) : 0;
+  const isMobileBreached = !!(monitoring && isLocked && mobileCoords && typeof mobileDistance === "number" && !isNaN(mobileDistance) && mobileDistance > 10.0);
 
   // Manual geofence reset/re-lock baseline
   const handleLockBaseline = () => {
@@ -225,7 +227,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
       trajectoryRef.current = [];
       if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
         try {
-          toastRef.current.addToast("🏠 Caregiver Home Center locked to current location");
+          toastRef.current.addToast("🏠 Geofence Center locked to current location");
         } catch (e) {
           console.error("Toast failed:", e);
         }
@@ -233,7 +235,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
     }
   };
 
-  // ── Breach logic effect ────────────────────────────────────────
+  // ── PC Breach logic effect ────────────────────────────────────────────────
   useEffect(() => {
     if (!monitoring) return;
     
@@ -244,7 +246,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
 
         if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
           try {
-            toastRef.current.addToast("🚨 Caregiver Mobile away from home boundary!");
+            toastRef.current.addToast("🚨 PC away from home");
           } catch (e) {
             console.error("Toast failed:", e);
           }
@@ -254,7 +256,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
           {
             alert_id: "gps-" + Date.now(),
             distance: typeof currentDistance === "number" && !isNaN(currentDistance) ? currentDistance : 0,
-            message: "Caregiver Mobile away from home",
+            message: "PC away from home",
             timestamp: new Date().toISOString(),
             resolved: false
           },
@@ -266,7 +268,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         hasAlertedRef.current = false;
         if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
           try {
-            toastRef.current.addToast("🟢 Caregiver Mobile returned inside 10m Geofence area");
+            toastRef.current.addToast("🟢 PC returned inside geofence area");
           } catch (e) {
             console.error("Toast failed:", e);
           }
@@ -275,6 +277,49 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
     }
   }, [isBreached, currentDistance, toastRef, monitoring]);
 
+  // ── Mobile Breach logic effect ────────────────────────────────────────────
+  useEffect(() => {
+    if (!monitoring || !mobileCoords) return;
+
+    if (isMobileBreached) {
+      if (!mobileHasAlertedRef.current) {
+        mobileHasAlertedRef.current = true;
+        playGpsAlarmSound();
+
+        if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
+          try {
+            toastRef.current.addToast(`🚨 📱 Elder's phone left safe zone! (${mobileDistance.toFixed(1)}m away)`);
+          } catch (e) {
+            console.error("Toast failed:", e);
+          }
+        }
+
+        setGpsBreaches((prev) => [
+          {
+            alert_id: "mobile-gps-" + Date.now(),
+            distance: typeof mobileDistance === "number" && !isNaN(mobileDistance) ? mobileDistance : 0,
+            message: "📱 Elder's phone left safe zone",
+            timestamp: new Date().toISOString(),
+            resolved: false
+          },
+          ...prev
+        ]);
+      }
+    } else {
+      if (mobileHasAlertedRef.current) {
+        mobileHasAlertedRef.current = false;
+        if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
+          try {
+            toastRef.current.addToast("🟢 📱 Elder's phone back inside geofence area");
+          } catch (e) {
+            console.error("Toast failed:", e);
+          }
+        }
+      }
+    }
+  }, [isMobileBreached, mobileDistance, mobileCoords, toastRef, monitoring]);
+
+  // Dismiss a breach alert card
   const handleResolveAlert = (alertId) => {
     setGpsBreaches((prev) =>
       prev.map((a) => (a.alert_id === alertId ? { ...a, resolved: true } : a))
@@ -289,16 +334,19 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
     if (!ctx) return;
 
     const animate = () => {
+      // Radar fading background sweep effect
       ctx.fillStyle = "rgba(10, 15, 30, 0.15)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
       const radarRadius = Math.min(cx, cy) - 20;
-      const scale = radarRadius / 15;
+      const scale = radarRadius / 15; // 15 meters maps to radarRadius
 
+      // Increment sweep angle
       radarSweepRef.current = (radarSweepRef.current + 0.02) % (Math.PI * 2);
 
+      // Draw background circles
       ctx.strokeStyle = "rgba(0, 212, 255, 0.08)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -306,18 +354,20 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
       ctx.stroke();
 
       ctx.beginPath();
-      ctx.arc(cx, cy, radarRadius * 0.66, 0, Math.PI * 2);
+      ctx.arc(cx, cy, radarRadius * 0.66, 0, Math.PI * 2); // 10m
       ctx.stroke();
 
       ctx.beginPath();
-      ctx.arc(cx, cy, radarRadius * 0.33, 0, Math.PI * 2);
+      ctx.arc(cx, cy, radarRadius * 0.33, 0, Math.PI * 2); // 5m
       ctx.stroke();
 
+      // Crosshairs
       ctx.beginPath();
       ctx.moveTo(cx - radarRadius, cy); ctx.lineTo(cx + radarRadius, cy);
       ctx.moveTo(cx, cy - radarRadius); ctx.lineTo(cx, cy + radarRadius);
       ctx.stroke();
 
+      // 10m Geofence safe zone ring (always green)
       const safeRadius = 10 * scale;
 
       ctx.strokeStyle = "rgba(0, 255, 157, 0.4)";
@@ -333,6 +383,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
       ctx.arc(cx, cy, safeRadius, 0, Math.PI * 2);
       ctx.fill();
 
+      // Radar Sweep Line
       const sweepX = cx + Math.cos(radarSweepRef.current) * radarRadius;
       const sweepY = cy + Math.sin(radarSweepRef.current) * radarRadius;
       ctx.strokeStyle = "rgba(0, 212, 255, 0.25)";
@@ -342,24 +393,30 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
       ctx.lineTo(sweepX, sweepY);
       ctx.stroke();
 
+      // Draw Center Baseline Marker (Geofence Origin)
       ctx.fillStyle = "#00D4FF";
       ctx.beginPath();
       ctx.arc(cx, cy, 6, 0, Math.PI * 2);
       ctx.fill();
+      // Outer ring for Center
       ctx.strokeStyle = "rgba(0, 212, 255, 0.4)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(cx, cy, 12, 0, Math.PI * 2);
       ctx.stroke();
 
+      // Only calculate and plot PC location if monitoring is active and coordinates locked
       if (monitoring && isLocked) {
+        // Calculate PC position relative to Geofence Center (in meters)
         const dLatMeters = (liveCoords.lat - baselineCoords.lat) * 111320;
         const radLat = (baselineCoords.lat * Math.PI) / 180;
         const dLngMeters = (liveCoords.lng - baselineCoords.lng) * 111320 * Math.cos(radLat);
 
+        // Convert meters to pixels
         const px = dLngMeters * scale;
         const py = -dLatMeters * scale;
 
+        // Draw PC history trail
         ctx.strokeStyle = "rgba(255, 59, 92, 0.25)";
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -369,26 +426,62 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         });
         ctx.stroke();
 
+        // Draw PC Dot Marker (red)
         const dotColor = "#FF3B5C";
         ctx.fillStyle = dotColor;
         ctx.beginPath();
         ctx.arc(cx + px, cy + py, 7, 0, Math.PI * 2);
         ctx.fill();
-
         ctx.strokeStyle = dotColor;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(cx + px, cy + py, 14, 0, Math.PI * 2);
         ctx.stroke();
-
         ctx.fillStyle = "#FF3B5C";
         ctx.font = 'bold 10px "JetBrains Mono", monospace';
-        ctx.fillText("📱 CAREGIVER PHONE", cx + px + 12, cy + py - 4);
+        ctx.fillText("💻 PC", cx + px + 12, cy + py - 4);
         ctx.font = '9px "JetBrains Mono", monospace';
-        ctx.fillStyle = "var(--text-secondary)";
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
         const distStr = typeof currentDistance === "number" && !isNaN(currentDistance) ? `${currentDistance.toFixed(1)}m` : "0.0m";
         ctx.fillText(distStr, cx + px + 12, cy + py + 8);
+
+        // ── Draw Mobile / Elder Phone Dot (orange) ──
+        if (mobileCoordsRef.current) {
+          const mc = mobileCoordsRef.current;
+          const mdLat = (mc.lat - baselineCoords.lat) * 111320;
+          const mdLng = (mc.lng - baselineCoords.lng) * 111320 * Math.cos(radLat);
+          const mpx = mdLng * scale;
+          const mpy = -mdLat * scale;
+
+          // Pulsing ring for mobile dot
+          const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 400);
+          ctx.strokeStyle = `rgba(255, 165, 0, ${0.3 + 0.4 * pulse})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(cx + mpx, cy + mpy, 14 + pulse * 4, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Orange filled dot
+          ctx.fillStyle = "#FFA500";
+          ctx.beginPath();
+          ctx.arc(cx + mpx, cy + mpy, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#FFA500";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(cx + mpx, cy + mpy, 14, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = "#FFA500";
+          ctx.font = 'bold 10px "JetBrains Mono", monospace';
+          ctx.fillText("📱 ELDER", cx + mpx + 12, cy + mpy - 4);
+          ctx.font = '9px "JetBrains Mono", monospace';
+          ctx.fillStyle = "rgba(255,255,255,0.5)";
+          const mDistStr = typeof mobileDistance === "number" && !isNaN(mobileDistance) ? `${mobileDistance.toFixed(1)}m` : "0.0m";
+          ctx.fillText(mDistStr, cx + mpx + 12, cy + mpy + 8);
+        }
       } else {
+        // Draw IDLE state overlay text in center when not monitoring
         ctx.fillStyle = "rgba(0, 212, 255, 0.3)";
         ctx.font = 'bold 11px "JetBrains Mono", monospace';
         ctx.textAlign = "center";
@@ -396,6 +489,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         ctx.textAlign = "left";
       }
 
+      // Distance rings labels
       ctx.fillStyle = "rgba(0, 212, 255, 0.35)";
       ctx.font = '8px "JetBrains Mono", monospace';
       ctx.textAlign = "center";
@@ -412,42 +506,29 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [baselineCoords, liveCoords, currentDistance, isBreached, monitoring, isLocked]);
-
-  const mobileTrackerUrl = `${window.location.protocol}//${window.location.hostname}:5175/mobile-tracker`;
-  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(mobileTrackerUrl)}`;
+  }, [baselineCoords, liveCoords, mobileCoords, currentDistance, mobileDistance, isBreached, isMobileBreached, monitoring, isLocked]);
 
   return (
     <div className="panel exit-alert-panel">
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="icon">🛰️</span> Caregiver Mobile GPS Geofence
+          <span className="icon">🛰️</span> PC GPS Geofence
           {gpsBreaches.filter((b) => !b.resolved).length > 0 && (
             <span className="exit-alert-badge">
               {gpsBreaches.filter((b) => !b.resolved).length}
             </span>
           )}
         </h2>
-        <div style={{ display: "flex", gap: 6 }}>
+        {gpsBreaches.length > 0 && (
           <button
             className="btn btn-ghost btn-xs"
-            onClick={() => setShowQrModal(true)}
-            style={{ fontSize: "0.65rem", padding: "2px 8px", background: "rgba(0, 212, 255, 0.1)", color: "#00D4FF" }}
-            title="Pair Mobile Smartphone via QR Code"
+            onClick={() => setGpsBreaches([])}
+            style={{ fontSize: "0.65rem", padding: "2px 8px" }}
+            title="Clear GPS breach logs"
           >
-            📱 Pair Mobile QR
+            🗑️ Clear
           </button>
-          {gpsBreaches.length > 0 && (
-            <button
-              className="btn btn-ghost btn-xs"
-              onClick={() => setGpsBreaches([])}
-              style={{ fontSize: "0.65rem", padding: "2px 8px" }}
-              title="Clear GPS breach logs"
-            >
-              🗑️ Clear
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       <div className="panel-body" style={{ padding: 14 }}>
@@ -465,7 +546,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
-              <strong style={{ color: "#00D4FF" }}>Caregiver Geofence Center (Home):</strong><br />
+              <strong style={{ color: "#00D4FF" }}>Geofence Center (Baseline):</strong><br />
               <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: "var(--text-primary)" }}>
                 {monitoring && isLocked && baselineCoords && typeof baselineCoords.lat === "number" && typeof baselineCoords.lng === "number" && !isNaN(baselineCoords.lat) && !isNaN(baselineCoords.lng)
                   ? `Lat: ${baselineCoords.lat.toFixed(6)}° | Lng: ${baselineCoords.lng.toFixed(6)}°`
@@ -483,16 +564,10 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
           </div>
           
           <div style={{ borderTop: "1px solid rgba(0, 212, 255, 0.1)", paddingTop: "4px" }}>
-            <strong style={{ color: "var(--text-secondary)" }}>Caregiver Mobile Location Status:</strong><br />
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: isMobileStreamActive ? "#00FF9D" : "var(--text-secondary)" }}>
+            <strong style={{ color: "var(--text-secondary)" }}>Live PC Location Status:</strong><br />
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", color: "var(--text-secondary)" }}>
               {monitoring ? (
-                isMobileStreamActive ? (
-                  `🟢 Caregiver Mobile GPS Active ${mobileBattery ? `(🔋 ${mobileBattery}%)` : ""}`
-                ) : geoStatus === "granted" ? (
-                  "🟢 Browser GPS Signal Active"
-                ) : (
-                  "🟡 Waiting for Mobile GPS Stream..."
-                )
+                geoStatus === "granted" ? "🟢 GPS Signal Active (High Accuracy)" : "🟡 Initializing/No GPS"
               ) : (
                 "⚪ Geofencing Off (Start Monitoring to Activate)"
               )}
@@ -532,6 +607,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
             style={{ display: "block" }}
           />
           
+          {/* Radar details overlay */}
           <div style={{
             position: "absolute",
             top: 8,
@@ -544,7 +620,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
             borderRadius: "4px",
             border: `1px solid ${monitoring ? (isBreached ? "#FF3B5C" : "rgba(0, 212, 255, 0.15)") : "var(--border)"}`
           }}>
-            {!monitoring ? "⏸ STANDBY" : isBreached ? "🚨 CAREGIVER EXIT BREACH" : "🛡️ GEOFENCE ACTIVE"}
+            {!monitoring ? "⏸ STANDBY" : isBreached ? "🚨 GEOFENCE BREACHED" : "🛡️ GEOFENCE ACTIVE"}
           </div>
 
           <div style={{
@@ -560,6 +636,79 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
           }}>
             Radar Radius: 15m
           </div>
+
+          {/* Mobile GPS live badge */}
+          {mobileActive && (
+            <div style={{
+              position: "absolute",
+              bottom: 8,
+              right: 8,
+              fontSize: "0.6rem",
+              color: isMobileBreached ? "#FFA500" : "#00FF9D",
+              fontFamily: "var(--font-mono)",
+              background: "rgba(10, 15, 30, 0.85)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+              border: `1px solid ${isMobileBreached ? "#FFA500" : "rgba(0,255,157,0.3)"}`
+            }}>
+              📱 {isMobileBreached ? `ELDER OUT ${mobileDistance.toFixed(1)}m` : `ELDER IN ${mobileDistance.toFixed(1)}m`}
+            </div>
+          )}
+        </div>
+
+        {/* QR Code & Mobile Tracker Section */}
+        <div style={{
+          background: "rgba(255, 165, 0, 0.05)",
+          border: "1px solid rgba(255, 165, 0, 0.2)",
+          borderRadius: "8px",
+          padding: "10px 12px",
+          marginBottom: "12px",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+            <span style={{ fontSize: "0.72rem", color: "#FFA500", fontWeight: 600 }}>📱 Mobile Elder Tracker</span>
+            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              {mobileActive && (
+                <span style={{ fontSize: "0.65rem", color: "#00FF9D", fontFamily: "var(--font-mono)" }}>🟢 Connected</span>
+              )}
+              <button
+                className="btn btn-ghost btn-xs"
+                onClick={() => setShowQr((v) => !v)}
+                style={{ fontSize: "0.65rem", padding: "2px 8px", color: "#FFA500", borderColor: "rgba(255,165,0,0.3)" }}
+              >
+                {showQr ? "✕ Hide QR" : "📷 Show QR"}
+              </button>
+            </div>
+          </div>
+
+          {!mobileActive && !showQr && (
+            <p style={{ fontSize: "0.68rem", color: "#718096", margin: 0 }}>
+              Scan the QR code with elder's phone to track their real location on radar.
+            </p>
+          )}
+
+          {showQr && (
+            <div style={{ textAlign: "center", paddingTop: "6px" }}>
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(MOBILE_URL)}&bgcolor=0a0f1e&color=00D4FF&margin=8`}
+                alt="Mobile GPS QR Code"
+                style={{ borderRadius: "8px", border: "1px solid rgba(0,212,255,0.2)", display: "block", margin: "0 auto 6px" }}
+              />
+              <div style={{ fontSize: "0.6rem", color: "#718096", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+                {MOBILE_URL}
+              </div>
+              <p style={{ fontSize: "0.65rem", color: "#a0aec0", marginTop: "6px", marginBottom: 0 }}>
+                Ensure phone is on the <strong>same Wi-Fi</strong> network as this PC.
+              </p>
+            </div>
+          )}
+
+          {mobileActive && mobileCoords && (
+            <div style={{ fontSize: "0.68rem", color: "#a0aec0", fontFamily: "var(--font-mono)", marginTop: "4px" }}>
+              Lat: <span style={{ color: "#FFA500" }}>{mobileCoords.lat.toFixed(6)}°</span>{" "}
+              Lng: <span style={{ color: "#FFA500" }}>{mobileCoords.lng.toFixed(6)}°</span>{" "}
+              · <span style={{ color: isMobileBreached ? "#FC8181" : "#00FF9D" }}>{mobileDistance.toFixed(1)}m</span>
+            </div>
+          )}
         </div>
 
         {/* GPS breach alerts display */}
@@ -570,7 +719,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
           {gpsBreaches.length === 0 ? (
             <div className="alert-empty" style={{ padding: "16px 8px" }}>
               <div className="empty-icon" style={{ fontSize: "1.2rem" }}>🛡️</div>
-              <p style={{ fontSize: "0.7rem" }}>No GPS alerts — Caregiver within boundary</p>
+              <p style={{ fontSize: "0.7rem" }}>No GPS alerts — PC within boundary</p>
             </div>
           ) : (
             <div className="exit-alert-list" style={{ maxHeight: "150px" }}>
@@ -589,7 +738,7 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
                     </span>
                   </div>
                   <div className="exit-alert-message" style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginBottom: 2 }}>
-                    <strong>{alert.message || "Caregiver Mobile away from home"}</strong> ({alert.distance.toFixed(1)}m)
+                    <strong>{alert.message || "away from home"}</strong> ({alert.distance.toFixed(1)}m)
                   </div>
                   {!alert.resolved && (
                     <div className="exit-alert-actions" style={{ marginTop: 4 }}>
@@ -609,75 +758,6 @@ export default function ExitAlertPanel({ toastRef, monitoring = false }) {
         </div>
 
       </div>
-
-      {/* QR Code Mobile Pairing Modal */}
-      {showQrModal && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.75)",
-          backdropFilter: "blur(4px)",
-          zIndex: 9999,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 16
-        }}>
-          <div style={{
-            background: "#0F172A",
-            border: "1px solid rgba(0, 212, 255, 0.3)",
-            borderRadius: 16,
-            padding: 24,
-            maxWidth: 360,
-            width: "100%",
-            textAlign: "center",
-            boxShadow: "0 20px 50px rgba(0,0,0,0.8)"
-          }}>
-            <div style={{ fontSize: "1.8rem", marginBottom: 6 }}>📱</div>
-            <h3 style={{ margin: "0 0 4px 0", color: "#00D4FF", fontSize: "1.1rem" }}>
-              Pair Caregiver Mobile Phone
-            </h3>
-            <p style={{ fontSize: "0.75rem", color: "#9CA3AF", marginBottom: 16 }}>
-              Scan this QR Code with your mobile phone camera to stream real-time phone GPS to this radar.
-            </p>
-
-            <div style={{
-              background: "#FFF",
-              padding: 12,
-              borderRadius: 12,
-              display: "inline-block",
-              marginBottom: 16
-            }}>
-              <img
-                src={qrImageUrl}
-                alt="Caregiver Mobile Tracker QR Code"
-                style={{ width: 180, height: 180, display: "block" }}
-              />
-            </div>
-
-            <div style={{
-              fontSize: "0.7rem",
-              color: "#6B7280",
-              wordBreak: "break-all",
-              background: "rgba(0,0,0,0.3)",
-              padding: "6px 10px",
-              borderRadius: 6,
-              marginBottom: 16,
-              fontFamily: "monospace"
-            }}>
-              {mobileTrackerUrl}
-            </div>
-
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => setShowQrModal(false)}
-              style={{ width: "100%" }}
-            >
-              ✕ Close
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

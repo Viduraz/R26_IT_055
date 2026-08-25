@@ -12,8 +12,6 @@ from app.services.geofence_service import (
     get_alerts,
     resolve_alert,
     clear_alerts,
-    update_mobile_location,
-    get_mobile_location,
 )
 from app.models.tracking_models import (
     ZoneCreateRequest,
@@ -76,15 +74,4 @@ async def handle_resolve_alert(alert_id: str) -> dict:
 async def handle_clear_alerts() -> dict:
     """Clear all alerts."""
     return await clear_alerts()
-
-
-async def handle_update_mobile_location(lat: float, lng: float, accuracy: float = None, battery: int = None) -> dict:
-    """Update live caregiver mobile location."""
-    return await update_mobile_location(lat, lng, accuracy, battery)
-
-
-async def handle_get_mobile_location() -> dict:
-    """Get live caregiver mobile location."""
-    return await get_mobile_location()
-
 
