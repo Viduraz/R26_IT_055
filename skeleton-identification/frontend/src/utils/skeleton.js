@@ -99,28 +99,42 @@ export function drawPersons(ctx, persons, w, h) {
     const boxW = (x2 - x1) * w;
     const boxH = (y2 - y1) * h;
 
-    const color = !person.is_known
-      ? '#f43f5e'   // rose — unrecognized
-      : person.confidence >= 0.85
-        ? '#10b981' // emerald — high confidence
-        : '#f59e0b'; // amber — recognized but lower confidence
-
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    // Outer body/upper-body box (light blue/cyan, matching reference image)
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.5;
     ctx.strokeRect(px, py, boxW, boxH);
 
+    // Inner face box (green, matching reference image) if head landmarks present
+    const headKps = (person.keypoints || []).slice(0, 11).filter(k => k.visibility > 0.05);
+    if (headKps.length >= 2) {
+      const hxs = headKps.map(k => k.x * w);
+      const hys = headKps.map(k => k.y * h);
+      const fMinX = Math.min(...hxs) - 12;
+      const fMaxX = Math.max(...hxs) + 12;
+      const fMinY = Math.min(...hys) - 14;
+      const fMaxY = Math.max(...hys) + 18;
+      const fW = fMaxX - fMinX;
+      const fH = fMaxY - fMinY;
+
+      ctx.strokeStyle = '#22c55e'; // Green face box
+      ctx.lineWidth = 3;
+      ctx.strokeRect(fMinX, fMinY, fW, fH);
+    }
+
+    const confPct = Math.round((person.confidence || 0) * 100);
     const roleLabel = person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : '';
+    const tagColor = !person.is_known ? '#f43f5e' : person.confidence >= 0.85 ? '#10b981' : '#f59e0b';
     const label = person.is_known
-      ? `${person.name}${roleLabel ? ' · ' + roleLabel : ''} · ${Math.round(person.confidence * 100)}%`
-      : `Person ${idx + 1}`;
+      ? `${person.name}${roleLabel ? ' · ' + roleLabel : ''} · ${confPct}%`
+      : `Person ${idx + 1}${confPct > 0 ? ' · ' + confPct + '%' : ' · Unknown'}`;
 
     ctx.font = 'bold 13px "JetBrains Mono", monospace';
     const textWidth = ctx.measureText(label).width;
-    const labelH = 20;
+    const labelH = 22;
     const labelY = Math.max(py - labelH, 0);
     const labelW = textWidth + 14;
 
-    ctx.fillStyle = color;
+    ctx.fillStyle = tagColor;
     ctx.fillRect(px, labelY, labelW, labelH);
 
     ctx.fillStyle = '#0b0f1a';

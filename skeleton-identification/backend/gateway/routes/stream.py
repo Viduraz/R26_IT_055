@@ -36,12 +36,13 @@ from services.video_processing.processor import VideoProcessor
 log = structlog.get_logger()
 
 router = APIRouter(tags=["WebSocket Stream"])
-DISPLAY_CONFIDENCE_THRESHOLD = 0.60
+DISPLAY_CONFIDENCE_THRESHOLD = 0.35
 MULTI_PERSON_MAX_POSES = 8  # cap on how many people the multi-person overlay tracks per frame
 MULTI_PERSON_TIMEOUT_S = 3.0  # guard against a hung/slow native inference call freezing the connection
 FACE_VERIFY_URL = "http://localhost:8001/api/face/verify-caregiver"
 FACE_VERIFY_TIMEOUT_S = 4.0  # the face service can itself block briefly on a downstream tracking handoff;
                               # bounded here so one slow person never stalls the whole frame's response
+_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 # Multi-person identity tracking. In practice this pipeline runs closer to
 # ~1-2s/frame (pose detection + concurrent face-verify calls, the latter doing
@@ -112,25 +113,28 @@ _HEAD_LANDMARK_COUNT = 11
 
 def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.05) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] region around a person's head, padded
-    generously — MTCNN (used by the face-verification service) needs the whole
-    face plus some margin to find all five landmarks, so a tight crop right at
-    the skin edge tends to fail detection entirely."""
+    very generously — MTCNN (used by the face-verification service) needs the
+    whole face plus ample margin to find all five landmarks, so a tight crop
+    right at the skin edge tends to fail detection entirely.
+
+    Padding increased from earlier conservative values to maximize face-detection
+    hit rate in multi-person scenarios where people may be partially turned."""
     head_kps = keypoints[:_HEAD_LANDMARK_COUNT]
     xs = [kp["x"] for kp in head_kps if kp["visibility"] > min_visibility]
     ys = [kp["y"] for kp in head_kps if kp["visibility"] > min_visibility]
-    if len(xs) < 3:
+    if len(xs) < 2:  # lowered from 3 — nose + one eye is enough
         return None
 
     x1, x2 = min(xs), max(xs)
     y1, y2 = min(ys), max(ys)
-    w = max(x2 - x1, 0.04)
-    h = max(y2 - y1, 0.04)
+    w = max(x2 - x1, 0.06)
+    h = max(y2 - y1, 0.06)
 
     return [
-        max(0.0, x1 - w * 0.7),
-        max(0.0, y1 - h * 1.4),   # extra headroom above the eyes for the forehead/hairline
-        min(1.0, x2 + w * 0.7),
-        min(1.0, y2 + h * 1.8),   # extra room below the mouth for the chin/jaw
+        max(0.0, x1 - w * 1.2),
+        max(0.0, y1 - h * 2.0),   # generous headroom for forehead/hairline
+        min(1.0, x2 + w * 1.2),
+        min(1.0, y2 + h * 2.5),   # generous room below for chin/jaw/neck
     ]
 
 
@@ -138,8 +142,22 @@ def _encode_face_crop(frame_bgr: np.ndarray, keypoints: List[Dict], min_side_px:
     """Crop a person's head region out of the raw frame and JPEG-encode it as
     base64, ready to send to the face-verification service. None if no usable
     crop can be derived (head not visible, or the resulting region is too
-    small to plausibly contain a recognizable face)."""
+    small to plausibly contain a recognizable face).
+
+    Falls back to the upper portion of the person's body bounding box if
+    head-landmark-based cropping fails (e.g. person is partially turned)."""
     bbox = _face_crop_bbox(keypoints)
+
+    # Fallback: if head landmarks aren't visible enough for a landmark-based
+    # crop, use the upper 45% of the full person bounding box — this is
+    # where the head/face region is likely to be.
+    if bbox is None:
+        full_bbox = _compute_bbox(keypoints, min_visibility=0.05, padding=0.08)
+        if full_bbox is not None:
+            fx1, fy1, fx2, fy2 = full_bbox
+            face_height = (fy2 - fy1) * 0.45
+            bbox = [fx1, fy1, fx2, fy1 + face_height]
+
     if bbox is None:
         return None
 
@@ -155,7 +173,7 @@ def _encode_face_crop(frame_bgr: np.ndarray, keypoints: List[Dict], min_side_px:
     if crop.size == 0:
         return None
 
-    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         return None
     return base64.b64encode(buf).decode("utf-8")
@@ -187,6 +205,7 @@ class StreamPipeline:
         self.user_name_map: Dict[str, str] = {}
         self.user_role_map: Dict[str, str] = {}
         self._last_user_cache_refresh = 0.0
+        self._last_knn_refresh = 0.0
         # Multi-person identity tracking: frame-to-frame association by bbox
         # proximity, so a person keeps their identified name/role as they move
         # around instead of it flickering per-frame. See _stabilize_tracks().
@@ -217,6 +236,21 @@ class StreamPipeline:
         self.user_name_map = {u["user_id"]: u["name"] for u in users}
         self.user_role_map = {u["user_id"]: (u.get("role") or "caregiver") for u in users}
         self._last_user_cache_refresh = now
+
+    async def _refresh_knn_templates(self):
+        """Reload KNN templates from the database periodically.
+        This is needed so the KNN template matcher stays in sync with
+        enrollment changes without restarting the server."""
+        now = time.time()
+        if now - self._last_knn_refresh < 10:  # refresh every 10 seconds
+            return
+        try:
+            profiles = await FeatureProfileCRUD.get_all_profiles()
+            if profiles:
+                self.predictor.load_knn_templates(profiles)
+        except Exception as exc:
+            log.warning("knn_template_refresh_failed", error=str(exc))
+        self._last_knn_refresh = now
 
     async def process_frame(
         self,
@@ -385,6 +419,7 @@ class StreamPipeline:
             identification = self._last_identification
 
         await self._refresh_user_name_map()
+        await self._refresh_knn_templates()
 
         raw_user_id = identification.get("predicted_user", "unknown")
         confidence = float(identification.get("confidence", 0.0))
@@ -518,12 +553,15 @@ class StreamPipeline:
         }
 
     def _build_multi_pose_estimator(self) -> PoseEstimator:
-        """Runs in the executor thread — see the timeout-guarded call site."""
+        """Runs in the executor thread — uses static_image_mode=True (IMAGE mode)
+        and model_complexity=1 (full model) so all people in the frame are detected
+        simultaneously on every frame without relying on single-pose video tracking."""
         return PoseEstimator(
+            static_image_mode=True,
             num_poses=MULTI_PERSON_MAX_POSES,
-            model_complexity=settings.mediapipe_model_complexity,
-            min_detection_confidence=settings.min_detection_confidence,
-            min_tracking_confidence=settings.min_tracking_confidence,
+            model_complexity=1,
+            min_detection_confidence=0.15,
+            min_tracking_confidence=0.15,
         )
 
     async def _verify_person_face(self, client: httpx.AsyncClient, frame_bgr: np.ndarray, kps: List[Dict]) -> Optional[Dict]:
@@ -571,18 +609,70 @@ class StreamPipeline:
             except Exception as exc:
                 log.error("multi_person_log_failed", error=str(exc))
 
-    async def detect_persons(self, frame_b64: str) -> List[Dict]:
-        """Detect and identify every person in the frame — skeleton proportions
-        (immediate, always available) fused with face verification (more
-        accurate, best-effort) for each person independently. This is the one
-        identification path LiveFeedPage uses now: a single person is just a
-        result list of length 1, so there's no separate "single-person" logic
-        to keep in sync with this.
+    def _detect_faces_fallback(self, frame_bgr: np.ndarray, existing_poses: List[List[Dict]]) -> List[List[Dict]]:
+        """Detect faces using OpenCV Haar cascade. For any face whose center does not
+        match an existing pose's head region, create synthetic keypoints for that person so
+        they are identified alongside everyone else."""
+        if frame_bgr is None:
+            return existing_poses or []
 
-        No gait/temporal tracking: MediaPipe's multi-pose detection doesn't
-        give stable per-person IDs across frames, so each person is identified
-        fresh every frame from that frame's skeleton + face data alone —
-        that's also what keeps it immediate, with no per-person warm-up buffer.
+        poses = list(existing_poses) if existing_poses else []
+        h_img, w_img = frame_bgr.shape[:2]
+
+        try:
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
+        except Exception:
+            return poses
+
+        if len(faces) == 0:
+            return poses
+
+        existing_head_centers = []
+        for pose in poses:
+            head_kps = [kp for kp in pose[:11] if kp.get("visibility", 0) > 0.05]
+            if head_kps:
+                avg_x = sum(kp["x"] for kp in head_kps) / len(head_kps)
+                avg_y = sum(kp["y"] for kp in head_kps) / len(head_kps)
+                existing_head_centers.append((avg_x, avg_y))
+
+        for (fx, fy, fw, fh) in faces:
+            cx_norm = (fx + fw / 2.0) / w_img
+            cy_norm = (fy + fh / 2.0) / h_img
+
+            is_matched = False
+            for (ex, ey) in existing_head_centers:
+                if math.hypot(cx_norm - ex, cy_norm - ey) < 0.18:
+                    is_matched = True
+                    break
+
+            if not is_matched:
+                synth_kps = []
+                nx = (fx + fw / 2.0) / w_img
+                ny = (fy + fh / 2.0) / h_img
+
+                for idx in range(33):
+                    if idx == 0:
+                        synth_kps.append({"index": 0, "name": "nose", "x": nx, "y": ny, "z": 0.0, "visibility": 0.95})
+                    elif idx in (1, 2, 3):
+                        synth_kps.append({"index": idx, "name": f"kp_{idx}", "x": (fx + fw * 0.35) / w_img, "y": (fy + fh * 0.35) / h_img, "z": 0.0, "visibility": 0.85})
+                    elif idx in (4, 5, 6):
+                        synth_kps.append({"index": idx, "name": f"kp_{idx}", "x": (fx + fw * 0.65) / w_img, "y": (fy + fh * 0.35) / h_img, "z": 0.0, "visibility": 0.85})
+                    elif idx == 11:
+                        synth_kps.append({"index": 11, "name": "left_shoulder", "x": max(0.0, nx - (fw / w_img) * 0.8), "y": min(1.0, ny + (fh / h_img) * 1.5), "z": 0.0, "visibility": 0.5})
+                    elif idx == 12:
+                        synth_kps.append({"index": 12, "name": "right_shoulder", "x": min(1.0, nx + (fw / w_img) * 0.8), "y": min(1.0, ny + (fh / h_img) * 1.5), "z": 0.0, "visibility": 0.5})
+                    else:
+                        synth_kps.append({"index": idx, "name": f"kp_{idx}", "x": nx, "y": ny, "z": 0.0, "visibility": 0.1})
+
+                poses.append(synth_kps)
+
+        return poses
+
+    async def detect_persons(self, frame_b64: str) -> List[Dict]:
+        """Detect and identify every person in the frame using multi-model
+        identification: SVM ensemble + KNN template matching (skeleton
+        proportions), fused with face verification (best-effort, more accurate).
         """
         frame_bgr = VideoProcessor.base64_to_frame(frame_b64)
         if frame_bgr is None:
@@ -591,13 +681,9 @@ class StreamPipeline:
 
         loop = asyncio.get_event_loop()
 
+        all_poses = []
         try:
             if self.pose_multi is None:
-                # Loading a MediaPipe landmarker is a blocking native call — never run
-                # it directly on the event loop thread (that stalls every other
-                # connection, including unrelated /health checks, for however long it
-                # takes). Off-loaded to the (isolated) executor and timeout-guarded
-                # like the inference call below.
                 self.pose_multi = await asyncio.wait_for(
                     loop.run_in_executor(_multi_person_executor, self._build_multi_pose_estimator),
                     timeout=10.0,
@@ -609,12 +695,15 @@ class StreamPipeline:
             )
         except asyncio.TimeoutError:
             log.warning("multi_person_detect_timeout")
-            return []
+
+        # Fallback to face cascade to catch any persons missed by pose estimation
+        all_poses = self._detect_faces_fallback(frame_bgr, all_poses)
 
         if not all_poses:
             return []
 
         await self._refresh_user_name_map()
+        await self._refresh_knn_templates()
 
         # Face verification for every detected person runs concurrently, so total
         # latency stays close to a single call's latency rather than growing with
@@ -636,6 +725,7 @@ class StreamPipeline:
 
             name, role, confidence, is_known, method = "Unknown", None, 0.0, False, "none"
 
+            # ── Multi-model skeleton identification (SVM + KNN) ──────────
             # get_body_keypoints/extract_all are stateless w.r.t. which estimator
             # instance they're called through — safe to reuse self.pose/self.static_ext.
             body_kps = self.pose.get_body_keypoints(kps)
@@ -643,6 +733,8 @@ class StreamPipeline:
                 raw_features = self.static_ext.extract_all(body_kps)
                 if raw_features is not None:
                     vector = self.static_ext.to_vector(raw_features)
+                    # predictor.identify() now runs both SVM and KNN internally
+                    # and fuses them — see predictor._fuse_svm_knn()
                     ident = self.predictor.identify(static_features=vector)
                     skel_uid = ident.get("predicted_user", "unknown")
                     skel_known = bool(ident.get("is_known", False)) and skel_uid != "unknown"
@@ -653,9 +745,9 @@ class StreamPipeline:
                             role = self.user_role_map.get(skel_uid, "caregiver")
                             confidence = float(ident.get("confidence", 0.0))
                             is_known = True
-                            method = "skeleton"
+                            method = ident.get("method", "skeleton")
 
-            # Fuse in face verification, if we got a usable result for this person.
+            # ── Fuse in face verification ────────────────────────────────
             # verify-caregiver only searches enrolled caregivers — someone enrolled
             # under a different role (family/guardian, via skeleton-identification's
             # own Enroll page) simply won't get a face match here and stays on
@@ -665,15 +757,15 @@ class StreamPipeline:
                 face_name = (face_result.get("caregiver_details") or {}).get("name", "Unknown")
                 if face_name and face_name != "Unknown":
                     if is_known and name == face_name:
-                        # Both signals agree on who this is — boost confidence.
+                        # All three signals agree (SVM + KNN + face) — highest confidence.
                         confidence = min(confidence + face_conf, 1.0)
-                        method = "skeleton+face"
+                        method = method + "+face" if method else "face"
                     elif face_conf >= confidence:
                         # Face disagrees with skeleton, or skeleton didn't know them —
                         # face is the stronger signal, so it wins when at least as
-                        # confident as whatever skeleton produced. verify-caregiver
-                        # only ever matches caregivers, so the role is unambiguous.
-                        name, role, confidence, is_known, method = face_name, "caregiver", face_conf, True, "face"
+                        # confident as whatever skeleton produced.
+                        name, role, confidence, is_known = face_name, "caregiver", face_conf, True
+                        method = "face"
 
             raw_detections.append({
                 "bbox": bbox,
@@ -867,11 +959,21 @@ async def websocket_stream(websocket: WebSocket):
             if not frame_b64:
                 continue
 
-            if detect_mode == "multi":
-                result = await pipeline.build_multi_person_result(frame_b64)
-            else:
-                result = await pipeline.process_frame(frame_b64, mode=mode, user_id=user_id, enroll_type=enroll_type)
-            await websocket.send_json(result)
+            try:
+                if detect_mode == "multi":
+                    result = await pipeline.build_multi_person_result(frame_b64)
+                else:
+                    result = await pipeline.process_frame(frame_b64, mode=mode, user_id=user_id, enroll_type=enroll_type)
+                await websocket.send_json(result)
+            except Exception as frame_err:
+                log.error("frame_processing_error", error=str(frame_err))
+                await websocket.send_json({
+                    "detected": False,
+                    "persons": [],
+                    "frame": pipeline.frame_count,
+                    "mode": mode,
+                    "error": str(frame_err),
+                })
 
     except WebSocketDisconnect:
         log.info("websocket_disconnected")

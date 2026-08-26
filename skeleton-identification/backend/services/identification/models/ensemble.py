@@ -22,7 +22,7 @@ class EnsembleIdentifier:
         self,
         svm_weight: float = 0.5,
         lstm_weight: float = 0.5,
-        confidence_threshold: float = 0.65,
+        confidence_threshold: float = 0.35,
     ):
         self.svm = SkeletonSVM()
         self.lstm = SkeletonLSTM()

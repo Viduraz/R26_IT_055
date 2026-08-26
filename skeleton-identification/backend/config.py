@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model_dir: str = "./models"
-    confidence_threshold: float = 0.50
+    confidence_threshold: float = 0.35
     svm_weight: float = 0.5
     lstm_weight: float = 0.5
 

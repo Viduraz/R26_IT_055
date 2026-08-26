@@ -197,9 +197,10 @@ class PoseEstimator:
                 low_visibility_count += 1
             body_kps[name] = kp
 
-        # Reject if more than 10 of 12 body landmarks have low visibility
-        # (was 8 — still too strict for some close-up shots)
-        if low_visibility_count > 10:
+        # Reject if almost all body landmarks are invisible, but allow seated /
+        # upper-body people whose hips/legs are cut off by the desk or camera edge.
+        shoulder_vis = body_kps["left_shoulder"]["visibility"] > min_visibility or body_kps["right_shoulder"]["visibility"] > min_visibility
+        if low_visibility_count > 11 and not shoulder_vis:
             return None
 
         return body_kps

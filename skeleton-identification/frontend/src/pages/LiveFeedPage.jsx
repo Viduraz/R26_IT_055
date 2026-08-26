@@ -30,6 +30,7 @@ export default function LiveFeedPage({ onFpsChange }) {
   const [showIpcamBar, setShowIpcamBar] = useState(false);
   const [rtspUrl, setRtspUrl] = useState('rtsp://admin:admin@169.254.110.15:554/stream1');
   const [ipcamStatus, setIpcamStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'error'
+  const [isExpandedView, setIsExpandedView] = useState(false);
 
   // Everyone currently detected in frame — a lone person is just a list of
   // length 1, so this is the only identification state the page needs.
@@ -425,6 +426,17 @@ export default function LiveFeedPage({ onFpsChange }) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsExpandedView(!isExpandedView)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all border flex items-center gap-1.5
+              ${isExpandedView
+                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                : 'bg-dark-600 text-slate-400 border-white/10 hover:border-white/20'
+              }`}
+            title="Expand camera view for multi-person display"
+          >
+            {isExpandedView ? '🗗 Standard View' : '⛶ Expand Video Screen'}
+          </button>
           {!isStreaming ? (
             <button onClick={startCamera} className="btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -534,10 +546,10 @@ export default function LiveFeedPage({ onFpsChange }) {
       )}
 
       {/* Main Grid: Video + Info Panel */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div className={`grid grid-cols-1 ${isExpandedView ? 'gap-6' : 'xl:grid-cols-3 gap-6'}`}>
         {/* Video Feed */}
-        <div className="xl:col-span-2 space-y-6">
-          <div className="glass-card relative overflow-hidden" style={{ paddingBottom: '56.25%' }}>
+        <div className={`${isExpandedView ? 'w-full' : 'xl:col-span-2'} space-y-6`}>
+          <div className="glass-card relative overflow-hidden" style={{ paddingBottom: isExpandedView ? '48%' : '56.25%' }}>
             <div className="absolute inset-0">
               {/* Webcam video */}
               <video
@@ -682,14 +694,19 @@ export default function LiveFeedPage({ onFpsChange }) {
         </div>
 
         {/* Info Panel */}
-        <div className="space-y-4">
+        <div className={`space-y-4 ${isExpandedView ? 'w-full' : ''}`}>
           {/* Detected People Card */}
           <div className="glass-card p-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Detected People
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                <span>Detected People Accuracy</span>
+                {people.length > 0 && (
+                  <span className="text-[10px] bg-amber-500/15 text-amber-400 px-2 py-0.5 rounded-full border border-amber-500/30 font-normal">
+                    {people.length} active
+                  </span>
+                )}
               </h3>
-              <span className="text-xs font-mono text-violet-300">{people.length}</span>
+              <span className="text-xs font-mono text-amber-300 font-bold">{people.length}</span>
             </div>
 
             {people.length === 0 ? (
@@ -697,40 +714,45 @@ export default function LiveFeedPage({ onFpsChange }) {
                 {isStreaming ? 'Scanning for people…' : 'Start the camera to begin.'}
               </p>
             ) : (
-              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+              <div className={`space-y-3 max-h-[420px] overflow-y-auto pr-1 ${isExpandedView ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 space-y-0' : ''}`}>
                 {people.map((person, idx) => {
                   const pConf = Math.round((person.confidence || 0) * 100);
                   const barGradient = !person.is_known
-                    ? 'from-rose-500 to-rose-400'
+                    ? 'from-rose-500 to-amber-500'
                     : pConf >= 85
-                      ? 'from-emerald-500 to-emerald-400'
-                      : 'from-amber-500 to-amber-400';
+                      ? 'from-amber-400 to-amber-500'
+                      : 'from-amber-500 to-yellow-500';
                   const pTextColor = !person.is_known
-                    ? 'text-rose-300'
+                    ? 'text-amber-400'
                     : pConf >= 85
-                      ? 'text-emerald-300'
-                      : 'text-amber-300';
+                      ? 'text-amber-300 font-bold'
+                      : 'text-yellow-400';
                   return (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-baseline text-xs">
-                        <span className={`font-medium truncate ${pTextColor}`}>
-                          {person.is_known ? person.name : `Person ${idx + 1}`}
-                          {person.is_known && (person.role || person.method) && (
-                            <span className="text-[10px] text-slate-500 font-normal ml-1.5">
-                              {person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : ''}
-                              {person.role && person.method ? ' · ' : ''}
-                              {person.method ? `via ${person.method.replace('+', ' + ')}` : ''}
-                            </span>
-                          )}
-                        </span>
-                        <span className={`font-mono shrink-0 ${pTextColor}`}>
-                          {person.is_known ? `${pConf}%` : 'unknown'}
+                    <div key={idx} className="p-3 bg-dark-900/70 rounded-xl border border-amber-500/20 space-y-2 shadow-sm">
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="min-w-0">
+                          <div className={`font-semibold text-xs truncate ${pTextColor}`}>
+                            {person.is_known ? person.name : `Person ${idx + 1}`}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                            {person.is_known ? (
+                              <>
+                                {person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : 'Caregiver'}
+                                {person.method ? ` · via ${person.method.replace(/\+/g, ' + ')}` : ''}
+                              </>
+                            ) : (
+                              'Unregistered Person'
+                            )}
+                          </div>
+                        </div>
+                        <span className={`font-mono font-bold shrink-0 text-sm ${pTextColor}`}>
+                          {pConf}%
                         </span>
                       </div>
                       <div className="confidence-bar-track">
                         <div
                           className={`confidence-bar-fill bg-gradient-to-r ${barGradient}`}
-                          style={{ width: `${pConf}%` }}
+                          style={{ width: `${Math.max(pConf, 6)}%` }}
                         />
                       </div>
                     </div>
