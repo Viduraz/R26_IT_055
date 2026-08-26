@@ -179,7 +179,7 @@ class PoseEstimator:
         return [self._landmarks_to_keypoints(landmarks) for landmarks in results.pose_landmarks]
 
     def get_body_keypoints(
-        self, all_keypoints: List[Dict], min_visibility: float = 0.3
+        self, all_keypoints: List[Dict], min_visibility: float = 0.05
     ) -> Optional[Dict[str, Dict]]:
         """Extract the 12 body landmarks required for identification.
 
@@ -249,14 +249,14 @@ class PoseEstimator:
         for start, end in connections:
             if start < len(all_keypoints) and end < len(all_keypoints):
                 kp1, kp2 = all_keypoints[start], all_keypoints[end]
-                if kp1["visibility"] > 0.2 and kp2["visibility"] > 0.2:
+                if kp1["visibility"] > 0.05 and kp2["visibility"] > 0.05:
                     p1 = (int(kp1["x"] * w), int(kp1["y"] * h))
                     p2 = (int(kp2["x"] * w), int(kp2["y"] * h))
                     cv2.line(annotated, p1, p2, (0, 200, 255), 2)
 
         # Draw keypoints
         for kp in all_keypoints:
-            if kp["visibility"] > 0.2:
+            if kp["visibility"] > 0.05:
                 cx = int(kp["x"] * w)
                 cy = int(kp["y"] * h)
                 cv2.circle(annotated, (cx, cy), 4, (0, 255, 0), -1)

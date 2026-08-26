@@ -82,7 +82,7 @@ _cpu_executor = ThreadPoolExecutor(max_workers=2)
 _multi_person_executor = ThreadPoolExecutor(max_workers=2)
 
 
-def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.3, padding: float = 0.06) -> Optional[List[float]]:
+def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.05, padding: float = 0.06) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] bounding box around a person's visible
     keypoints, padded outward so the box comfortably encloses their silhouette
     rather than hugging the joints exactly. None if too few points are visible
@@ -110,7 +110,7 @@ def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.3, padding: f
 _HEAD_LANDMARK_COUNT = 11
 
 
-def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.3) -> Optional[List[float]]:
+def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.05) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] region around a person's head, padded
     generously — MTCNN (used by the face-verification service) needs the whole
     face plus some margin to find all five landmarks, so a tight crop right at

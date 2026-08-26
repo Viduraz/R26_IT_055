@@ -11,6 +11,31 @@ from pathlib import Path
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from typing import Optional, Any, Dict, List
 from datetime import datetime
+import socket
+
+# Apply DNS resolution patch for MongoDB Atlas hostnames to handle flaky local DNS/IPv6 config
+try:
+    import dns.resolver
+    _orig_getaddrinfo = socket.getaddrinfo
+    _dns_resolver = dns.resolver.Resolver(configure=False)
+    _dns_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+    
+    # Configure default resolver for dnspython SRV lookup
+    dns.resolver.default_resolver = _dns_resolver
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if 'mongodb.net' in host:
+            try:
+                answers = _dns_resolver.resolve(host, 'A')
+                if answers:
+                    return _orig_getaddrinfo(str(answers[0]), port, *args, **kwargs)
+            except Exception:
+                pass
+        return _orig_getaddrinfo(host, port, *args, **kwargs)
+        
+    socket.getaddrinfo = _patched_getaddrinfo
+except Exception:
+    pass
 
 log = structlog.get_logger()
 
@@ -248,8 +273,8 @@ class MongoDB:
             log.info("connecting_to_mongodb", uri=uri.split("@")[-1]) # Hide credentials
             cls._client = AsyncIOMotorClient(
                 uri,
-                serverSelectionTimeoutMS=3000,
-                connectTimeoutMS=3000,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
                 tls=True,
                 tlsAllowInvalidCertificates=True,
             )
@@ -260,10 +285,8 @@ class MongoDB:
             log.info("mongodb_connected_atlas", db=db_name)
             await cls._create_indexes()
         except Exception as e:
-            log.warning("mongodb_atlas_failed_switching_to_local", error=str(e))
-            cls._is_local = True
-            cls._db = LocalDatabase(settings.local_db_path)
-            log.info("local_db_initialized", path=settings.local_db_path)
+            log.error("mongodb_atlas_connection_failed", error=str(e))
+            raise e
 
     @classmethod
     async def _create_indexes(cls):

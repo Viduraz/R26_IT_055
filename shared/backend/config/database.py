@@ -7,6 +7,31 @@ from pymongo import MongoClient
 from pymongo.database import Database
 from .settings import settings
 import os
+import socket
+
+# Apply DNS resolution patch for MongoDB Atlas hostnames to handle flaky local DNS/IPv6 config
+try:
+    import dns.resolver
+    _orig_getaddrinfo = socket.getaddrinfo
+    _dns_resolver = dns.resolver.Resolver(configure=False)
+    _dns_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+    
+    # Configure default resolver for dnspython SRV lookup
+    dns.resolver.default_resolver = _dns_resolver
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if 'mongodb.net' in host:
+            try:
+                answers = _dns_resolver.resolve(host, 'A')
+                if answers:
+                    return _orig_getaddrinfo(str(answers[0]), port, *args, **kwargs)
+            except Exception:
+                pass
+        return _orig_getaddrinfo(host, port, *args, **kwargs)
+        
+    socket.getaddrinfo = _patched_getaddrinfo
+except Exception:
+    pass
 
 _client: MongoClient | None = None
 _mock_db = None
