@@ -155,7 +155,7 @@ class Predictor:
             knn_result.get("top_k", []) if knn_result else [],
         )
 
-        # Case 1: Both agree on the same known user → high confidence
+        # Case 1: Both agree on the same known user → high confidence match
         if svm_known and knn_known and svm_user == knn_user:
             return {
                 "predicted_user": svm_user,
@@ -167,24 +167,8 @@ class Predictor:
                 "top_k": merged_top_k,
             }
 
-        # Case 2: Both know someone but disagree → use the one with higher confidence
-        if svm_known and knn_known and svm_user != knn_user:
-            if knn_conf >= svm_conf:
-                winner, method = knn_result, "knn>svm"
-            else:
-                winner, method = svm_result, "svm>knn"
-            return {
-                "predicted_user": winner["predicted_user"],
-                "confidence": winner["confidence"] * 0.85,  # penalty for disagreement
-                "is_known": True,
-                "method": method,
-                "svm_prediction": svm_result,
-                "knn_prediction": knn_result,
-                "top_k": merged_top_k,
-            }
-
-        # Case 3: Only KNN knows the person
-        if knn_known and not svm_known:
+        # Case 2: Only one model is confident, but it has ultra-high confidence (>= 0.88)
+        if knn_known and knn_conf >= 0.88:
             return {
                 "predicted_user": knn_user,
                 "confidence": knn_conf,
@@ -195,8 +179,7 @@ class Predictor:
                 "top_k": merged_top_k,
             }
 
-        # Case 4: Only SVM knows the person
-        if svm_known and not knn_known:
+        if svm_known and svm_conf >= 0.88:
             return {
                 "predicted_user": svm_user,
                 "confidence": svm_conf,
@@ -207,7 +190,7 @@ class Predictor:
                 "top_k": merged_top_k,
             }
 
-        # Case 5: Neither model knows — unknown
+        # Case 3: Models disagree or confidence is insufficient — classify as UNKNOWN to prevent false positives
         return {
             "predicted_user": "unknown",
             "confidence": max(svm_conf, knn_conf),

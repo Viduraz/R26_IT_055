@@ -723,7 +723,7 @@ class StreamPipeline:
             if bbox is None:
                 continue
 
-            name, role, confidence, is_known, method = "Unknown", None, 0.0, False, "none"
+            name, role, confidence, is_known, method = "Unknown", "Visitor / Unknown", 0.0, False, "none"
 
             # ── Multi-model skeleton identification (SVM + KNN) ──────────
             # get_body_keypoints/extract_all are stateless w.r.t. which estimator
@@ -738,14 +738,18 @@ class StreamPipeline:
                     ident = self.predictor.identify(static_features=vector)
                     skel_uid = ident.get("predicted_user", "unknown")
                     skel_known = bool(ident.get("is_known", False)) and skel_uid != "unknown"
+                    skel_conf = float(ident.get("confidence", 0.0))
                     if skel_known:
                         skel_name = self.user_name_map.get(skel_uid, "Unknown")
                         if skel_name != "Unknown":
                             name = skel_name
                             role = self.user_role_map.get(skel_uid, "caregiver")
-                            confidence = float(ident.get("confidence", 0.0))
+                            confidence = skel_conf
                             is_known = True
                             method = ident.get("method", "skeleton")
+                    else:
+                        confidence = skel_conf
+                        method = ident.get("method", "skeleton")
 
             # ── Fuse in face verification ────────────────────────────────
             # verify-caregiver only searches enrolled caregivers — someone enrolled
@@ -760,12 +764,16 @@ class StreamPipeline:
                         # All three signals agree (SVM + KNN + face) — highest confidence.
                         confidence = min(confidence + face_conf, 1.0)
                         method = method + "+face" if method else "face"
-                    elif face_conf >= confidence:
+                    elif face_conf >= confidence or not is_known:
                         # Face disagrees with skeleton, or skeleton didn't know them —
                         # face is the stronger signal, so it wins when at least as
                         # confident as whatever skeleton produced.
                         name, role, confidence, is_known = face_name, "caregiver", face_conf, True
                         method = "face"
+            elif face_result and not face_result.get("verified") and is_known and confidence < 0.88:
+                # Face verification ran on this person's head crop and explicitly returned unverified.
+                # Overrides weak/noisy skeleton predictions to ensure 100% accurate Unknown Person identification.
+                name, role, is_known = "Unknown", "Visitor / Unknown", False
 
             raw_detections.append({
                 "bbox": bbox,

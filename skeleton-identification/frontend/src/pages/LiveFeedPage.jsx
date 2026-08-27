@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { notifyUnknownPerson } from '../services/api';
+import { generateIncidentReport } from '../utils/reportGenerator';
 
 // Webcam-only: continuously record in short, self-contained segments so an
 // unknown-person alert can attach a real few-seconds-around-the-moment clip
@@ -18,7 +19,7 @@ const VIDEO_SEGMENT_MS = 6000;
 // backend's per-track tracker) before treating it as worth a real alert —
 // long enough for a one-off misread of an actually-known person to
 // self-correct, short enough that a genuine stranger still gets flagged fast.
-const ALERT_MIN_UNKNOWN_MS = 3000;
+const ALERT_MIN_UNKNOWN_MS = 1000;
 
 export default function LiveFeedPage({ onFpsChange }) {
   const { setSystemOnline, setWsConnected, setActiveTab } = useApp();
@@ -192,7 +193,7 @@ export default function LiveFeedPage({ onFpsChange }) {
     const now = Date.now();
     // Grace period after starting the camera, so walking into frame while
     // still getting positioned doesn't immediately trigger an alert.
-    if (now - streamStartTimeRef.current <= 5000) return;
+    if (now - streamStartTimeRef.current <= 1000) return;
 
     // Each track_id is assigned once by the backend's identity tracker and
     // never reused for a different physical person (see stream.py's
@@ -203,7 +204,7 @@ export default function LiveFeedPage({ onFpsChange }) {
     // for ALERT_MIN_UNKNOWN_MS — a single bad-angle misread of someone
     // actually known gets a few seconds to self-correct before it can page
     // anyone, while a real stranger is still flagged within a few seconds.
-    const unknownPersons = persons.filter((p) => !p.is_known && (p.unknown_ms || 0) >= ALERT_MIN_UNKNOWN_MS);
+    const unknownPersons = persons.filter((p) => (!p.is_known || p.name === 'Unknown') && (p.unknown_ms || 0) >= ALERT_MIN_UNKNOWN_MS);
     unknownPersons.forEach((p) => {
       const trackKey = p.track_id ?? `${p.bbox[0].toFixed(2)},${p.bbox[1].toFixed(2)}`;
       if (alertedTrackIdsRef.current.has(trackKey)) return;
@@ -672,6 +673,16 @@ export default function LiveFeedPage({ onFpsChange }) {
                       </div>
 
                       <div className="flex gap-1.5 mt-2">
+                        <button
+                          onClick={() => generateIncidentReport(alert)}
+                          className="px-2 py-1 rounded text-[10px] font-medium bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 transition-all flex-1 text-center flex items-center justify-center gap-1"
+                          title="Export formal PDF Evidence Report"
+                        >
+                          <svg className="w-3 h-3 text-rose-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          PDF Report
+                        </button>
                         <button
                           onClick={() => setActiveTab('enroll')}
                           className="px-2 py-1 rounded text-[10px] font-medium bg-cyan-500/15 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/25 transition-all flex-1 text-center"

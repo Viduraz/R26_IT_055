@@ -123,10 +123,12 @@ export function drawPersons(ctx, persons, w, h) {
 
     const confPct = Math.round((person.confidence || 0) * 100);
     const roleLabel = person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : '';
-    const tagColor = !person.is_known ? '#f43f5e' : person.confidence >= 0.85 ? '#10b981' : '#f59e0b';
-    const label = person.is_known
-      ? `${person.name}${roleLabel ? ' · ' + roleLabel : ''} · ${confPct}%`
-      : `Person ${idx + 1}${confPct > 0 ? ' · ' + confPct + '%' : ' · Unknown'}`;
+    const isKnown = person.is_known && person.name && person.name !== 'Unknown';
+    const tagColor = !isKnown ? '#f43f5e' : person.confidence >= 0.85 ? '#10b981' : '#f59e0b';
+    const displayName = isKnown ? person.name : 'Unknown Person';
+    const label = isKnown
+      ? `${displayName}${roleLabel ? ' · ' + roleLabel : ''} · ${confPct}%`
+      : `${displayName}${confPct > 0 ? ' · ' + confPct + '%' : ''}`;
 
     ctx.font = 'bold 13px "JetBrains Mono", monospace';
     const textWidth = ctx.measureText(label).width;

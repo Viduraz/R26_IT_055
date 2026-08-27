@@ -97,7 +97,7 @@ class TemplateIdentifier:
                 "avg_intra_sim": avg_intra,
                 # Adaptive threshold: slightly below the worst enrollment
                 # sample, clamped to a reasonable floor.
-                "accept_threshold": max(min_intra - 0.05, 0.70),
+                "accept_threshold": max(min_intra - 0.02, 0.85),
             }
 
         self._loaded = True
