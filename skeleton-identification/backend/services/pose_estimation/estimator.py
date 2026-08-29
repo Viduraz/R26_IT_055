@@ -163,20 +163,111 @@ class PoseEstimator:
 
         return self._landmarks_to_keypoints(results.pose_landmarks[0])
 
-    def estimate_multi(self, rgb_frame: np.ndarray) -> List[List[Dict]]:
-        """Extract keypoints for EVERY detected person in the frame.
+    @staticmethod
+    def _compute_pose_bbox(kps: List[Dict], min_vis: float = 0.02) -> Optional[List[float]]:
+        valid = [k for k in kps if k.get("visibility", 0) > min_vis]
+        if len(valid) < 2:
+            return None
+        xs = [k["x"] for k in valid]
+        ys = [k["y"] for k in valid]
+        min_x = max(0.0, min(xs) - 0.04)
+        min_y = max(0.0, min(ys) - 0.06)
+        max_x = min(1.0, max(xs) + 0.04)
+        max_y = min(1.0, max(ys) + 0.06)
+        return [min_x, min_y, max_x, max_y]
 
-        Only meaningful when this estimator was constructed with num_poses > 1
-        — with the default num_poses=1 this just returns a single-item list.
+    @staticmethod
+    def _bbox_iou(boxA: List[float], boxB: List[float]) -> float:
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+        inter_w = max(0.0, xB - xA)
+        inter_h = max(0.0, yB - yA)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0:
+            return 0.0
+        boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        return inter_area / float(boxAArea + boxBArea - inter_area + 1e-6)
+
+    @classmethod
+    def filter_and_suppress_poses(
+        cls,
+        poses: List[List[Dict]],
+        iou_threshold: float = 0.45,
+        min_keypoints_vis: int = 2,
+        min_vis_score: float = 0.04,
+    ) -> List[List[Dict]]:
+        """Filter out low-quality ghost poses and run Non-Maximum Suppression (NMS)
+        to deduplicate multiple detections of the same physical person while preserving
+        all distinct physical persons (including seated / upper-body portraits)."""
+        if not poses:
+            return []
+
+        scored_poses = []
+        for pose in poses:
+            # Score this pose based on visibility of head (0..8), shoulders (11, 12), arms (13..16), or hips (23, 24)
+            core_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 23, 24]
+            vis_values = [pose[i]["visibility"] for i in core_indices if i < len(pose)]
+            good_pts = sum(1 for v in vis_values if v >= min_vis_score)
+            if good_pts < min_keypoints_vis:
+                continue
+
+            bbox = cls._compute_pose_bbox(pose, min_vis=0.02)
+            if bbox is None:
+                continue
+
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            area = w * h
+            if area < 0.002 or h < 0.025:
+                continue
+
+            avg_score = float(np.mean(vis_values)) if vis_values else 0.0
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            scored_poses.append({
+                "pose": pose,
+                "bbox": bbox,
+                "score": avg_score,
+                "centroid": (cx, cy),
+                "area": area,
+            })
+
+        if not scored_poses:
+            return []
+
+        scored_poses.sort(key=lambda p: p["score"], reverse=True)
+
+        kept = []
+        for candidate in scored_poses:
+            should_suppress = False
+            for existing in kept:
+                iou = cls._bbox_iou(candidate["bbox"], existing["bbox"])
+                c_dist = float(np.hypot(candidate["centroid"][0] - existing["centroid"][0],
+                                        candidate["centroid"][1] - existing["centroid"][1]))
+
+                if iou > iou_threshold or c_dist < 0.08:
+                    should_suppress = True
+                    break
+
+            if not should_suppress:
+                kept.append(candidate)
+
+        return [k["pose"] for k in kept]
+
+    def estimate_multi(self, rgb_frame: np.ndarray) -> List[List[Dict]]:
+        """Extract keypoints for EVERY detected person in the frame with NMS deduplication.
 
         Returns:
-            List of per-person keypoint lists (each shaped like estimate()'s
-            return value). Empty list if nobody is detected.
+            List of per-person keypoint lists. Empty list if nobody is detected.
         """
         results = self._detect(rgb_frame)
         if not results.pose_landmarks:
             return []
-        return [self._landmarks_to_keypoints(landmarks) for landmarks in results.pose_landmarks]
+        raw_poses = [self._landmarks_to_keypoints(landmarks) for landmarks in results.pose_landmarks]
+        return self.filter_and_suppress_poses(raw_poses)
 
     def get_body_keypoints(
         self, all_keypoints: List[Dict], min_visibility: float = 0.05

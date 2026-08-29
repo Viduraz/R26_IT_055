@@ -29,25 +29,9 @@ export function useWebSocket(refs, state, cbs) {
   const offscreenCtx = useRef(offscreenCanvas.current.getContext('2d'));
 
   const handleResult = useCallback((data) => {
-    const { isEnrolling, detectMode } = stateRef.current;
+    const { isEnrolling } = stateRef.current;
     const canvasRef = isEnrolling ? refs.enrollCanvasRef : refs.canvasRef;
     const canvas = canvasRef?.current;
-
-    // Multi-person mode is its own, independent rendering path — driven by
-    // data.persons (bounding boxes), not the single-person keypoints/detected
-    // fields, so it's handled separately before any single-person logic runs.
-    if (detectMode === 'multi') {
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (data.persons && data.persons.length > 0) {
-          drawPersons(ctx, data.persons, canvas.width, canvas.height);
-        } else {
-          clearCanvas(ctx, canvas.width, canvas.height);
-        }
-      }
-      cbs.onResult?.({ ...data, detected: !!(data.persons && data.persons.length > 0) });
-      return;
-    }
 
     if (!data.detected) {
       if (canvas) clearCanvas(canvas.getContext('2d'), canvas.width, canvas.height);
@@ -56,7 +40,7 @@ export function useWebSocket(refs, state, cbs) {
     }
 
     if (data.keypoints && canvas) {
-      drawSkeleton(canvas.getContext('2d'), data.keypoints, canvas.width, canvas.height);
+      drawSkeleton(canvas.getContext('2d'), data.keypoints, canvas.width, canvas.height, data);
     }
 
     if (isEnrolling && data.mode === 'enroll' && data.features_ok) {

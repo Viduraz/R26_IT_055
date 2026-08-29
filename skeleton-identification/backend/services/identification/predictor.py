@@ -132,14 +132,15 @@ class Predictor:
         svm_result: Optional[Dict],
         knn_result: Optional[Dict],
     ) -> Dict[str, Any]:
-        """Fuse SVM ensemble and KNN template predictions.
+        """Fuse SVM ensemble and KNN template predictions for open-set biometric identification.
 
-        Strategy:
-          - Both agree on same user → high confidence (boosted)
-          - Only one is confident  → use that one
-          - They disagree          → use the one with higher confidence,
-                                     but reduce overall confidence
-          - Neither is confident   → unknown
+        Core Principle:
+          - KNN performs open-set distance metric verification against enrolled templates.
+            If KNN rejects the candidate (knn_known is False), the person is UNKNOWN.
+            A closed-set classifier (SVM) cannot override an open-set template rejection.
+          - If KNN confirms an enrolled template match:
+              * If SVM agrees on the same user -> high confidence ensemble match (boosted).
+              * If SVM disagrees or is unavailable -> trust KNN metric.
         """
         svm_known = svm_result and svm_result.get("is_known", False)
         knn_known = knn_result and knn_result.get("is_known", False)
@@ -149,53 +150,69 @@ class Predictor:
         svm_conf = float(svm_result.get("confidence", 0.0)) if svm_result else 0.0
         knn_conf = float(knn_result.get("confidence", 0.0)) if knn_result else 0.0
 
-        # Merge top_k from both models
         merged_top_k = self._merge_top_k(
             svm_result.get("top_k", []) if svm_result else [],
             knn_result.get("top_k", []) if knn_result else [],
         )
 
-        # Case 1: Both agree on the same known user → high confidence match
-        if svm_known and knn_known and svm_user == knn_user:
-            return {
-                "predicted_user": svm_user,
-                "confidence": min((svm_conf + knn_conf) / 1.5, 1.0),
-                "is_known": True,
-                "method": "svm+knn",
-                "svm_prediction": svm_result,
-                "knn_prediction": knn_result,
-                "top_k": merged_top_k,
-            }
+        threshold = self.ensemble.confidence_threshold  # default 0.72
 
-        # Case 2: Only one model is confident, but it has ultra-high confidence (>= 0.88)
-        if knn_known and knn_conf >= 0.88:
+        # 1. KNN template matcher is active
+        if knn_result is not None and self.knn_ready:
+            if not knn_known or knn_conf < threshold or knn_user == "unknown":
+                # Rejected by open-set template matching -> Strictly UNKNOWN
+                return {
+                    "predicted_user": "unknown",
+                    "confidence": round(knn_conf, 4),
+                    "is_known": False,
+                    "method": "knn_rejected",
+                    "svm_prediction": svm_result,
+                    "knn_prediction": knn_result,
+                    "top_k": merged_top_k,
+                }
+
+            # KNN verified an enrolled user match
+            if svm_user != "unknown" and svm_user == knn_user:
+                # Both models agree -> Boosted ensemble confidence
+                fused_conf = min(max((svm_conf + knn_conf) / 2.0 + 0.05, knn_conf), 0.99)
+                return {
+                    "predicted_user": knn_user,
+                    "confidence": round(fused_conf, 4),
+                    "is_known": True,
+                    "method": "svm+knn",
+                    "svm_prediction": svm_result,
+                    "knn_prediction": knn_result,
+                    "top_k": merged_top_k,
+                }
+
+            # KNN verified match (SVM may differ or be unavailable)
             return {
                 "predicted_user": knn_user,
-                "confidence": knn_conf,
+                "confidence": round(knn_conf, 4),
                 "is_known": True,
-                "method": "knn_only",
+                "method": "knn",
                 "svm_prediction": svm_result,
                 "knn_prediction": knn_result,
                 "top_k": merged_top_k,
             }
 
-        if svm_known and svm_conf >= 0.88:
+        # 2. Fallback when KNN templates are not loaded (e.g. cold start)
+        if svm_known and svm_conf >= 0.85 and svm_user != "unknown":
             return {
                 "predicted_user": svm_user,
-                "confidence": svm_conf,
+                "confidence": round(svm_conf, 4),
                 "is_known": True,
-                "method": "svm_only",
+                "method": "svm",
                 "svm_prediction": svm_result,
                 "knn_prediction": knn_result,
                 "top_k": merged_top_k,
             }
 
-        # Case 3: Models disagree or confidence is insufficient — classify as UNKNOWN to prevent false positives
         return {
             "predicted_user": "unknown",
-            "confidence": max(svm_conf, knn_conf),
+            "confidence": round(max(svm_conf, knn_conf), 4),
             "is_known": False,
-            "method": "svm+knn",
+            "method": "none",
             "svm_prediction": svm_result,
             "knn_prediction": knn_result,
             "top_k": merged_top_k,

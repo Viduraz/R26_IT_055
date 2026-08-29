@@ -63,8 +63,6 @@ export default function LiveFeedPage({ onFpsChange }) {
   const canvasRef = useRef(null);
   const ipcamImgRef = useRef(null);
 
-  // WebSocket stream state (mutable, for the hook) — always multi-person: a
-  // single detected person is just the degenerate case of that same result.
   const streamStateRef = useRef({
     isStreaming: false,
     isEnrolling: false,
@@ -73,7 +71,7 @@ export default function LiveFeedPage({ onFpsChange }) {
     usePhoneCamera: false,
     phoneImage: null,
     phoneCameraUrl: '',
-    detectMode: 'multi',
+    detectMode: 'single',
   });
 
   const captureSnapshot = useCallback(() => {
@@ -182,7 +180,27 @@ export default function LiveFeedPage({ onFpsChange }) {
   }, []);
 
   const handleResult = useCallback((data) => {
-    const persons = data.persons || [];
+    let persons = [];
+    if (data.detected) {
+      if (data.persons && data.persons.length > 0) {
+        persons = [data.persons[0]];
+      } else {
+        persons = [{
+          bbox: data.bbox || [0.05, 0.05, 0.95, 0.95],
+          name: data.name || (data.identification && data.identification.user) || 'Unknown',
+          role: data.role || 'Caregiver',
+          confidence: data.confidence ?? 0,
+          is_known: data.is_known ?? false,
+          state: data.state || 'analyzing',
+          analysis_progress: data.analysis_progress,
+          time_remaining: data.time_remaining,
+          keypoints: data.keypoints,
+          method: data.method,
+          track_id: 1,
+          unknown_ms: data.unknown_ms || 0,
+        }];
+      }
+    }
     setPeople(persons);
     setPipelineStats({
       latency: `${data.latency_ms ?? '--'} ms`,
@@ -191,29 +209,22 @@ export default function LiveFeedPage({ onFpsChange }) {
     });
 
     const now = Date.now();
-    // Grace period after starting the camera, so walking into frame while
-    // still getting positioned doesn't immediately trigger an alert.
     if (now - streamStartTimeRef.current <= 1000) return;
 
-    // Each track_id is assigned once by the backend's identity tracker and
-    // never reused for a different physical person (see stream.py's
-    // _stabilize_tracks) — so "have we alerted this track_id before" is a
-    // precise, no-flicker way to fire exactly once per newly-seen unknown
-    // person, using the same stability system the boxes/names already rely on.
-    // On top of that, only alert once a track has been continuously unknown
-    // for ALERT_MIN_UNKNOWN_MS — a single bad-angle misread of someone
-    // actually known gets a few seconds to self-correct before it can page
-    // anyone, while a real stranger is still flagged within a few seconds.
-    const unknownPersons = persons.filter((p) => (!p.is_known || p.name === 'Unknown') && (p.unknown_ms || 0) >= ALERT_MIN_UNKNOWN_MS);
+    // Only fire alerts for persons whose 5-7s evaluation window has completed and confirmed as Unknown Person.
+    // Persons currently in 'analyzing' state are actively evaluating biometrics and should not be alerted prematurely.
+    const unknownPersons = persons.filter((p) => {
+      const isAnalyzing = p.state === 'analyzing' || (typeof p.name === 'string' && p.name.startsWith('Analyzing'));
+      if (isAnalyzing) return false;
+      const isUnregistered = (!p.is_known || p.name === 'Unknown' || p.name === 'Unknown Person' || p.state === 'unknown');
+      return isUnregistered && ((p.unknown_ms || 0) >= 1200 || p.state === 'unknown');
+    });
+
     unknownPersons.forEach((p) => {
-      const trackKey = p.track_id ?? `${p.bbox[0].toFixed(2)},${p.bbox[1].toFixed(2)}`;
+      const trackKey = p.session_id ? `session-${p.session_id}` : (p.track_id ?? `${p.bbox[0].toFixed(2)},${p.bbox[1].toFixed(2)}`);
       if (alertedTrackIdsRef.current.has(trackKey)) return;
       alertedTrackIdsRef.current.add(trackKey);
 
-      // Prefer the raw frame the backend already decoded for IP camera mode —
-      // drawing from the <img> element right after setting its src risks a
-      // decode race (the image may not have finished loading yet); the raw
-      // base64 the server sent has no such race.
       const snapshotUrl = data.camera_frame
         ? `data:image/jpeg;base64,${data.camera_frame}`
         : captureSnapshot();
@@ -225,7 +236,7 @@ export default function LiveFeedPage({ onFpsChange }) {
       const newAlert = {
         id: alertId,
         snapshot: snapshotUrl,
-        video: null, // fills in a few seconds later, once the in-progress recording segment completes
+        video: null,
         time: timeLabel,
         source,
         confidence: confPct,
@@ -235,6 +246,7 @@ export default function LiveFeedPage({ onFpsChange }) {
 
       setActiveAlert(newAlert);
       setAlerts((prev) => [newAlert, ...prev]);
+      toast('⚠️ Unregistered Person Detected!', 'error');
 
       if (source === 'Webcam') {
         captureVideoClip().then((clip) => {
@@ -582,19 +594,38 @@ export default function LiveFeedPage({ onFpsChange }) {
                 </div>
               )}
 
-              {/* People-count badge */}
+              {/* Single Person Identification Status Badge */}
               {isStreaming && (
                 <div className="absolute bottom-4 left-4 animate-fade-in">
-                  <div className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-500/40 backdrop-blur-sm">
-                    <div className="text-sm font-bold text-violet-200">
-                      {people.length === 0
-                        ? 'No one detected'
-                        : `${people.length} ${people.length === 1 ? 'person' : 'people'} detected`}
-                    </div>
-                    {people.length > 0 && (
-                      <div className="text-xs text-violet-300/70">
-                        {people.filter(p => p.is_known).length} recognized
-                      </div>
+                  <div className="px-3 py-2 rounded-xl bg-dark-900/85 border border-white/10 backdrop-blur-md shadow-lg flex items-center gap-3">
+                    {people.length === 0 ? (
+                      <>
+                        <div className="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse" />
+                        <div className="text-xs font-semibold text-slate-300">
+                          No person detected
+                        </div>
+                      </>
+                    ) : (
+                      (() => {
+                        const p = people[0];
+                        const isAnalyzing = p.state === 'analyzing' || (typeof p.name === 'string' && p.name.startsWith('Analyzing'));
+                        const isKnown = p.is_known && p.name !== 'Unknown' && p.name !== 'Unknown Person' && !isAnalyzing;
+                        return (
+                          <>
+                            <div className={`w-2.5 h-2.5 rounded-full ${isAnalyzing ? 'bg-cyan-400 animate-ping' : isKnown ? 'bg-emerald-400' : 'bg-rose-500'}`} />
+                            <div>
+                              <div className={`text-xs font-bold ${isAnalyzing ? 'text-cyan-300' : isKnown ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                {isAnalyzing ? 'Scanning Biometrics...' : isKnown ? `✓ ${p.name}` : '⚠️ Unknown Person'}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {isAnalyzing
+                                  ? `Evaluating Posture (${p.time_remaining != null ? `${p.time_remaining}s left` : '5-7s'})`
+                                  : `${Math.round((p.confidence || 0) * 100)}% Confidence`}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()
                     )}
                   </div>
                 </div>
@@ -706,18 +737,18 @@ export default function LiveFeedPage({ onFpsChange }) {
 
         {/* Info Panel */}
         <div className={`space-y-4 ${isExpandedView ? 'w-full' : ''}`}>
-          {/* Detected People Card */}
+          {/* Detected Person Card */}
           <div className="glass-card p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                <span>Detected People Accuracy</span>
+                <span>Person Biometric Status</span>
                 {people.length > 0 && (
-                  <span className="text-[10px] bg-amber-500/15 text-amber-400 px-2 py-0.5 rounded-full border border-amber-500/30 font-normal">
-                    {people.length} active
+                  <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30 font-normal">
+                    {people[0]?.state === 'analyzing' ? 'Analyzing' : people[0]?.is_known ? 'Identified' : 'Unknown'}
                   </span>
                 )}
               </h3>
-              <span className="text-xs font-mono text-amber-300 font-bold">{people.length}</span>
+              <span className="text-xs font-mono text-cyan-300 font-bold">{people.length > 0 ? '1 Subject' : '0'}</span>
             </div>
 
             {people.length === 0 ? (
@@ -727,43 +758,68 @@ export default function LiveFeedPage({ onFpsChange }) {
             ) : (
               <div className={`space-y-3 max-h-[420px] overflow-y-auto pr-1 ${isExpandedView ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 space-y-0' : ''}`}>
                 {people.map((person, idx) => {
+                  const isAnalyzing = person.state === 'analyzing' || (person.name && person.name.startsWith('Analyzing'));
+                  const isKnown = person.is_known && person.name && person.name !== 'Unknown' && person.name !== 'Unknown Person' && !isAnalyzing;
                   const pConf = Math.round((person.confidence || 0) * 100);
-                  const barGradient = !person.is_known
-                    ? 'from-rose-500 to-amber-500'
-                    : pConf >= 85
-                      ? 'from-amber-400 to-amber-500'
-                      : 'from-amber-500 to-yellow-500';
-                  const pTextColor = !person.is_known
-                    ? 'text-amber-400'
-                    : pConf >= 85
-                      ? 'text-amber-300 font-bold'
-                      : 'text-yellow-400';
+
+                  const cardBorder = isAnalyzing
+                    ? 'border-cyan-500/30 bg-cyan-950/20'
+                    : isKnown
+                      ? 'border-emerald-500/30 bg-emerald-950/20'
+                      : 'border-rose-500/30 bg-rose-950/20';
+
+                  const pTextColor = isAnalyzing
+                    ? 'text-cyan-400'
+                    : isKnown
+                      ? 'text-emerald-400 font-bold'
+                      : 'text-rose-400';
+
+                  const barGradient = isAnalyzing
+                    ? 'from-cyan-500 to-blue-500'
+                    : isKnown
+                      ? 'from-emerald-400 to-teal-500'
+                      : 'from-rose-500 to-amber-500';
+
+                  const barWidth = isAnalyzing && person.analysis_progress != null
+                    ? Math.max(Math.round(person.analysis_progress * 100), 10)
+                    : Math.max(pConf, 6);
+
                   return (
-                    <div key={idx} className="p-3 bg-dark-900/70 rounded-xl border border-amber-500/20 space-y-2 shadow-sm">
+                    <div key={idx} className={`p-3 rounded-xl border space-y-2 shadow-sm transition-all ${cardBorder}`}>
                       <div className="flex justify-between items-start gap-2">
                         <div className="min-w-0">
                           <div className={`font-semibold text-xs truncate ${pTextColor}`}>
-                            {person.is_known ? person.name : `Person ${idx + 1}`}
+                            {isAnalyzing ? (
+                              <span>🔍 {person.name || 'Analyzing Posture...'}</span>
+                            ) : isKnown ? (
+                              <span>✓ {person.name}</span>
+                            ) : (
+                              <span>⚠️ Unknown Person</span>
+                            )}
                           </div>
                           <div className="text-[10px] text-slate-400 font-normal mt-0.5">
-                            {person.is_known ? (
+                            {isAnalyzing ? (
+                              <span className="text-cyan-300/80 font-mono">
+                                Scanning Biometrics ({person.time_remaining != null ? `${person.time_remaining}s left` : '5-7s window'})
+                              </span>
+                            ) : isKnown ? (
                               <>
                                 {person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : 'Caregiver'}
                                 {person.method ? ` · via ${person.method.replace(/\+/g, ' + ')}` : ''}
                               </>
                             ) : (
-                              'Unregistered Person'
+                              'Unregistered Person / Visitor'
                             )}
                           </div>
                         </div>
                         <span className={`font-mono font-bold shrink-0 text-sm ${pTextColor}`}>
-                          {pConf}%
+                          {isAnalyzing ? `${Math.round((person.analysis_progress || 0) * 100)}%` : `${pConf}%`}
                         </span>
                       </div>
                       <div className="confidence-bar-track">
                         <div
                           className={`confidence-bar-fill bg-gradient-to-r ${barGradient}`}
-                          style={{ width: `${Math.max(pConf, 6)}%` }}
+                          style={{ width: `${barWidth}%` }}
                         />
                       </div>
                     </div>
@@ -773,8 +829,8 @@ export default function LiveFeedPage({ onFpsChange }) {
             )}
 
             <p className="text-[11px] text-slate-500 leading-relaxed mt-3 pt-2.5 border-t border-white/5">
-              Every detected person is identified independently each frame — skeletal proportions fused with
-              face verification when a face is visible. Immediate, no warm-up buffer.
+              Every person is tracked across a 5–7s biometric analysis window. Scale-invariant bone proportions
+              are matched against enrolled profiles with automatic Unknown Person tagging upon timeout.
             </p>
           </div>
 

@@ -331,9 +331,11 @@ async def train_model(req: TrainRequest):
             log.warning("lstm_training_skipped", error=str(e))
             lstm_result = {"success": False, "message": str(e)}
 
-    # Reload models
+    # Reload models and refresh KNN templates
     if predictor is not None:
         predictor.load_models()
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
 
     duration = (time.perf_counter() - t_start) * 1000
 

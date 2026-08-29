@@ -1,11 +1,12 @@
 """
 services/feature_extraction/static_features.py
-Compute scale-invariant static skeletal features:
-  - Limb lengths (12 raw + 12 normalized = 24)
-  - Joint angles (8)
-  - Body proportions (6)
-  - Derived features (2)
-  Total: ~42 static features
+Compute 100% scale-invariant, distance-invariant static skeletal biometric features:
+  - 12 Normalized Limb Segment Lengths (normalized by invariant trunk scale)
+  - 8 Normalized Joint Angles (normalized to 0..1 scale)
+  - 8 Anthropometric Body Proportions & Segment Ratios
+  - 6 Invariant Morphological Metrics (wingspan, aspect ratios, etc.)
+  - 6 Relative Centroid Joint Distances
+Total: 40 scale-invariant features
 """
 import numpy as np
 import structlog
@@ -15,7 +16,7 @@ log = structlog.get_logger()
 
 
 class StaticFeatureExtractor:
-    """Extracts scale-invariant biometric features from skeleton keypoints."""
+    """Extracts scale-invariant and distance-invariant biometric features from skeleton keypoints."""
 
     # ── Limb definitions: (start_landmark, end_landmark) ──────────────────────
     LIMB_DEFINITIONS = {
@@ -45,14 +46,11 @@ class StaticFeatureExtractor:
         "right_knee_angle": ("right_hip", "right_knee", "right_ankle"),
     }
 
-    # Consistent feature ordering for vector conversion
-    _feature_order: Optional[List[str]] = None
-
     @staticmethod
     def _get_coords(keypoints: Dict[str, Dict], name: str) -> np.ndarray:
         """Extract (x, y, z) coordinates from a named keypoint."""
         kp = keypoints[name]
-        return np.array([kp["x"], kp["y"], kp["z"]], dtype=np.float64)
+        return np.array([kp.get("x", 0.0), kp.get("y", 0.0), kp.get("z", 0.0)], dtype=np.float64)
 
     @staticmethod
     def _distance(p1: np.ndarray, p2: np.ndarray) -> float:
@@ -61,132 +59,158 @@ class StaticFeatureExtractor:
 
     @staticmethod
     def _angle(a: np.ndarray, vertex: np.ndarray, b: np.ndarray) -> float:
-        """Angle at vertex between vectors (vertex→a) and (vertex→b) in degrees."""
+        """Angle at vertex between vectors (vertex→a) and (vertex→b) in degrees [0, 180]."""
         v1 = a - vertex
         v2 = b - vertex
-        cos_a = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
+        denom = (np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-8
+        cos_a = np.dot(v1, v2) / denom
         cos_a = np.clip(cos_a, -1.0, 1.0)
         return float(np.degrees(np.arccos(cos_a)))
 
     def compute_limb_lengths(self, kps: Dict[str, Dict]) -> Dict[str, float]:
-        """Compute raw limb lengths. Returns only those that are visible."""
+        """Compute raw 3D limb lengths."""
         lengths = {}
         for name, (start, end) in self.LIMB_DEFINITIONS.items():
             if start in kps and end in kps:
                 p1 = self._get_coords(kps, start)
                 p2 = self._get_coords(kps, end)
                 lengths[name] = self._distance(p1, p2)
+            else:
+                lengths[name] = 0.0
         return lengths
 
     def compute_joint_angles(self, kps: Dict[str, Dict]) -> Dict[str, float]:
         """Compute all 8 joint angles in degrees."""
         angles = {}
         for name, (a, v, b) in self.ANGLE_DEFINITIONS.items():
-            pa = self._get_coords(kps, a)
-            pv = self._get_coords(kps, v)
-            pb = self._get_coords(kps, b)
-            angles[name] = self._angle(pa, pv, pb)
+            if a in kps and v in kps and b in kps:
+                pa = self._get_coords(kps, a)
+                pv = self._get_coords(kps, v)
+                pb = self._get_coords(kps, b)
+                angles[name] = self._angle(pa, pv, pb)
+            else:
+                angles[name] = 90.0
         return angles
 
     def compute_torso_length(self, kps: Dict[str, Dict]) -> float:
         """Average of left and right torso side lengths."""
-        left = self._distance(
-            self._get_coords(kps, "left_shoulder"),
-            self._get_coords(kps, "left_hip"),
-        )
-        right = self._distance(
-            self._get_coords(kps, "right_shoulder"),
-            self._get_coords(kps, "right_hip"),
-        )
-        return (left + right) / 2.0
-
-    def compute_body_proportions(
-        self, kps: Dict[str, Dict], limbs: Dict[str, float]
-    ) -> Dict[str, float]:
-        """Compute 6 scale-invariant body proportion ratios."""
-        torso = self.compute_torso_length(kps)
-        if torso < 1e-6:
-            return {}
-
-        left_leg = limbs["left_thigh"] + limbs["left_shin"]
-        right_leg = limbs["right_thigh"] + limbs["right_shin"]
-        avg_leg = (left_leg + right_leg) / 2.0
-
-        left_arm = limbs["left_upper_arm"] + limbs["left_forearm"]
-        right_arm = limbs["right_upper_arm"] + limbs["right_forearm"]
-        avg_arm = (left_arm + right_arm) / 2.0
-
-        return {
-            "torso_to_leg_ratio": torso / (avg_leg + 1e-8),
-            "arm_to_torso_ratio": avg_arm / (torso + 1e-8),
-            "shoulder_to_hip_ratio": limbs["shoulder_width"] / (limbs["hip_width"] + 1e-8),
-            "left_right_arm_symmetry": left_arm / (right_arm + 1e-8),
-            "left_right_leg_symmetry": left_leg / (right_leg + 1e-8),
-            "upper_to_lower_body_ratio": (torso + avg_arm) / (avg_leg + 1e-8),
-        }
-
-    def normalize_lengths(
-        self, limbs: Dict[str, float], torso: float
-    ) -> Dict[str, float]:
-        """Normalize all limb lengths by torso length for scale invariance."""
-        if torso < 1e-6:
-            return {f"{k}_norm": 0.0 for k in limbs}
-        return {f"{k}_norm": v / torso for k, v in limbs.items()}
+        if "left_shoulder" not in kps or "left_hip" not in kps:
+            return 0.25
+        left = self._distance(self._get_coords(kps, "left_shoulder"), self._get_coords(kps, "left_hip"))
+        right = self._distance(self._get_coords(kps, "right_shoulder"), self._get_coords(kps, "right_hip"))
+        return max((left + right) / 2.0, 0.01)
 
     def extract_all(self, kps: Dict[str, Dict]) -> Optional[Dict[str, float]]:
-        """Extract the complete 42-dimensional static feature dictionary.
+        """Extract the complete 40-dimensional scale-invariant biometric feature dictionary.
 
-        Returns None if extraction fails (missing keypoints, etc.).
+        Returns None if extraction fails or critical joints are missing.
         """
         try:
-            # Best-effort extraction: if a limb is missing, we use 0.0 instead of failing
-            def get_len(l_map, key, default=0.0):
-                return l_map.get(key, default)
-
-            limbs = self.compute_limb_lengths(kps)          # 12
-            angles = self.compute_joint_angles(kps)          # 8
-            
-            # Robust proportions
+            limbs = self.compute_limb_lengths(kps)
+            angles = self.compute_joint_angles(kps)
             torso = self.compute_torso_length(kps)
-            proportions = self.compute_body_proportions(kps, limbs)  # 6
-            normalized = self.normalize_lengths(limbs, torso)  # 12
+
+            # Invariant trunk reference scale: L_ref = sqrt(torso^2 + shoulder_width^2)
+            shoulder_w = limbs.get("shoulder_width", 0.15)
+            hip_w = max(limbs.get("hip_width", 0.12), 0.01)
+            l_ref = max(np.sqrt(torso ** 2 + shoulder_w ** 2), 0.05)
+
+            # Leg & arm aggregates
+            left_leg = limbs.get("left_thigh", 0.0) + limbs.get("left_shin", 0.0)
+            right_leg = limbs.get("right_thigh", 0.0) + limbs.get("right_shin", 0.0)
+            avg_leg = max((left_leg + right_leg) / 2.0, 0.05)
+
+            left_arm = limbs.get("left_upper_arm", 0.0) + limbs.get("left_forearm", 0.0)
+            right_arm = limbs.get("right_upper_arm", 0.0) + limbs.get("right_forearm", 0.0)
+            avg_arm = max((left_arm + right_arm) / 2.0, 0.05)
+
+            avg_upper_arm = max((limbs.get("left_upper_arm", 0.0) + limbs.get("right_upper_arm", 0.0)) / 2.0, 0.01)
+            avg_forearm = max((limbs.get("left_forearm", 0.0) + limbs.get("right_forearm", 0.0)) / 2.0, 0.01)
+            avg_thigh = max((limbs.get("left_thigh", 0.0) + limbs.get("right_thigh", 0.0)) / 2.0, 0.01)
+            avg_shin = max((limbs.get("left_shin", 0.0) + limbs.get("right_shin", 0.0)) / 2.0, 0.01)
 
             features = {}
-            for k in self.LIMB_DEFINITIONS: features[k] = limbs.get(k, 0.0)
-            for k in self.ANGLE_DEFINITIONS: features[k] = angles.get(k, 0.0)
-            features.update(proportions)
-            features.update(normalized)
 
-            # Derived features
-            avg_leg = (get_len(limbs, "left_thigh") + get_len(limbs, "left_shin") + 
-                       get_len(limbs, "right_thigh") + get_len(limbs, "right_shin")) / 2.0
-            features["torso_length"] = torso
-            features["height_estimate"] = torso + avg_leg
+            # 1. 12 Normalized Limb Lengths (normalized by L_ref)
+            for k in self.LIMB_DEFINITIONS:
+                features[f"{k}_norm"] = limbs.get(k, 0.0) / l_ref
 
-            # Fill missing required proportions with defaults
-            for k in ["torso_to_leg_ratio", "arm_to_torso_ratio", "shoulder_to_hip_ratio"]:
-                if k not in features: features[k] = 1.0
+            # 2. 8 Normalized Joint Angles (scaled to [0, 1])
+            for k, deg in angles.items():
+                features[f"{k}_norm"] = float(deg) / 180.0
 
-            return features  # 42 features total
+            # 3. 8 Core Biometric Proportions
+            features["torso_to_leg_ratio"] = torso / (avg_leg + 1e-6)
+            features["arm_to_torso_ratio"] = avg_arm / (torso + 1e-6)
+            features["shoulder_to_hip_ratio"] = shoulder_w / (hip_w + 1e-6)
+            features["upper_to_lower_arm_ratio"] = avg_upper_arm / (avg_forearm + 1e-6)
+            features["thigh_to_shin_ratio"] = avg_thigh / (avg_shin + 1e-6)
+            features["arm_to_leg_ratio"] = avg_arm / (avg_leg + 1e-6)
+            features["left_right_arm_symmetry"] = (left_arm + 1e-4) / (right_arm + 1e-4)
+            features["left_right_leg_symmetry"] = (left_leg + 1e-4) / (right_leg + 1e-4)
+
+            # 4. 6 Invariant Morphological Metrics
+            height_est = torso + avg_leg
+            features["upper_to_lower_body_ratio"] = (torso + avg_arm) / (avg_leg + 1e-6)
+            features["torso_aspect_ratio"] = torso / (shoulder_w + 1e-6)
+            features["pelvis_to_torso_ratio"] = hip_w / (torso + 1e-6)
+            features["wingspan_to_height_ratio"] = (2.0 * avg_arm + shoulder_w) / (height_est + 1e-6)
+            features["left_limb_to_height_ratio"] = left_leg / (height_est + 1e-6)
+            features["right_limb_to_height_ratio"] = right_leg / (height_est + 1e-6)
+
+            # 5. 6 Scale-Invariant Centroid Relative Joint Distances
+            # Center reference: mid-hip
+            if "left_hip" in kps and "right_hip" in kps:
+                hip_center = (self._get_coords(kps, "left_hip") + self._get_coords(kps, "right_hip")) / 2.0
+            else:
+                hip_center = np.array([0.5, 0.5, 0.0])
+
+            def get_rel_dist(pt_name):
+                if pt_name in kps:
+                    return float(np.linalg.norm(self._get_coords(kps, pt_name) - hip_center)) / l_ref
+                return 0.5
+
+            features["rel_left_wrist_dist"] = get_rel_dist("left_wrist")
+            features["rel_right_wrist_dist"] = get_rel_dist("right_wrist")
+            features["rel_left_elbow_dist"] = get_rel_dist("left_elbow")
+            features["rel_right_elbow_dist"] = get_rel_dist("right_elbow")
+            features["rel_left_ankle_dist"] = get_rel_dist("left_ankle")
+            features["rel_right_ankle_dist"] = get_rel_dist("right_ankle")
+
+            return features
 
         except Exception as e:
-            log.warning("static_feature_extraction_best_effort_failed", error=str(e))
+            log.warning("static_feature_extraction_failed", error=str(e))
             return None
+
+    ALL_FEATURE_KEYS = sorted([
+        # 12 Normalized Limb Lengths
+        "left_upper_arm_norm", "left_forearm_norm", "right_upper_arm_norm", "right_forearm_norm",
+        "shoulder_width_norm", "left_torso_norm", "right_torso_norm", "hip_width_norm",
+        "left_thigh_norm", "left_shin_norm", "right_thigh_norm", "right_shin_norm",
+        # 8 Normalized Angles
+        "left_elbow_angle_norm", "right_elbow_angle_norm", "left_shoulder_angle_norm", "right_shoulder_angle_norm",
+        "left_hip_angle_norm", "right_hip_angle_norm", "left_knee_angle_norm", "right_knee_angle_norm",
+        # 8 Proportions & Symmetry
+        "torso_to_leg_ratio", "arm_to_torso_ratio", "shoulder_to_hip_ratio", "upper_to_lower_arm_ratio",
+        "thigh_to_shin_ratio", "arm_to_leg_ratio", "left_right_arm_symmetry", "left_right_leg_symmetry",
+        # 6 Morphological
+        "upper_to_lower_body_ratio", "torso_aspect_ratio", "pelvis_to_torso_ratio",
+        "wingspan_to_height_ratio", "left_limb_to_height_ratio", "right_limb_to_height_ratio",
+        # 6 Centroid Distances
+        "rel_left_wrist_dist", "rel_right_wrist_dist", "rel_left_elbow_dist",
+        "rel_right_elbow_dist", "rel_left_ankle_dist", "rel_right_ankle_dist",
+    ])
 
     def to_vector(self, features: Dict[str, float]) -> np.ndarray:
         """Convert feature dict → ordered numpy vector (consistent ordering)."""
-        if self._feature_order is None:
-            self._feature_order = sorted(features.keys())
         return np.array(
-            [features.get(k, 0.0) for k in self._feature_order], dtype=np.float64
+            [float(features.get(k, 0.0)) for k in self.ALL_FEATURE_KEYS], dtype=np.float64
         )
 
     def get_feature_names(self) -> List[str]:
         """Return the ordered feature names matching to_vector() output."""
-        if self._feature_order is None:
-            # Generate from a dummy extraction to establish order
-            return sorted(self.LIMB_DEFINITIONS.keys())
-        return list(self._feature_order)
+        return list(self.ALL_FEATURE_KEYS)
 
     @staticmethod
     def smooth_features(

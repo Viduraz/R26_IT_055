@@ -51,6 +51,8 @@ export default function EnrollPage() {
     return () => { cancelled = true; };
   }, []);
 
+  const stopEnrollmentRef = useRef(null);
+
   const handleResult = useCallback((data) => {
     if (data.status_msg) setStatusMsg(data.status_msg);
     if (!data.detected) {
@@ -58,29 +60,17 @@ export default function EnrollPage() {
       return;
     }
     if (data.features_ok) setStatusMsg('');
-    if (data.mode === 'enroll' && data.features_ok && data.frames_collected != null) {
+    if (data.mode === 'enroll' && data.frames_collected != null) {
       setFramesCollected(data.frames_collected);
-
-      // Speed up enrollment for presentation
-      /*const TARGET_FRAMES = 10;
-      const pct = Math.min((data.frames_collected / TARGET_FRAMES) * 100, 100);
+      const pct = Math.min((data.frames_collected / TOTAL_FRAMES) * 100, 100);
       setProgress(pct);
 
-      if (data.frames_collected >= TARGET_FRAMES) {
-        toast('Enrollment complete! ✅', 'success');
-        stopEnrollment();
+      if (data.enrollment_status === 'completed' || data.frames_collected >= TOTAL_FRAMES) {
+        toast('Skeleton enrollment complete! ✅ (150 high-precision posture frames saved)', 'success');
+        if (stopEnrollmentRef.current) stopEnrollmentRef.current();
       }
-       */
-      //Original logic kept for after presentation:
-      const pct = Math.min((data.progress || 0), 100);
-      setProgress(pct);
-      if (data.enrollment_status === 'completed') {
-        toast('Enrollment complete! ✅', 'success');
-        stopEnrollment();
-      }
-
     }
-  }, []);
+  }, [toast]);
 
   const { connect, disconnect } = useWebSocket(
     { enrollVideoRef, enrollCanvasRef },
@@ -183,10 +173,34 @@ export default function EnrollPage() {
     setStatusMsg('Select a user and start enrollment');
   }, [disconnect]);
 
+  useEffect(() => {
+    stopEnrollmentRef.current = stopEnrollment;
+  }, [stopEnrollment]);
+
   const progressPct = Math.min(progress, 100);
 
   return (
     <div className="flex-1 p-6 overflow-y-auto">
+      {/* Skeleton Identification Information Banner */}
+      <div className="glass-card p-4 border-l-4 border-cyan-500 bg-cyan-950/20 text-slate-300 text-xs leading-relaxed mb-6">
+        <div className="flex items-start gap-3">
+          <span className="text-xl">🦴</span>
+          <div>
+            <h4 className="font-semibold text-cyan-400 text-sm mb-1">
+              Skeleton-Based Biometric Enrollment Guidelines (Face Not Required)
+            </h4>
+            <p>
+              This system extracts <strong>42 scale-invariant skeletal bone structure ratios</strong> and <strong>15 gait dynamics</strong> for person identification when facial features are not clearly visible.
+            </p>
+            <ul className="list-disc list-inside mt-1.5 space-y-1 text-slate-400">
+              <li><strong>Step Back:</strong> Please step back so your upper body, shoulders, torso, and limbs are visible in the frame.</li>
+              <li><strong>Face Visibility:</strong> Face exposure is <em>not required</em> — the system extracts bone structure metrics regardless of facial orientation.</li>
+              <li><strong>High Precision Dataset:</strong> Captures <strong>150 posture frames</strong> across various body movements to ensure maximum identification accuracy.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] gap-6 w-full">
 
         {/* Form Panel */}
@@ -196,7 +210,7 @@ export default function EnrollPage() {
           {/* Create User */}
           <div className="space-y-3">
             <div>
-              <label className="form-label">Fullllll Nameeee</label>
+              <label className="form-label">Full Name</label>
               <input
                 type="text"
                 value={name}
@@ -352,7 +366,7 @@ export default function EnrollPage() {
                 />
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-slate-400">{framesCollected} frames collected</span>
+                <span className="text-slate-400">{framesCollected} / {TOTAL_FRAMES} posture frames collected</span>
                 <span className="font-mono text-violet-400">{Math.round(progressPct)}%</span>
               </div>
             </div>
