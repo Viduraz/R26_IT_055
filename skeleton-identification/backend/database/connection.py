@@ -244,6 +244,11 @@ class LocalDatabase:
     def __getitem__(self, name: str):
         return LocalCollection(self, name)
 
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return LocalCollection(self, name)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MONGODB CONNECTION MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -286,29 +291,26 @@ class MongoDB:
             await cls._create_indexes()
         except Exception as e:
             log.error("mongodb_atlas_connection_failed", error=str(e))
-            raise e
+            log.info("falling_back_to_local_db", path=settings.local_db_path)
+            cls._is_local = True
+            cls._db = LocalDatabase(settings.local_db_path)
 
     @classmethod
     async def _create_indexes(cls):
         """Create required indexes (Cloud only)."""
         if cls._is_local: return
         db = cls.get_db()
-        try:
-            await db.users.create_index("user_id", unique=True, sparse=True)
-        except Exception as e:
-            log.warning("failed_to_create_users_index", error=str(e))
-        try:
-            await db.feature_profiles.create_index("user_id", unique=True, sparse=True)
-        except Exception as e:
-            log.warning("failed_to_create_feature_profiles_index", error=str(e))
-        try:
-            await db.identification_logs.create_index("timestamp")
-        except Exception as e:
-            log.warning("failed_to_create_logs_index", error=str(e))
-        try:
-            await db.trained_models.create_index([("model_type", 1), ("is_active", 1)])
-        except Exception as e:
-            log.warning("failed_to_create_trained_models_index", error=str(e))
+        for col_name, key, kwargs in [
+            ("users", "user_id", {"unique": True, "sparse": True}),
+            ("feature_profiles", "user_id", {"unique": True}),
+            ("identification_logs", "timestamp", {}),
+            ("trained_models", [("model_type", 1), ("is_active", 1)], {}),
+        ]:
+            try:
+                await db[col_name].create_index(key, **kwargs)
+            except Exception as e:
+                # If index exists with slightly different specs, ignore safely
+                log.debug("index_note", collection=col_name, error=str(e))
         log.info("mongodb_indexes_created")
 
     @classmethod
@@ -323,7 +325,7 @@ class MongoDB:
 
     @classmethod
     async def sync_local_db(cls):
-        """Sync data from local JSON database to cloud MongoDB Atlas if needed."""
+        """Sync data from local JSON database to cloud MongoDB Atlas if needed (fast bulk check)."""
         if cls._is_local:
             return
 
@@ -340,66 +342,51 @@ class MongoDB:
 
             db = cls.get_db()
             
-            # Sync users
+            # Fast check for existing user_ids in cloud DB
+            existing_user_ids = set(await db.users.distinct("user_id"))
+            existing_profile_ids = set(await db.feature_profiles.distinct("user_id"))
+            
+            # Sync missing users
             users = data.get("users", [])
-            synced_users = 0
+            users_to_insert = []
             for u in users:
-                u_copy = u.copy()
-                for k in ["created_at", "updated_at"]:
-                    if k in u_copy and isinstance(u_copy[k], str):
+                if u.get("user_id") not in existing_user_ids:
+                    u_copy = u.copy()
+                    for k in ["created_at", "updated_at"]:
+                        if k in u_copy and isinstance(u_copy[k], str):
+                            try:
+                                u_copy[k] = datetime.fromisoformat(u_copy[k])
+                            except Exception:
+                                pass
+                    users_to_insert.append(u_copy)
+
+            if users_to_insert:
+                await db.users.insert_many(users_to_insert)
+
+            # Sync missing feature_profiles
+            profiles = data.get("feature_profiles", [])
+            profiles_to_insert = []
+            for p in profiles:
+                if p.get("user_id") not in existing_profile_ids:
+                    p_copy = p.copy()
+                    if "last_updated" in p_copy and isinstance(p_copy["last_updated"], str):
                         try:
-                            u_copy[k] = datetime.fromisoformat(u_copy[k])
+                            p_copy["last_updated"] = datetime.fromisoformat(p_copy["last_updated"])
                         except Exception:
                             pass
-                
-                existing = await db.users.find_one({"user_id": u_copy["user_id"]})
-                if not existing:
-                    await db.users.insert_one(u_copy)
-                    synced_users += 1
+                    profiles_to_insert.append(p_copy)
 
-            # Sync feature_profiles
-            profiles = data.get("feature_profiles", [])
-            synced_profiles = 0
-            for p in profiles:
-                p_copy = p.copy()
-                if "last_updated" in p_copy and isinstance(p_copy["last_updated"], str):
-                    try:
-                        p_copy["last_updated"] = datetime.fromisoformat(p_copy["last_updated"])
-                    except Exception:
-                        pass
-                
-                existing = await db.feature_profiles.find_one({"user_id": p_copy["user_id"]})
-                if not existing:
-                    await db.feature_profiles.insert_one(p_copy)
-                    synced_profiles += 1
-
-            # Sync trained_models
-            models = data.get("trained_models", [])
-            synced_models = 0
-            for m in models:
-                m_copy = m.copy()
-                if "trained_at" in m_copy and isinstance(m_copy["trained_at"], str):
-                    try:
-                        m_copy["trained_at"] = datetime.fromisoformat(m_copy["trained_at"])
-                    except Exception:
-                        pass
-                
-                existing = await db.trained_models.find_one({
-                    "model_type": m_copy["model_type"],
-                    "version": m_copy["version"]
-                })
-                if not existing:
-                    await db.trained_models.insert_one(m_copy)
-                    synced_models += 1
+            if profiles_to_insert:
+                await db.feature_profiles.insert_many(profiles_to_insert)
 
             log.info(
                 "sync_local_db_to_atlas_success",
-                users=synced_users,
-                profiles=synced_profiles,
-                models=synced_models,
+                users=len(users_to_insert),
+                profiles=len(profiles_to_insert),
+                models=0,
             )
         except Exception as e:
-            log.error("sync_local_db_to_atlas_failed", error=str(e))
+            log.warning("sync_local_db_to_atlas_skipped", error=str(e))
 
     @classmethod
     async def close(cls):

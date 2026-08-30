@@ -392,23 +392,37 @@ class SkeletonLSTM:
 
         path = Path(directory)
 
-        # Load config
-        with open(path / "lstm_config.json", "r") as f:
-            config = json.load(f)
+        # Load encoders/scalers first if present
+        if (path / "lstm_label_encoder.pkl").exists():
+            self.label_encoder = joblib.load(path / "lstm_label_encoder.pkl")
+        if (path / "lstm_scaler.pkl").exists():
+            self.scaler = joblib.load(path / "lstm_scaler.pkl")
 
-        self.input_size = config["input_size"]
-        self.hidden_size = config["hidden_size"]
-        self.num_layers = config["num_layers"]
+        # Load config
+        config = {}
+        if (path / "lstm_config.json").exists():
+            try:
+                with open(path / "lstm_config.json", "r") as f:
+                    config = json.load(f)
+            except Exception as e:
+                log.warning("lstm_config_read_failed", error=str(e))
+
+        self.input_size = config.get("input_size", self.input_size)
+        self.hidden_size = config.get("hidden_size", self.hidden_size)
+        self.num_layers = config.get("num_layers", self.num_layers)
         self.dropout = config.get("dropout", 0.3)
 
-        # Rebuild and load weights
-        self._build_model(config["num_classes"])
-        self.model.load_state_dict(
-            torch.load(path / "lstm_model.pt", map_location=self.device, weights_only=True)
-        )
-        self.model.eval()
+        # Inspect checkpoint weights to ensure class count matches exactly
+        state_dict = torch.load(path / "lstm_model.pt", map_location=self.device, weights_only=True)
+        num_classes = config.get("num_classes", len(self.label_encoder.classes_) if hasattr(self.label_encoder, "classes_") else 10)
+        for key in ["classifier.6.weight", "classifier.3.weight", "classifier.weight"]:
+            if key in state_dict:
+                num_classes = state_dict[key].shape[0]
+                break
 
-        self.label_encoder = joblib.load(path / "lstm_label_encoder.pkl")
-        self.scaler = joblib.load(path / "lstm_scaler.pkl")
+        # Rebuild and load weights
+        self._build_model(num_classes)
+        self.model.load_state_dict(state_dict)
+        self.model.eval()
         self.is_trained = True
-        log.info("lstm_model_loaded", path=str(path))
+        log.info("lstm_model_loaded", path=str(path), num_classes=num_classes)

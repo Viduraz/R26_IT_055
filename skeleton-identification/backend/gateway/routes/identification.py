@@ -74,6 +74,8 @@ class EnrollUserImagesRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_type: str = "ensemble"  # svm | lstm | ensemble
     epochs: int = 100
     batch_size: int = 32

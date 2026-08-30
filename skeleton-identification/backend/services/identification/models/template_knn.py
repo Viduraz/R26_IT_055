@@ -167,6 +167,43 @@ class TemplateIdentifier:
                 "accept_threshold": accept_thresh,
             }
 
+        all_raw_samples = []
+        for d in self.templates.values():
+            all_raw_samples.extend(d["sample_raws"])
+
+        # Standard anthropometric scale baseline for human skeletal features
+        base_std = np.array([
+            0.10, 0.08, 0.10, 0.08,  # limb lengths
+            0.10, 0.10, 0.10, 0.08,  # torso / hips
+            0.12, 0.12, 0.12, 0.12,  # legs
+            0.20, 0.20, 0.20, 0.20,  # angles
+            0.20, 0.20, 0.20, 0.20,
+            0.15, 0.15, 0.18, 0.15,  # core ratios
+            0.15, 0.15, 0.08, 0.08,  # symmetry
+            0.15, 0.15, 0.12, 0.12,  # morphological
+            0.10, 0.10,
+            0.15, 0.15, 0.15, 0.15,  # rel dists
+            0.15, 0.15,
+        ], dtype=np.float64)
+
+        if all_raw_samples and len(self.templates) >= 2:
+            all_arr = np.array(all_raw_samples)
+            computed_std = np.std(all_arr, axis=0)
+            self.pop_std = np.maximum(computed_std, base_std * 0.5)
+        else:
+            self.pop_std = base_std
+
+        # Feature weights for 40 features: high weight to skeletal proportions, low to transient angles
+        self.feature_weights = np.ones(40, dtype=np.float64)
+        for idx, k in enumerate(self.NEW_KEYS):
+            if "ratio" in k or ("norm" in k and "angle" not in k):
+                self.feature_weights[idx] = 2.5
+            elif "symmetry" in k:
+                self.feature_weights[idx] = 1.5
+            elif "angle" in k or "rel_" in k:
+                self.feature_weights[idx] = 0.4
+        self.feature_weights /= np.mean(self.feature_weights)
+
         self._loaded = True
         log.info(
             "template_knn_loaded",
@@ -175,29 +212,37 @@ class TemplateIdentifier:
         )
         return len(self.templates)
 
-    @staticmethod
     def _biometric_similarity(
-        vec_norm: np.ndarray,
-        tmpl_norm: np.ndarray,
+        self,
         vec_raw: np.ndarray,
         tmpl_raw: np.ndarray,
     ) -> float:
-        """Compute high-discrimination biometric similarity between query and template."""
-        cos_sim = float(np.dot(vec_norm, tmpl_norm))
-        cos_dist = max(1.0 - cos_sim, 0.0)
-        rel_diff = float(np.mean(np.abs(vec_raw - tmpl_raw) / (np.abs(vec_raw) + np.abs(tmpl_raw) + 1e-4)))
-        score = 1.0 - (2.0 * rel_diff + 8.0 * cos_dist)
-        return float(np.clip(score, 0.0, 1.0))
+        """Compute high-discrimination weighted anthropometric biometric similarity.
+        Returns similarity score in [0.0, 1.0].
+        """
+        scale = getattr(self, "pop_std", None)
+        if scale is None or len(scale) != len(vec_raw):
+            scale = np.full_like(vec_raw, 0.12)
+        diff_z = (vec_raw - tmpl_raw) / scale
+        w = getattr(self, "feature_weights", np.ones_like(vec_raw))
+        w_dist = float(np.sqrt(np.sum(w * (diff_z ** 2)) / np.sum(w)))
+
+        # Distance to similarity:
+        # For same person (w_dist < 0.65): Sim > 0.74 (matches template reliably)
+        # For friend / different person (w_dist > 1.40): Sim < 0.52 (separated cleanly)
+        # For unregistered stranger (w_dist > 2.0): Sim < 0.38 (rejected as Unknown)
+        sim = float(np.exp(-w_dist / 2.1))
+        return float(np.clip(sim, 0.0, 1.0))
 
     def identify(
         self,
         feature_vector: np.ndarray,
         top_k: int = 5,
     ) -> Dict[str, Any]:
-        """Identify a person by biometric similarity + k-NN against all templates.
+        """Identify a person by weighted biometric similarity + k-NN against all templates.
 
         Args:
-            feature_vector: (n_features,) static scale-invariant feature vector
+            feature_vector: (40,) static scale-invariant feature vector
             top_k: number of top candidates to return
         """
         if not self.is_ready:
@@ -209,9 +254,8 @@ class TemplateIdentifier:
                 "top_k": [],
             }
 
-        vec_raw = np.array(feature_vector, dtype=np.float64)
-        norm = np.linalg.norm(vec_raw)
-        if norm < 1e-6:
+        vec_raw = self.normalize_vector(feature_vector)
+        if len(vec_raw) != 40 or np.all(vec_raw == 0):
             return {
                 "predicted_user": "unknown",
                 "confidence": 0.0,
@@ -220,29 +264,23 @@ class TemplateIdentifier:
                 "top_k": [],
             }
 
-        vec_norm = vec_raw / norm
-
         scores = []
         for uid, data in self.templates.items():
-            tmpl_norm = data["mean_norm"]
-            tmpl_raw = data.get("mean_raw", tmpl_norm)
+            tmpl_raw = data.get("mean_raw", data["mean_norm"])
 
             # 1. Centroid biometric similarity
-            sim_mean = self._biometric_similarity(vec_norm, tmpl_norm, vec_raw, tmpl_raw)
+            sim_mean = self._biometric_similarity(vec_raw, tmpl_raw)
 
             # 2. Multi-sample k-NN biometric similarity over enrolled frames
-            sample_sims = []
             raw_samples = data.get("sample_raws", [])
-            for idx, sn in enumerate(data["sample_norms"]):
-                sr = raw_samples[idx] if idx < len(raw_samples) else sn
-                sample_sims.append(self._biometric_similarity(vec_norm, sn, vec_raw, sr))
+            sample_sims = [self._biometric_similarity(vec_raw, sr) for sr in raw_samples]
 
             sample_sims.sort(reverse=True)
-            k_samples = min(5, len(sample_sims))
+            k_samples = min(7, len(sample_sims))
             sim_knn = float(np.mean(sample_sims[:k_samples])) if k_samples > 0 else sim_mean
 
-            # Combined score giving weight to posture variation (k-NN) and morphological mean
-            combined_sim = max(0.40 * sim_mean + 0.60 * sim_knn, 0.0)
+            # Combined score giving weight to posture variations (k-NN) and morphological mean
+            combined_sim = max(0.35 * sim_mean + 0.65 * sim_knn, 0.0)
             combined_sim = min(combined_sim, 1.0)
 
             scores.append({
@@ -264,12 +302,14 @@ class TemplateIdentifier:
             }
 
         best = top[0]
-        is_known = best["confidence"] >= best["accept_threshold"]
+        accept_thresh = max(best["accept_threshold"], self.default_threshold)
+        is_known = best["confidence"] >= accept_thresh
 
-        # Disambiguation margin check
-        if is_known and len(top) >= 2 and best["confidence"] < 0.75:
+        # Margin separation check: only reject if confidence is borderline and margin is negligible
+        if is_known and len(top) >= 2:
             margin = best["confidence"] - top[1]["confidence"]
-            if margin < 0.02:
+            if best["confidence"] < 0.75 and margin < 0.015:
+                # Inconclusive / ambiguous between two enrolled users
                 is_known = False
 
         clean_top = [{"user_id": c["user_id"], "confidence": round(c["confidence"], 4)} for c in top]

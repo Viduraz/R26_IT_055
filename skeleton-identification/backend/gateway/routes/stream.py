@@ -200,19 +200,19 @@ class StreamPipeline:
         self.single_track = {
             "first_seen": None,
             "last_seen": None,
-            "state": "analyzing",
+            "state": "unknown",
             "observations": [],
-            "committed_name": "Analyzing Posture...",
-            "committed_role": "Evaluating Biometrics",
+            "committed_name": "Unknown Person",
+            "committed_role": "Visitor / Unregistered",
             "committed_is_known": False,
             "committed_confidence": 0.0,
-            "committed_method": "analyzing",
+            "committed_method": "none",
             "unknown_since": None,
         }
         self.tracks: List[Dict] = []
         self._next_track_id = 0
-        # Performance: run prediction every Nth frame, cache last result
-        self._identify_every_n = 3
+        # Performance: run prediction every frame for immediate real-time response
+        self._identify_every_n = 1
         self._last_identification: Dict = {
             "predicted_user": "unknown",
             "confidence": 0.0,
@@ -253,99 +253,34 @@ class StreamPipeline:
         self._last_knn_refresh = now
 
     def _update_single_track(self, raw_user_id: str, confidence: float, is_known_for_display: bool, method: str):
-        """5-7 second temporal identification evaluation state machine for single-person identification."""
+        """Immediate real-time identification for single-person identification."""
         now = time.time()
-        eval_window = getattr(settings, "identification_window_seconds", 6.0)
-        conf_threshold = getattr(settings, "confidence_threshold", 0.72)
 
-        if self.single_track["first_seen"] is None or (self.single_track["last_seen"] and (now - self.single_track["last_seen"] > 2.0)):
+        # Reset if stream was interrupted / no person seen for > 1.0s
+        if self.single_track["first_seen"] is None or (self.single_track["last_seen"] and (now - self.single_track["last_seen"] > 1.0)):
             self.single_track["session_id"] = int(now * 1000)
             self.single_track["first_seen"] = now
             self.single_track["last_seen"] = now
-            self.single_track["state"] = "analyzing"
-            self.single_track["observations"] = []
-            self.single_track["committed_name"] = "Analyzing Posture..."
-            self.single_track["committed_role"] = "Evaluating Biometrics"
-            self.single_track["committed_is_known"] = False
-            self.single_track["committed_confidence"] = confidence
-            self.single_track["committed_method"] = "analyzing"
             self.single_track["unknown_since"] = None
         else:
             self.single_track["last_seen"] = now
 
-        cand_name = self.user_name_map.get(raw_user_id) if (raw_user_id != "unknown" and is_known_for_display) else "Unknown"
+        cand_name = self.user_name_map.get(raw_user_id) if (raw_user_id != "unknown" and is_known_for_display) else "Unknown Person"
         cand_role = self.user_role_map.get(raw_user_id, "caregiver") if (raw_user_id != "unknown" and is_known_for_display) else "Visitor / Unregistered"
-        self.single_track["observations"].append({
-            "name": cand_name,
-            "role": cand_role,
-            "confidence": confidence,
-            "is_known": is_known_for_display,
-            "method": method,
-            "ts": now,
-        })
-        self.single_track["observations"] = [o for o in self.single_track["observations"] if now - o["ts"] <= 8.0]
 
-        elapsed = now - self.single_track["first_seen"]
-        progress = min(elapsed / max(eval_window, 0.1), 1.0)
-        time_remaining = max(0.0, eval_window - elapsed)
+        is_known = is_known_for_display and cand_name != "Unknown Person"
 
-        if self.single_track["state"] == "analyzing":
-            valid_obs = self.single_track["observations"]
-            known_obs = [o for o in valid_obs if o.get("is_known") and o["name"] not in ("Unknown", "Unknown Person", "Analyzing Posture...")]
+        self.single_track["state"] = "identified" if is_known else "unknown"
+        self.single_track["committed_name"] = cand_name
+        self.single_track["committed_role"] = cand_role
+        self.single_track["committed_is_known"] = is_known
+        self.single_track["committed_confidence"] = round(confidence, 4)
+        self.single_track["committed_method"] = method
 
-            early_lock = len(known_obs) >= 12 and (sum(1 for o in known_obs if o["confidence"] >= 0.88) >= 8)
-            if elapsed >= eval_window or early_lock:
-                if known_obs and len(known_obs) >= max(len(valid_obs) * 0.45, 4):
-                    name_scores = {}
-                    name_roles = {}
-                    for o in known_obs:
-                        nm = o["name"]
-                        name_scores.setdefault(nm, []).append(o["confidence"])
-                        name_roles[nm] = o["role"]
-                    best_nm = max(name_scores.keys(), key=lambda nm: (len(name_scores[nm]), np.median(name_scores[nm])))
-                    med_score = float(np.median(name_scores[best_nm]))
-                    if med_score >= conf_threshold:
-                        self.single_track["state"] = "identified"
-                        self.single_track["committed_name"] = best_nm
-                        self.single_track["committed_role"] = name_roles.get(best_nm, "caregiver")
-                        self.single_track["committed_is_known"] = True
-                        self.single_track["committed_confidence"] = min(med_score, 0.98)
-                        self.single_track["committed_method"] = "skeleton_consensus"
-                        self.single_track["unknown_since"] = None
-                    else:
-                        self.single_track["state"] = "unknown"
-                        self.single_track["committed_name"] = "Unknown Person"
-                        self.single_track["committed_role"] = "Visitor / Unregistered"
-                        self.single_track["committed_is_known"] = False
-                        self.single_track["committed_confidence"] = med_score
-                        self.single_track["committed_method"] = "skeleton_inconclusive"
-                        if not self.single_track["unknown_since"]:
-                            self.single_track["unknown_since"] = now
-                else:
-                    self.single_track["state"] = "unknown"
-                    self.single_track["committed_name"] = "Unknown Person"
-                    self.single_track["committed_role"] = "Visitor / Unregistered"
-                    self.single_track["committed_is_known"] = False
-                    self.single_track["committed_confidence"] = float(np.mean([o["confidence"] for o in valid_obs])) if valid_obs else 0.0
-                    self.single_track["committed_method"] = "unregistered"
-                    if not self.single_track["unknown_since"]:
-                        self.single_track["unknown_since"] = now
-            else:
-                self.single_track["committed_name"] = f"Analyzing... ({time_remaining:.1f}s)"
-                self.single_track["committed_role"] = f"Scanning ({int(progress * 100)}%)"
-                self.single_track["committed_is_known"] = False
-                self.single_track["committed_confidence"] = confidence
-                self.single_track["committed_method"] = "analyzing"
-        elif self.single_track["state"] == "identified":
-            if is_known_for_display and cand_name == self.single_track["committed_name"]:
-                self.single_track["committed_confidence"] = (
-                    0.20 * confidence + 0.80 * self.single_track["committed_confidence"]
-                )
-                self.single_track["committed_confidence"] = min(max(self.single_track["committed_confidence"], 0.85), 0.99)
-        elif self.single_track["state"] == "unknown":
-            self.single_track["committed_confidence"] = (
-                0.20 * confidence + 0.80 * self.single_track["committed_confidence"]
-            )
+        if is_known:
+            self.single_track["unknown_since"] = None
+        elif not self.single_track["unknown_since"]:
+            self.single_track["unknown_since"] = now
 
     async def process_frame(
         self,
@@ -376,6 +311,15 @@ class StreamPipeline:
         all_kps = await loop.run_in_executor(_cpu_executor, self.pose.estimate, rgb)
 
         if all_kps is None:
+            now = time.time()
+            if self.single_track.get("last_seen") and (now - self.single_track["last_seen"] > 1.0):
+                self.single_track["first_seen"] = None
+                self.single_track["state"] = "unknown"
+                self.single_track["committed_name"] = "Unknown Person"
+                self.single_track["committed_role"] = "Visitor / Unregistered"
+                self.single_track["committed_is_known"] = False
+                self.prev_features = None
+                self.gait_ext.reset()
             return {
                 "detected": False,
                 "body_visible": False,
@@ -417,13 +361,7 @@ class StreamPipeline:
                 "latency_ms": round((time.perf_counter() - t_start) * 1000, 2),
             }
 
-        features = StaticFeatureExtractor.smooth_features(
-            raw_features,
-            self.prev_features,
-            alpha=0.3,
-        )
-        self.prev_features = features
-        static_vector = self.static_ext.to_vector(features)
+        static_vector = self.static_ext.to_vector(raw_features)
 
         angles = self.static_ext.compute_joint_angles(body_kps)
         self.gait_ext.add_frame(body_kps, angles)
@@ -449,37 +387,7 @@ class StreamPipeline:
                     gait_sequence=gait_sequence,
                 )
             )
-            
-            # Run Face Verification API if live service is active
             self._last_skeleton_conf = float(identification.get("confidence", 0.0))
-            self._last_face_conf = 0.0
-            try:
-                async with httpx.AsyncClient(timeout=1.5) as client:
-                    resp = await client.post(
-                        "http://localhost:8001/api/face/verify-caregiver",
-                        json={"live_sample": frame_b64}
-                    )
-                    if resp.status_code == 200:
-                        face_result = resp.json()
-                        face_conf_val = float(face_result.get("confidence", 0.0))
-                        if face_conf_val > 0.0:
-                            self._last_face_conf = face_conf_val / 100.0
-                            if face_result.get("verified"):
-                                face_name = face_result.get("caregiver_details", {}).get("name", "unknown")
-                                if face_name and face_name.lower() != "unknown":
-                                    matched_uid = None
-                                    for uid, uname in self.user_name_map.items():
-                                        if uname.lower() == face_name.lower():
-                                            matched_uid = uid
-                                            break
-                                    if matched_uid:
-                                        identification["predicted_user"] = matched_uid
-                                        identification["is_known"] = True
-                                        identification["confidence"] = max(identification.get("confidence", 0.0), self._last_face_conf)
-                                        identification["method"] = "face+skeleton"
-            except Exception:
-                pass
-
             self._last_identification = identification
         else:
             identification = self._last_identification
@@ -654,7 +562,7 @@ class StreamPipeline:
             "analysis_progress": round(progress, 2),
             "time_remaining": round(time_remaining, 1),
             "status_msg": "Person Detected",
-            "num_features": len(features),
+            "num_features": len(raw_features),
             "static_features": static_vector.tolist(),
             "gait_ready": gait_ready,
             "gait_buffer": self.gait_ext.buffer_length(),
@@ -849,16 +757,8 @@ class StreamPipeline:
         return persons
 
     def _stabilize_tracks(self, raw_detections: List[Dict]) -> List[Dict]:
-        """5-7 Second Temporal Identification State Machine + Track Stabilization.
-
-        Tracks progress through:
-          1. 'analyzing': Collects scale-invariant skeleton frames over 5-7 seconds (~6.0s).
-          2. 'identified': Consistently matched to an enrolled profile (score >= threshold).
-          3. 'unknown': Failed to match after the evaluation window -> tagged as Unknown Person.
-        """
+        """Immediate real-time identification + Track Stabilization."""
         now = time.time()
-        eval_window = getattr(settings, "identification_window_seconds", 6.0)
-        conf_threshold = getattr(settings, "confidence_threshold", 0.72)
 
         # Drop tracks absent for longer than TRACK_EXPIRE_S
         self.tracks = [t for t in self.tracks if now - t["last_seen"] < TRACK_EXPIRE_S]
@@ -879,6 +779,11 @@ class StreamPipeline:
                 if dist < best_dist:
                     track, best_dist = t, dist
 
+            is_known = bool(raw["is_known"]) and raw["name"] not in ("Unknown", "Unknown Person", "Analyzing Posture...")
+            st_name = raw["name"] if is_known else "Unknown Person"
+            st_role = raw["role"] if is_known else "Visitor / Unregistered"
+            st_state = "identified" if is_known else "unknown"
+
             if track is None:
                 self._next_track_id += 1
                 track = {
@@ -888,14 +793,14 @@ class StreamPipeline:
                     "first_seen": now,
                     "last_seen": now,
                     "_matched": True,
-                    "state": "analyzing",
+                    "state": st_state,
                     "observations": [],
-                    "committed_name": "Analyzing Posture...",
-                    "committed_role": "Evaluating Biometrics",
-                    "committed_is_known": False,
+                    "committed_name": st_name,
+                    "committed_role": st_role,
+                    "committed_is_known": is_known,
                     "committed_confidence": float(raw["confidence"]),
                     "committed_method": raw["method"],
-                    "unknown_since": None,
+                    "unknown_since": now if not is_known else None,
                 }
                 self.tracks.append(track)
             else:
@@ -903,98 +808,18 @@ class StreamPipeline:
                 track["cy"] = TRACK_POSITION_SMOOTHING_ALPHA * cy + (1 - TRACK_POSITION_SMOOTHING_ALPHA) * track["cy"]
                 track["last_seen"] = now
                 track["_matched"] = True
+                track["state"] = st_state
+                track["committed_name"] = st_name
+                track["committed_role"] = st_role
+                track["committed_is_known"] = is_known
+                track["committed_confidence"] = float(raw["confidence"])
+                track["committed_method"] = raw["method"]
+                if is_known:
+                    track["unknown_since"] = None
+                elif not track.get("unknown_since"):
+                    track["unknown_since"] = now
 
-            # Record high-quality observations
-            obs_entry = {
-                "name": raw["name"],
-                "role": raw["role"],
-                "confidence": float(raw["confidence"]),
-                "is_known": bool(raw["is_known"]),
-                "method": raw["method"],
-                "ts": now,
-            }
-            track["observations"].append(obs_entry)
-            track["observations"] = [o for o in track["observations"] if now - o["ts"] <= 8.0]
-
-            elapsed = now - track["first_seen"]
-            progress = min(elapsed / max(eval_window, 0.1), 1.0)
-            time_remaining = max(0.0, eval_window - elapsed)
-
-            # ── State Machine Transitions ────────────────────────────────────
-            if track["state"] == "analyzing":
-                valid_obs = [o for o in track["observations"] if o["confidence"] >= 0.35]
-                known_obs = [o for o in valid_obs if o["name"] not in ("Unknown", "Unknown Person", "Analyzing Posture...")]
-
-                # Check if evaluation window has completed or early high-confidence consensus achieved
-                early_lock = len(known_obs) >= 15 and (sum(1 for o in known_obs if o["confidence"] >= 0.88) >= 10)
-                if elapsed >= eval_window or early_lock:
-                    if known_obs and len(known_obs) >= max(len(valid_obs) * 0.40, 4):
-                        # Group by candidate name
-                        name_scores = {}
-                        name_counts = {}
-                        name_roles = {}
-                        for o in known_obs:
-                            nm = o["name"]
-                            name_scores.setdefault(nm, []).append(o["confidence"])
-                            name_counts[nm] = name_counts.get(nm, 0) + 1
-                            name_roles[nm] = o["role"]
-
-                        # Determine top candidate by vote frequency and median confidence
-                        best_nm = max(name_counts.keys(), key=lambda nm: (name_counts[nm], np.median(name_scores[nm])))
-                        med_score = float(np.median(name_scores[best_nm]))
-
-                        if med_score >= (conf_threshold - 0.05):
-                            track["state"] = "identified"
-                            track["committed_name"] = best_nm
-                            track["committed_role"] = name_roles.get(best_nm, "caregiver")
-                            track["committed_is_known"] = True
-                            track["committed_confidence"] = min(med_score + 0.05, 0.98)
-                            track["committed_method"] = "skeleton_consensus"
-                            track["unknown_since"] = None
-                        else:
-                            track["state"] = "unknown"
-                            track["committed_name"] = "Unknown Person"
-                            track["committed_role"] = "Visitor / Unregistered"
-                            track["committed_is_known"] = False
-                            track["committed_confidence"] = med_score
-                            track["committed_method"] = "skeleton_inconclusive"
-                            track["unknown_since"] = now
-                    else:
-                        # Inconclusive / no match -> Tag as Unknown Person
-                        track["state"] = "unknown"
-                        track["committed_name"] = "Unknown Person"
-                        track["committed_role"] = "Visitor / Unregistered"
-                        track["committed_is_known"] = False
-                        track["committed_confidence"] = float(np.mean([o["confidence"] for o in valid_obs])) if valid_obs else 0.0
-                        track["committed_method"] = "unregistered"
-                        track["unknown_since"] = now
-                else:
-                    # Still analyzing
-                    track["committed_name"] = f"Analyzing... ({time_remaining:.1f}s)"
-                    track["committed_role"] = f"Scanning ({int(progress * 100)}%)"
-                    track["committed_is_known"] = False
-                    track["committed_confidence"] = float(raw["confidence"])
-                    track["committed_method"] = "analyzing"
-
-            elif track["state"] == "identified":
-                # Maintain locked identity with smooth confidence update
-                if raw["is_known"] and raw["name"] == track["committed_name"]:
-                    track["committed_confidence"] = (
-                        CONFIDENCE_SMOOTHING_ALPHA * raw["confidence"]
-                        + (1 - CONFIDENCE_SMOOTHING_ALPHA) * track["committed_confidence"]
-                    )
-                    track["committed_confidence"] = min(max(track["committed_confidence"], 0.85), 0.99)
-                elif raw["confidence"] > 0.30:
-                    track["committed_confidence"] = max(track["committed_confidence"] * 0.99, 0.78)
-
-            elif track["state"] == "unknown":
-                # Person confirmed unknown
-                track["committed_confidence"] = (
-                    CONFIDENCE_SMOOTHING_ALPHA * raw["confidence"]
-                    + (1 - CONFIDENCE_SMOOTHING_ALPHA) * track["committed_confidence"]
-                )
-
-            unknown_ms = round((now - track["unknown_since"]) * 1000) if track["unknown_since"] else 0
+            unknown_ms = round((now - track["unknown_since"]) * 1000) if track.get("unknown_since") else 0
 
             output.append({
                 "bbox": raw["bbox"],
@@ -1007,8 +832,8 @@ class StreamPipeline:
                 "method": track["committed_method"],
                 "track_id": track["id"],
                 "unknown_ms": unknown_ms,
-                "analysis_progress": round(progress, 2),
-                "time_remaining": round(time_remaining, 1),
+                "analysis_progress": 1.0,
+                "time_remaining": 0.0,
             })
 
         # Ensure unique enrolled identities across active tracks

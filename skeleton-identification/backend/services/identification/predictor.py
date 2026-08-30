@@ -58,17 +58,31 @@ class Predictor:
             return self._loaded
         except Exception as e:
             log.error("model_load_failed", error=str(e))
-            return False
+            self._loaded = self.ensemble.is_trained
+            return self._loaded
 
     def load_knn_templates(self, profiles: List[Dict]) -> int:
         """Load KNN templates from feature profile dicts.
         Call this after DB is connected and periodically to refresh.
         Returns the number of users loaded."""
+        if not profiles:
+            try:
+                import json
+                local_path = Path("./data/local_db.json")
+                if local_path.exists():
+                    with open(local_path, "r") as f:
+                        data = json.load(f)
+                    profiles = data.get("feature_profiles", [])
+                    if profiles:
+                        log.info("loaded_knn_from_local_db_fallback", count=len(profiles))
+            except Exception as e:
+                log.warning("local_db_knn_fallback_failed", error=str(e))
+
         return self.knn.load_from_profiles(profiles)
 
     @property
     def is_ready(self) -> bool:
-        # Ready if either SVM or KNN is available
+        # Ready if either ensemble (SVM/LSTM) or KNN is available
         return (self._loaded and self.ensemble.is_trained) or self.knn.is_ready
 
     @property

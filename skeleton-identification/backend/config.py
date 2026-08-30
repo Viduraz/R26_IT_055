@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.72
     svm_weight: float = 0.5
     lstm_weight: float = 0.5
-    identification_window_seconds: float = 6.0  # 5-7 seconds temporal evaluation window
-    min_analysis_frames: int = 12               # minimum high-quality frames needed before committing
+    identification_window_seconds: float = 0.0  # Immediate real-time identification
+    min_analysis_frames: int = 1               # Immediate commitment on frame 1
 
     # ── Video ─────────────────────────────────────────────────────────────────
     camera_index: int = 0
