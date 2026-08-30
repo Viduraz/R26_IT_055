@@ -21,7 +21,8 @@ import Navbar from "../components/Navbar";
 import { useToast } from "../context/ToastContext";
 
 const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
-const POLL_MS = 200;
+const MJPEG_STREAM_URL = `${ANOMALY_API}/camera-stream`;
+const POLL_MS = 80;   // 80ms ≈ 12 FPS — decoupled from ML latency via preview messages
 const SNAPSHOT_MS = 500;
 const TRAIL_LEN = 25;
 const MAX_TIMELINE = 20;
@@ -171,7 +172,9 @@ export default function AnomalyDashboard() {
     const fetchMetrics = async () => {
       setMetricsLoading(true);
       try {
-        const { data } = await axios.get(`${ANOMALY_API}/metrics`, { timeout: 3000 });
+        const token = localStorage.getItem("access_token");
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const { data } = await axios.get(`${ANOMALY_API}/metrics`, { headers, timeout: 3000 });
         setMetrics(data);
       } catch { /* silent */ } finally {
         setMetricsLoading(false);
@@ -245,26 +248,23 @@ export default function AnomalyDashboard() {
     drawCanvas(bbox, keypoints, trailRef.current, col.box);
   }, [bbox, keypoints, anomalyType, isOn, drawCanvas]);
 
-  // ── IP Camera preview ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (cameraSource !== "ip_camera" || !isOn) return;
-    let active = true;
-    setIpLoading(true); setIpError(null); setIpFrame(null);
-    const fetchPreview = async () => {
-      try {
-        const { data } = await axios.get(`${ANOMALY_API}/camera-snapshot`, { timeout: 10000 });
-        if (active) { setIpFrame(data.frame); setIpError(null); setIpLoading(false); }
-      } catch (err) {
-        if (active) { setIpError(err.response?.data?.detail || "IP camera unreachable"); setIpLoading(false); }
-      }
-    };
-    fetchPreview();
-    const timer = setInterval(fetchPreview, SNAPSHOT_MS);
-    return () => { active = false; clearInterval(timer); };
-  }, [cameraSource, isOn]);
+  // ── IP Camera: MJPEG stream is handled by native <img> tag ─────────────────
+  // No polling needed — the browser keeps one persistent HTTP connection
+  // and the backend pushes ~20 FPS frames via multipart/x-mixed-replace.
+
 
   // ── Handle WS message ─────────────────────────────────────────────────────
   const handleMessage = useCallback((data) => {
+    // ── Camera preview: only update the video frame, skip all ML state ──────
+    // Backend sends this BEFORE running the ML pipeline for minimum display latency.
+    if (data.camera_preview_only) {
+      if (data.camera_frame) {
+        setIpFrame(`data:image/jpeg;base64,${data.camera_frame}`);
+        setIpError(null);
+      }
+      return;
+    }
+
     const atype = data.anomaly_type || "no_person";
     const conf = data.confidence || 0;
     const sev = data.severity || "none";
@@ -282,6 +282,15 @@ export default function AnomalyDashboard() {
     setLastUpdate(new Date());
     setLatencyMs(data.latency_ms || null);
     setError(data.error || "");
+
+    // IP camera frame echoed back from backend via WS
+    if (data.camera_frame) {
+      setIpFrame(`data:image/jpeg;base64,${data.camera_frame}`);
+      setIpError(null);
+    } else if (data.camera_error) {
+      // Camera is genuinely offline / RTSP failed
+      setIpError(data.camera_error);
+    }
 
     if (data.bbox) {
       const cx = data.bbox.x + data.bbox.w / 2;
@@ -335,6 +344,7 @@ export default function AnomalyDashboard() {
       clearInterval(pollRef.current);
       setAnomalyType("no_person"); setBbox(null); setKeypoints(null);
       setConfidence(0); setPoseValid(false); setWsStatus("disconnected");
+      setIpFrame(null); setIpError(null);
     }
     return () => { if (wsRef.current) wsRef.current.close(); clearInterval(pollRef.current); };
   }, [isOn, sendFrame, handleMessage]);
@@ -542,9 +552,23 @@ export default function AnomalyDashboard() {
                         )}
                         {cameraSource === "ip_camera" && (
                           <>
-                            {ipLoading && <div className="flex items-center justify-center py-20"><div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" /></div>}
-                            {ipError && !ipLoading && <div className="flex flex-col items-center justify-center gap-2 text-red-400 py-20"><span className="text-5xl">📡</span><p>{ipError}</p></div>}
-                            {ipFrame && !ipLoading && <img src={ipFrame} alt="IP camera" className="w-full h-full object-cover" />}
+                            {!isOn ? null : ipFrame ? (
+                              <img
+                                src={ipFrame}
+                                alt="IP camera live"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex items-center justify-center w-full h-full">
+                                <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                              </div>
+                            )}
+                            {ipError && (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-red-400 bg-gray-950/80">
+                                <span className="text-5xl">📡</span>
+                                <p>{ipError}</p>
+                              </div>
+                            )}
                             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ pointerEvents: "none" }} />
                           </>
                         )}

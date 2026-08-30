@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from "react";
-import { Shield, Eye, LogOut, Radio, Activity, Map, CalendarCheck, CheckCircle2, AlertTriangle, Sparkles, RefreshCw } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Shield, Eye, LogOut, Radio, Activity, Map, CalendarCheck, CheckCircle2, AlertTriangle, VideoOff, RefreshCw } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { validatePatientId, getPatientLiveStatus } from "../services/monitorApi";
+import { validatePatientId, getPatientLiveStatus, getVideoFrame } from "../services/monitorApi";
 
 const PatientMonitor = () => {
   const [patientIdInput, setPatientIdInput] = useState("");
@@ -13,6 +13,10 @@ const PatientMonitor = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [refreshInterval, setRefreshInterval] = useState(null);
+  // Live video states
+  const [videoFrame, setVideoFrame] = useState(null);
+  const [videoError, setVideoError] = useState(false);
+  const videoIntervalRef = useRef(null);
 
   const handleConnect = async (e) => {
     e.preventDefault();
@@ -53,12 +57,35 @@ const PatientMonitor = () => {
     }
   }, [validated, patientId]);
 
+  // Poll live video frames every 200ms once connected
+  useEffect(() => {
+    if (validated && patientId) {
+      const pollVideo = async () => {
+        try {
+          const data = await getVideoFrame(patientId);
+          if (data?.frame) {
+            setVideoFrame(data.frame);
+            setVideoError(false);
+          }
+        } catch {
+          setVideoError(true);
+        }
+      };
+      pollVideo(); // immediate first fetch
+      videoIntervalRef.current = setInterval(pollVideo, 200);
+      return () => clearInterval(videoIntervalRef.current);
+    }
+  }, [validated, patientId]);
+
   const handleDisconnect = () => {
     if (refreshInterval) clearInterval(refreshInterval);
+    if (videoIntervalRef.current) clearInterval(videoIntervalRef.current);
     setValidated(false);
     setPatientId("");
     setBooking(null);
     setStatusData(null);
+    setVideoFrame(null);
+    setVideoError(false);
     setPatientIdInput("");
     setError(null);
   };
@@ -68,7 +95,7 @@ const PatientMonitor = () => {
       <Navbar />
 
       <main className="flex-grow max-w-7xl w-full mx-auto px-6 py-10 flex flex-col justify-center">
-        
+
         {!validated ? (
           /* Verification Screen */
           <div className="max-w-md w-full mx-auto glass-panel rounded-3xl p-8 border border-slate-800 relative overflow-hidden shadow-2xl my-10">
@@ -117,7 +144,7 @@ const PatientMonitor = () => {
         ) : (
           /* Live Dashboard Screen */
           <div className="flex flex-col gap-6">
-            
+
             {/* Telemetry Header */}
             <div className="glass-panel rounded-2xl p-5 border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -154,68 +181,75 @@ const PatientMonitor = () => {
 
             {/* Core Monitor Grid */}
             <div className="grid lg:grid-cols-3 gap-6">
-              
+
               {/* Left Column: Live camera feed and Pose Anomaly (take 2 columns) */}
               <div className="lg:col-span-2 flex flex-col gap-6">
-                
-                {/* Simulated Webcam Monitor */}
+
+                {/* Live Camera Feed */}
                 <div className="glass-panel rounded-3xl border border-slate-800 overflow-hidden relative shadow-2xl">
-                  {/* Camera overlay scanlines */}
+                  {/* Camera overlay scanlines — kept for authentic surveillance aesthetic */}
                   <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] pointer-events-none z-10" />
 
                   {/* Top Feed bar */}
                   <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
                     <span className="inline-flex items-center gap-1 text-[9px] tracking-wider font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full uppercase">
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> LIVE CAMERA
+                      <span className={`w-1.5 h-1.5 rounded-full ${videoFrame && !videoError ? 'bg-red-500 animate-pulse' : 'bg-slate-600'}`} />
+                      {videoFrame && !videoError ? 'LIVE CAMERA' : 'CAMERA OFFLINE'}
                     </span>
                     <span className="text-[9px] text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800 font-mono">
                       CAM-01 (Living Room)
                     </span>
                   </div>
 
-                  {/* Render camera box */}
-                  <div className="w-full aspect-video bg-[#05070c] flex items-center justify-center relative select-none">
-                    
-                    {/* Simulated Wireframe overlay */}
-                    <div className="absolute inset-0 flex items-center justify-center opacity-40">
-                      <svg className="w-3/4 h-3/4 text-primary-500/20" viewBox="0 0 100 100" fill="none">
-                        {/* Floor layout outlines */}
-                        <line x1="10" y1="90" x2="90" y2="90" stroke="currentColor" strokeWidth="0.5" />
-                        <line x1="10" y1="90" x2="30" y2="50" stroke="currentColor" strokeWidth="0.5" />
-                        <line x1="90" y1="90" x2="70" y2="50" stroke="currentColor" strokeWidth="0.5" />
-                        <line x1="30" y1="50" x2="70" y2="50" stroke="currentColor" strokeWidth="0.5" />
-                      </svg>
+                  {/* Anomaly alert banner — overlaid on top of live video when alert is raised */}
+                  {statusData?.anomaly?.alert_raised && (
+                    <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-center py-2 bg-red-950/80 border-b border-red-500/40">
+                      <div className="flex items-center gap-2 animate-pulse">
+                        <AlertTriangle className="w-4 h-4 text-red-400" />
+                        <span className="text-xs font-black text-red-400 uppercase tracking-widest font-mono">FALL DETECTED — Anomaly Alert Active</span>
+                      </div>
                     </div>
+                  )}
 
-                    {/* Virtual Skeleton overlay (Pose tracking) */}
-                    <div className="absolute flex flex-col items-center justify-center text-center p-6">
-                      
-                      {statusData?.anomaly?.alert_raised ? (
-                        /* Fall Danger Alert screen */
-                        <div className="flex flex-col items-center gap-3 animate-bounce">
-                          <div className="w-16 h-16 rounded-full bg-red-500/20 border border-red-500 flex items-center justify-center text-red-500">
-                            <AlertTriangle className="w-9 h-9" />
+                  {/* Camera feed area */}
+                  <div className="w-full aspect-video bg-[#05070c] flex items-center justify-center relative select-none overflow-hidden">
+
+                    {videoFrame && !videoError ? (
+                      /* ── REAL LIVE VIDEO ── */
+                      <img
+                        src={videoFrame}
+                        alt="Live camera feed"
+                        className="w-full h-full object-cover"
+                        style={{ imageRendering: 'auto' }}
+                      />
+                    ) : (
+                      /* ── CAMERA UNAVAILABLE FALLBACK ── */
+                      <div className="flex flex-col items-center gap-3 text-center p-6">
+                        <div className="w-14 h-14 rounded-full bg-slate-800/60 border border-slate-700 flex items-center justify-center text-slate-600">
+                          <VideoOff className="w-7 h-7" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-500 uppercase tracking-widest font-mono">Camera Unavailable</p>
+                          <p className="text-[10px] text-slate-600 mt-1">IP camera offline or RTSP stream not connected</p>
+                        </div>
+                        {/* Still show pose status from telemetry even when video is down */}
+                        {statusData?.anomaly && (
+                          <div className={`mt-2 px-3 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-wider font-mono ${statusData.anomaly.alert_raised
+                            ? 'text-red-400 bg-red-950/40 border-red-500/20'
+                            : 'text-emerald-400 bg-emerald-950/20 border-emerald-500/20'
+                            }`}>
+                            {statusData.anomaly.alert_raised ? '⚠ Alert via telemetry' : '✓ Posture normal (telemetry)'}
                           </div>
-                          <p className="text-xl font-black text-red-500 uppercase tracking-widest font-mono">FALL DETECTED</p>
-                          <p className="text-xs text-red-400 font-semibold bg-red-950/60 px-3 py-1 rounded border border-red-900/40">
-                            Anomaly service triggered dispatch alarm!
-                          </p>
-                        </div>
-                      ) : (
-                        /* Standing Normal screen */
-                        <div className="flex flex-col items-center gap-2">
-                          <Activity className="w-12 h-12 text-emerald-400 animate-pulse" />
-                          <p className="text-sm font-bold text-emerald-400 uppercase tracking-widest font-mono">POSTURE NORMAL</p>
-                          <p className="text-[10px] text-slate-500">Pose Tracker: Standing/Walking (Certainty: 98.4%)</p>
-                        </div>
-                      )}
+                        )}
+                      </div>
+                    )}
 
-                    </div>
-
-                    {/* Scanner line animation */}
-                    <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary-500/50 to-transparent top-0 animate-[scan_6s_linear_infinite]" />
+                    {/* Scanner line animation — shown only on live feed */}
+                    {videoFrame && !videoError && (
+                      <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary-500/40 to-transparent top-0 animate-[scan_6s_linear_infinite] pointer-events-none" />
+                    )}
                   </div>
-                  
+
                   {/* Status Overlay details */}
                   <div className="glass-panel border-t border-slate-800 p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
                     <div>
@@ -244,7 +278,7 @@ const PatientMonitor = () => {
 
               {/* Right Column: Other services status & Chores */}
               <div className="flex flex-col gap-6">
-                
+
                 {/* Service Status Heartbeats */}
                 <div className="glass-panel rounded-2xl p-5 border border-slate-800">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4 flex items-center gap-1.5">
@@ -254,33 +288,30 @@ const PatientMonitor = () => {
                   <div className="flex flex-col gap-3">
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-300">Anomaly Pose Analyzer</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
-                        statusData?.services_status?.anomaly === "online"
-                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                          : "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                      }`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${statusData?.services_status?.anomaly === "online"
+                        ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                        : "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                        }`}>
                         {statusData?.services_status?.anomaly || "offline"}
                       </span>
                     </div>
 
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-300">Geofencing Location Tracker</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
-                        statusData?.services_status?.tracking === "online"
-                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                          : "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                      }`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${statusData?.services_status?.tracking === "online"
+                        ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                        : "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                        }`}>
                         {statusData?.services_status?.tracking || "offline"}
                       </span>
                     </div>
 
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-300">Schedule compliance Auditor</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
-                        statusData?.services_status?.schedule === "online"
-                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                          : "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                      }`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${statusData?.services_status?.schedule === "online"
+                        ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                        : "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                        }`}>
                         {statusData?.services_status?.schedule || "offline"}
                       </span>
                     </div>
@@ -303,7 +334,7 @@ const PatientMonitor = () => {
                         Safe Zone
                       </span>
                     </div>
-                    
+
                     <p className="text-[10px] text-slate-500 leading-normal">
                       The elder is inside the primary residence living room zone. No boundary alerts are logged today.
                     </p>
@@ -321,7 +352,7 @@ const PatientMonitor = () => {
                       <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400 fill-emerald-500/10 shrink-0" />
                       <span>Caregiver Check-in: 08:58 (Verified)</span>
                     </label>
-                    
+
                     <label className="flex items-center gap-2.5 text-xs text-slate-300">
                       <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400 fill-emerald-500/10 shrink-0" />
                       <span>Morning Meds administered</span>

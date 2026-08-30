@@ -5,6 +5,7 @@ Phase 4: JWT authentication added to all protected endpoints.
 """
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi.responses import StreamingResponse
 from app.controllers.anomaly_controller import (
     process_frame,
     get_history,
@@ -18,6 +19,7 @@ from app.services.metrics_service import record_frame, get_metrics, reset_sessio
 from app.services.simulation_service import (
     simulate_fall, simulate_aggression, simulate_inactivity, simulate_normal,
 )
+from app.services.camera_service import mjpeg_stream
 from app.middleware.verify_token import get_current_user
 
 router = APIRouter()
@@ -66,20 +68,51 @@ async def websocket_process(websocket: WebSocket, token: str = ""):
 
             # ── Frame acquisition ─────────────────────────────────────────────
             frame = data.get("live_frame")
+            ip_frame_b64: str | None = None   # set below when using IP cam
 
             if source == "ip_camera":
-                try:
-                    from app.services.camera_service import get_camera_snapshot as _snap
-                    frame = _snap()
-                except Exception as cam_err:
-                    error_count += 1
+                import base64 as _b64, asyncio as _aio
+                from app.services.camera_service import _stream as _cam_stream
+                from app.services.camera_service import _try_http_snapshot
+                _cam_stream.start()
+
+                jpeg = _cam_stream.get_latest_jpeg()
+
+                # RTSP cold-start: wait up to 3 s for first frame
+                if jpeg is None:
+                    for _ in range(6):
+                        await _aio.sleep(0.5)
+                        jpeg = _cam_stream.get_latest_jpeg()
+                        if jpeg is not None:
+                            break
+
+                # If RTSP still empty, try HTTP snapshot as fallback
+                if jpeg is None:
+                    jpeg = _try_http_snapshot(
+                        _cam_stream._host, _cam_stream._user, _cam_stream._pwd
+                    )
+
+                if jpeg is None:
+                    err_detail = _cam_stream.get_error() or "RTSP connecting…"
                     await _safe_send(websocket, {
                         "anomaly_type": "no_person", "confidence": 0.0,
                         "severity": "none", "pose_valid": False,
-                        "error": f"Camera offline: {type(cam_err).__name__}",
+                        "camera_error": err_detail,
                         "person_id": pid, "timestamp": _now_iso(),
                     })
                     continue
+
+                ip_frame_b64 = _b64.b64encode(jpeg).decode()
+                frame = f"data:image/jpeg;base64,{ip_frame_b64}"
+
+                # ── Send frame preview IMMEDIATELY (before ML pipeline) ────────
+                # This decouples camera display latency from ML processing time.
+                # The user sees the frame as fast as the RTSP buffer + WS RTT.
+                await _safe_send(websocket, {
+                    "camera_frame": ip_frame_b64,
+                    "camera_preview_only": True,
+                    "person_id": pid,
+                })
 
             if not frame:
                 await _safe_send(websocket, {
@@ -104,6 +137,9 @@ async def websocket_process(websocket: WebSocket, token: str = ""):
                 latency_ms = (time.monotonic() - t_start) * 1000
                 record_frame(result.get("anomaly_type", "normal_activity"), latency_ms)
                 result["latency_ms"] = round(latency_ms, 1)
+
+                # Don't re-send camera_frame in ML result (already sent as preview)
+                # This halves the WS payload for the ML result message.
 
                 await _safe_send(websocket, result)
 
@@ -240,6 +276,26 @@ def _sim_normal(person_id: str = "demo_patient", user: dict = Depends(get_curren
 @router.get("/camera-snapshot", summary="Proxy one JPEG snapshot from the IP camera as base64")
 def _camera_snapshot(user: dict = Depends(get_current_user)):
     return get_camera_snapshot()
+
+
+@router.get(
+    "/camera-stream",
+    summary="Low-latency MJPEG stream from IP camera (public — browser img tag)",
+    response_class=StreamingResponse,
+)
+async def _camera_stream():
+    """
+    Streams JPEG frames as multipart/x-mixed-replace at ~20 FPS.
+    This endpoint is intentionally unauthenticated: browser <img> tags
+    cannot set Authorization headers, so auth is enforced at WS level.
+    Usage in frontend:  <img src="http://host:8003/api/anomaly/camera-stream" />
+    NOTE: Prefer the WebSocket camera_frame payload for Cloudflare tunnel use.
+    """
+    return StreamingResponse(
+        mjpeg_stream(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
 
 
 @router.post("/camera-process", summary="Capture from IP camera and run anomaly detection")

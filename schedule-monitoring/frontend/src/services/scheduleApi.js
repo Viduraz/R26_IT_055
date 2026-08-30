@@ -1,10 +1,14 @@
 import axios from "axios";
 
-const BASE = import.meta.env.VITE_SCHEDULE_BACKEND_URL || "http://localhost:8004";
+// Use empty baseURL so requests are relative (e.g. /api/schedule/).
+// The Vite dev server proxies /api → http://localhost:8004.
+// When accessed via Cloudflare tunnel, relative URLs resolve through the
+// tunnel origin — avoiding the loopback-address CORS block browsers enforce
+// against direct http://localhost requests from external origins.
 const DEFAULT_PATIENT_ID = "patient_001";
 
 const api = axios.create({
-  baseURL: BASE,
+  baseURL: "",
   headers: { "Content-Type": "application/json" },
 });
 
