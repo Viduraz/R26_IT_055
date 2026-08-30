@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   initializePoseDetection,
+  initializePoseDetectionWithIPCamera,
+  getIPCameraStreamUrl,
   stopPoseDetection,
 } from "../services/activityDetection";
 import { getSchedule, logDetectedActivity } from "../services/scheduleApi";
@@ -66,6 +68,10 @@ export default function ActivityDetectorMonitor({
   const canvasRef = useRef(null);
   const expectedActivityRef = useRef(null);
 
+  // "device" = use browser webcam (getUserMedia)
+  // "ip"     = use IP camera MJPEG stream from backend
+  const [cameraSource, setCameraSource] = useState("device");
+
   const [isDetecting, setIsDetecting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [currentExpected, setCurrentExpected] = useState("Walking");
@@ -110,7 +116,7 @@ export default function ActivityDetectorMonitor({
       if (activities.length === 0) {
         console.warn(
           "[Detector] scheduleProp had no recognizable activities array. " +
-            "Keys present:",
+          "Keys present:",
           Object.keys(scheduleProp || {})
         );
       }
@@ -422,31 +428,54 @@ export default function ActivityDetectorMonitor({
     }
   };
 
-  const startDetection = async () => {
+  const startDetection = async (sourceOverride) => {
     if (!videoRef.current || !canvasRef.current) return;
     if (isLoading) return;
     if (!schedule) {
       setDebugInfo("⚠️ No schedule — detection will run in test mode!");
     }
 
+    const source = sourceOverride ?? cameraSource;
+    const isIPCam = source === "ip";
+
     try {
       setIsLoading(true);
-      setDebugInfo("🔄 Initializing MoveNet ML pose detection...");
-      await initializePoseDetection(
-        videoRef.current,
-        canvasRef.current,
-        expectedActivityRef,
-        handleActivityDetected,
-        (aligned) => setIsAligned(aligned)
-      );
-      setIsDetecting(true);
       setDebugInfo(
-        "✓ Activity detection active\n📷 Position yourself in front of the camera"
+        isIPCam
+          ? "🔄 Connecting to IP camera stream..."
+          : "🔄 Initializing MoveNet ML pose detection..."
       );
+
+      if (isIPCam) {
+        await initializePoseDetectionWithIPCamera(
+          videoRef.current,
+          canvasRef.current,
+          expectedActivityRef,
+          handleActivityDetected,
+          (aligned) => setIsAligned(aligned)
+        );
+        setDebugInfo(
+          `✓ IP camera detection active\n📡 Stream: ${getIPCameraStreamUrl()}`
+        );
+      } else {
+        await initializePoseDetection(
+          videoRef.current,
+          canvasRef.current,
+          expectedActivityRef,
+          handleActivityDetected,
+          (aligned) => setIsAligned(aligned)
+        );
+        setDebugInfo(
+          "✓ Activity detection active\n📷 Position yourself in front of the camera"
+        );
+      }
+      setIsDetecting(true);
     } catch (error) {
       console.error("Error:", error);
       setDebugInfo(
-        `✗ Error initializing: ${error.message}\n\nAllow camera permission!`
+        isIPCam
+          ? `✗ IP camera error: ${error.message}\n\nCheck that the camera is online and the backend is running.`
+          : `✗ Error initializing: ${error.message}\n\nAllow camera permission!`
       );
     } finally {
       setIsLoading(false);
@@ -474,19 +503,65 @@ export default function ActivityDetectorMonitor({
     }
   };
 
+  // Toggle between device cam and IP cam — restarts detection if active
+  const handleSourceToggle = async (newSource) => {
+    if (newSource === cameraSource) return;
+    if (isDetecting) {
+      await stopDetection();
+      setCameraSource(newSource);
+      // Small delay to let streams tear down cleanly
+      setTimeout(() => startDetection(newSource), 300);
+    } else {
+      setCameraSource(newSource);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-        <div className="flex justify-between items-center mb-4">
+        {/* ── Header: title + status dot + camera source toggle ── */}
+        <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
           <h2 className="text-xl font-semibold">
             📷 ML Activity Detection (Adaptive Thresholds)
           </h2>
-          <span
-            className={`inline-block w-3 h-3 rounded-full ${
-              isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
-            }`}
-          />
+
+          <div className="flex items-center gap-3">
+            {/* Camera source pill toggle */}
+            <div className="flex items-center bg-gray-800 rounded-full p-0.5 border border-gray-700 shadow-inner">
+              <button
+                onClick={() => handleSourceToggle("device")}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 ${cameraSource === "device"
+                  ? "bg-blue-600 text-white shadow-md shadow-blue-900/40"
+                  : "text-gray-400 hover:text-white"
+                  }`}
+              >
+                <span>💻</span> Device Cam
+              </button>
+              <button
+                onClick={() => handleSourceToggle("ip")}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 ${cameraSource === "ip"
+                  ? "bg-amber-500 text-white shadow-md shadow-amber-900/40"
+                  : "text-gray-400 hover:text-white"
+                  }`}
+              >
+                <span>📡</span> IP Camera
+              </button>
+            </div>
+
+            <span
+              className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
+                }`}
+            />
+          </div>
         </div>
+
+        {/* IP camera URL badge */}
+        {cameraSource === "ip" && (
+          <div className="mb-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
+            <span>📡</span>
+            <span className="truncate">{getIPCameraStreamUrl()}</span>
+          </div>
+        )}
 
         <div
           className="relative bg-black rounded-lg overflow-hidden border border-gray-800 shadow-2xl"
@@ -499,13 +574,18 @@ export default function ActivityDetectorMonitor({
             style={{
               width: "100%",
               height: "100%",
-              display: "block",
+              display: cameraSource === "ip" ? "none" : "block",
               objectFit: "cover",
             }}
           />
           <canvas
             ref={canvasRef}
             className="absolute inset-0 pointer-events-none w-full h-full object-cover"
+            style={{
+              // In IP cam mode the canvas IS the primary display (frames drawn by detectIPCamLoop)
+              // In device cam mode it's an overlay for pose/detection annotations
+              zIndex: cameraSource === "ip" ? 1 : 2,
+            }}
           />
 
           <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded font-mono text-xs text-green-400 backdrop-blur-sm border border-green-500/20">
@@ -515,83 +595,74 @@ export default function ActivityDetectorMonitor({
           {isDetecting && liveFeatures && (
             <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.handToMouth) < 0.35
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.handToMouth) < 0.35
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🍽️</span> HAND NEAR FACE
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.velocity) < 0.03
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.velocity) < 0.03
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.torsoAlign) > 1.1
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.torsoAlign) > 1.1
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🛏️</span> LYING DOWN
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Sitting / rest"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sitting / rest"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🪑</span> SITTING / RESTING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Standing"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Standing"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🧍</span> STANDING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Sleeping"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sleeping"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">😴</span> SLEEPING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Walking"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Walking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🚶</span> WALKING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Drinking"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Drinking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🥤</span> DRINKING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Taking Medications"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Taking Medications"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
@@ -639,17 +710,16 @@ export default function ActivityDetectorMonitor({
               </div>
               <div className="text-right">
                 <div
-                  className={`text-xs font-bold px-3 py-1 rounded-full border ${
-                    confirmedActivity.status === "Completed"
-                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                      : confirmedActivity.status === "Early"
-                        ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
-                        : confirmedActivity.status === "Late"
-                          ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                          : confirmedActivity.status === "Missed"
-                            ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                            : "text-blue-400 bg-blue-500/10 border-blue-500/20"
-                  }`}
+                  className={`text-xs font-bold px-3 py-1 rounded-full border ${confirmedActivity.status === "Completed"
+                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                    : confirmedActivity.status === "Early"
+                      ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
+                      : confirmedActivity.status === "Late"
+                        ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                        : confirmedActivity.status === "Missed"
+                          ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                          : "text-blue-400 bg-blue-500/10 border-blue-500/20"
+                    }`}
                 >
                   {confirmedActivity.status}
                 </div>
@@ -666,11 +736,10 @@ export default function ActivityDetectorMonitor({
             <button
               onClick={startDetection}
               disabled={isLoading}
-              className={`flex-1 ${
-                isLoading
-                  ? "bg-gray-600 cursor-not-allowed"
-                  : "bg-green-600 hover:bg-green-700"
-              } px-4 py-2 rounded font-semibold transition`}
+              className={`flex-1 ${isLoading
+                ? "bg-gray-600 cursor-not-allowed"
+                : "bg-green-600 hover:bg-green-700"
+                } px-4 py-2 rounded font-semibold transition`}
             >
               {isLoading ? "⏳ Loading Models..." : "▶ Start Activity Detection"}
             </button>

@@ -49,6 +49,10 @@ let poseHistory = [];
 let activityHistory = [];
 let featureHistory = [];
 
+// Tracks consecutive frames where the wrist stays above mouth level.
+// Long sustained raise → drinking; short repeated bursts → eating.
+let wristSustainFrames = 0;
+
 let lstmModel = null;
 let normMean = null;
 let normStd = null;
@@ -67,7 +71,8 @@ const actionMemory = {
 };
 
 const OBJECT_MEMORY_MAX = 10;
-const OBJECT_MEMORY_DURATION = 10000;
+// Tighter window (5 s) reduces bleed between cup and food memories
+const OBJECT_MEMORY_DURATION = 5000;
 
 const MP_IDX = {
   nose: 0,
@@ -379,14 +384,22 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     ? calculateAngle(shoulderMidPt, hipMidPt, kneeMidPt) : null;
   const bodyIsStraight = hipAngle !== null && hipAngle >= 160;
 
-  if (hasCup) actionMemory.lastCupSeen = now;
-  if (hasFoodOrBowl) actionMemory.lastFoodSeen = now;
+  if (hasCup) {
+    actionMemory.lastCupSeen = now;
+    // Cross-clear: seeing a cup actively resets food memory so they don't both fire
+    if (hasCup && !hasFoodOrBowl) actionMemory.lastFoodSeen = Math.min(actionMemory.lastFoodSeen, now - 4000);
+  }
+  if (hasFoodOrBowl) {
+    actionMemory.lastFoodSeen = now;
+    // Cross-clear: seeing food actively resets cup memory
+    if (hasFoodOrBowl && !hasCup) actionMemory.lastCupSeen = Math.min(actionMemory.lastCupSeen, now - 4000);
+  }
   if (handToMouth < 0.35 && hasCup) actionMemory.lastCupToMouth = now;
   if (handToMouth < 0.35 && !hasCup) actionMemory.lastEmptyHandToMouth = now;
 
-  const sawCupRecently = (now - actionMemory.lastCupSeen) < 8000;
-  const sawFoodRecently = (now - actionMemory.lastFoodSeen) < 8000;
-  const didDrinkGestureRecently = (now - actionMemory.lastCupToMouth) < 8000;
+  const sawCupRecently = (now - actionMemory.lastCupSeen) < 5000;
+  const sawFoodRecently = (now - actionMemory.lastFoodSeen) < 5000;
+  const didDrinkGestureRecently = (now - actionMemory.lastCupToMouth) < 5000;
   const didPillGestureRecently = (now - actionMemory.lastEmptyHandToMouth) < 12000;
   const objectMemory = getObjectMemoryStatus();
 
@@ -409,24 +422,18 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       bodyIsStraight,
       bedInScene: sawBedRecently,
     };
-  } else if (handToMouth < 0.35 && (hasFoodOrBowl || sawFoodRecently || objectMemory.hasFood)) {
-    activity = 'Eating';
-    confidence = hasFoodOrBowl ? 0.95 : 0.82;
-    signals = {
-      handToMouth: handToMouth.toFixed(3),
-      foodVisible: hasFoodOrBowl,
-      recentFood: sawFoodRecently,
-      source: 'threshold',
-    };
-  } else if (handToMouth < 0.35 && (hasCup || sawCupRecently || objectMemory.hasCup)) {
-    activity = 'Drinking';
-    confidence = hasCup ? 0.95 : 0.80;
-    signals = {
-      handToMouth: handToMouth.toFixed(3),
-      cupVisible: hasCup,
-      recentCup: sawCupRecently,
-      source: 'threshold',
-    };
+  } else if (handToMouth < 0.35 &&
+    (hasFoodOrBowl || sawFoodRecently || objectMemory.hasFood ||
+      hasCup || sawCupRecently || objectMemory.hasCup)) {
+    // Route through the dedicated disambiguator instead of a simple if/else
+    const disambig = disambiguateEatingDrinking({
+      hasCup, hasFoodOrBowl, sawCupRecently, sawFoodRecently,
+      objectMemory, handToMouth, wristOscillation, headTiltRatio: arguments[7] ?? 1.0,
+      chewingCycles: arguments[8] ?? 0, isChewing: arguments[6] ?? false,
+    });
+    activity = disambig.activity;
+    confidence = disambig.confidence;
+    signals = disambig.signals;
   } else if ((leftLegAngle > 150 && rightLegAngle > 150) && velocity < 0.05 && bodyHeight > 0.55) {
     activity = 'Walking';
     confidence = 0.70;
@@ -450,6 +457,89 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   }
 
   return { activity, confidence, signals };
+}
+
+/**
+ * disambiguateEatingDrinking
+ * ──────────────────────────
+ * Multi-signal biomechanical scorer that reliably distinguishes Eating from
+ * Drinking when the primary `handToMouth < 0.35` trigger fires.
+ *
+ * Each physical cue votes for one activity; the winner is whichever
+ * accumulates more points. The function is called by both the threshold
+ * classifier (inside classifyActivity) AND as a post-LSTM override step in
+ * the detection loop, so it always gets the final say on Eating vs Drinking.
+ *
+ * Signal scoring table
+ * ─────────────────────────────────────────────────────────────────────────
+ * Signal                          Eating  Drinking
+ * ──────────────────────────────  ──────  ────────
+ * Food object visible               +3      -1
+ * Cup object visible                -1      +3
+ * Food seen recently (5 s)          +1       0     (only if no cup)
+ * Cup seen recently  (5 s)           0      +1     (only if no food)
+ * Chewing cycles > 0                +2       0     ← jaw moves for eating
+ * headTiltRatio < 0.85               0      +2     ← head tips back for glass
+ * wristOscillation > 0.025          +2      -1     ← staccato scoop = eating
+ * wristSustainFrames > 15           -1      +2     ← sustained raise = drinking
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+function disambiguateEatingDrinking({
+  hasCup, hasFoodOrBowl, sawCupRecently, sawFoodRecently,
+  objectMemory, handToMouth, wristOscillation, headTiltRatio, chewingCycles,
+}) {
+  let eatScore = 0;
+  let drinkScore = 0;
+
+  // 1 — Object evidence (strongest signal)
+  if (hasFoodOrBowl) { eatScore += 3; drinkScore -= 1; }
+  if (hasCup) { drinkScore += 3; eatScore -= 1; }
+  if (sawFoodRecently && !hasCup) eatScore += 1;
+  if (sawCupRecently && !hasFoodOrBowl) drinkScore += 1;
+  if (objectMemory?.hasFood && !hasCup) eatScore += 1;
+  if (objectMemory?.hasCup && !hasFoodOrBowl) drinkScore += 1;
+
+  // 2 — Jaw / chewing signal
+  if (chewingCycles > 0) eatScore += 2;
+
+  // 3 — Head tilt (drinking tips head back → lower headTiltRatio)
+  if (headTiltRatio < 0.85) drinkScore += 2;
+  else if (headTiltRatio >= 1.0) eatScore += 1;  // neutral/level head → eating
+
+  // 4 — Wrist oscillation (repetitive scooping = eating; smooth hold = drinking)
+  if (wristOscillation > 0.025) { eatScore += 2; drinkScore -= 1; }
+  else if (wristOscillation < 0.010) drinkScore += 1;
+
+  // 5 — Sustained wrist raise (drinking holds arm up for several frames)
+  if (wristSustainFrames > 15) { drinkScore += 2; eatScore -= 1; }
+  else if (wristSustainFrames < 5) eatScore += 1;
+
+  // Floor scores at 0
+  eatScore = Math.max(0, eatScore);
+  drinkScore = Math.max(0, drinkScore);
+
+  const totalScore = eatScore + drinkScore || 1;  // avoid /0
+  const winner = drinkScore > eatScore ? 'Drinking' : 'Eating';
+
+  // Confidence: proportion of winning score, boosted if object evidence present
+  const rawConf = Math.max(eatScore, drinkScore) / totalScore;  // 0.5 – 1.0
+  const objBoost = (hasCup || hasFoodOrBowl) ? 0.08 : 0;
+  const confidence = Math.min(0.97, 0.70 + rawConf * 0.22 + objBoost);
+
+  return {
+    activity: winner,
+    confidence,
+    signals: {
+      source: 'disambig',
+      eatScore, drinkScore, winner,
+      handToMouth: typeof handToMouth === 'number' ? handToMouth.toFixed(3) : '?',
+      wristOscillation: typeof wristOscillation === 'number' ? wristOscillation.toFixed(4) : '?',
+      wristSustainFrames,
+      headTiltRatio: typeof headTiltRatio === 'number' ? headTiltRatio.toFixed(2) : '?',
+      chewingCycles,
+      hasCup, hasFoodOrBowl,
+    },
+  };
 }
 
 export async function initializePoseDetection(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
@@ -516,6 +606,317 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
     console.error('Failed to initialize pose detection:', error);
     throw error;
   }
+}
+
+// ── IP Camera Support ─────────────────────────────────────────────────────
+
+export function getIPCameraStreamUrl() {
+  // The schedule-monitoring backend (port 8004 by default) proxies the RTSP
+  // stream as MJPEG so the browser can consume it without a native RTSP client.
+  const backendBase = import.meta.env.VITE_SCHEDULE_BACKEND_URL || 'http://localhost:8004';
+  return `${backendBase}/api/monitoring/camera/stream`;
+}
+
+// Hidden canvas + Image used to render MJPEG frames so BlazePose can read them.
+let ipCamImg = null;
+let ipCamCanvas = null;
+let ipCamCtx = null;
+let ipCamAnimFrame = null;
+
+function _startIPCamFramePump(video, onReady) {
+  // Create an off-screen canvas the same size as the dest canvas (or 640×480).
+  ipCamCanvas = document.createElement('canvas');
+  ipCamCanvas.width = 640;
+  ipCamCanvas.height = 480;
+  ipCamCtx = ipCamCanvas.getContext('2d');
+
+  ipCamImg = new Image();
+  ipCamImg.crossOrigin = 'anonymous';
+
+  let firstFrame = true;
+  ipCamImg.onload = () => {
+    if (firstFrame) {
+      firstFrame = false;
+      // Size canvas to actual frame
+      ipCamCanvas.width = ipCamImg.naturalWidth || 640;
+      ipCamCanvas.height = ipCamImg.naturalHeight || 480;
+      // Tell the caller the video-like element is ready
+      if (onReady) onReady();
+    }
+  };
+
+  ipCamImg.src = getIPCameraStreamUrl();
+
+  // Pump: draw MJPEG img into our off-screen canvas every rAF tick.
+  // The `detector.estimatePoses` call below will be given `ipCamCanvas` as
+  // the "video" element; BlazePose accepts HTMLCanvasElement as well.
+  function pump() {
+    if (!isRunning) return;
+    if (ipCamImg && ipCamCtx && ipCamImg.naturalWidth > 0) {
+      ipCamCtx.drawImage(ipCamImg, 0, 0, ipCamCanvas.width, ipCamCanvas.height);
+    }
+    ipCamAnimFrame = requestAnimationFrame(pump);
+  }
+  pump();
+}
+
+function _stopIPCamFramePump() {
+  if (ipCamAnimFrame) cancelAnimationFrame(ipCamAnimFrame);
+  ipCamAnimFrame = null;
+  if (ipCamImg) { ipCamImg.src = ''; ipCamImg = null; }
+  ipCamCanvas = null;
+  ipCamCtx = null;
+}
+
+/**
+ * Like `initializePoseDetection` but uses the IP camera MJPEG stream
+ * instead of getUserMedia. The `video` element is used only for display
+ * (we draw the MJPEG frames into it via a canvas→drawImage trick).
+ */
+export async function initializePoseDetectionWithIPCamera(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
+  if (isInitializing || isRunning) {
+    console.warn('Pose detection already initializing or running — skipping duplicate call');
+    return;
+  }
+  isInitializing = true;
+
+  try {
+    // Stop any existing webcam streams
+    if (video.srcObject) {
+      video.srcObject.getTracks().forEach(t => t.stop());
+      video.srcObject = null;
+    }
+
+    videoElement = video;
+    canvasElement = canvas;
+    expectedActivityRef = expectedRef;
+    onActivityCallback = onActivityDetected;
+    onAlignmentChangeCallback = onAlignmentChange;
+
+    await tf.setBackend('webgl');
+    await tf.ready();
+
+    const detectorConfig = {
+      runtime: 'mediapipe',
+      modelType: 'full',
+      enableSmoothing: true,
+      solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/pose',
+    };
+    detector = await poseDetection.createDetector(
+      poseDetection.SupportedModels.BlazePose,
+      detectorConfig
+    );
+    console.log('✓ BlazePose loaded (IP cam mode)');
+
+    const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+    faceDetector = await faceLandmarksDetection.createDetector(faceModel, {
+      runtime: 'tfjs', refineLandmarks: false,
+    });
+    objectDetector = await cocoSsd.load();
+
+    if (USE_LSTM) {
+      loadLSTMModel().catch(err =>
+        console.warn('LSTM model not found — using threshold classifier:', err.message)
+      );
+    }
+
+    // Start the MJPEG frame pump and wait for the first frame before looping.
+    await new Promise(resolve => {
+      _startIPCamFramePump(video, resolve);
+      // Safety timeout: start anyway after 3 s if onReady never fires
+      setTimeout(resolve, 3000);
+    });
+
+    isRunning = true;
+    isInitializing = false;
+
+    // Run the shared detection loop — but override videoElement to point to
+    // our off-screen canvas so BlazePose sees real pixel data.
+    videoElement = ipCamCanvas;  // BlazePose accepts HTMLCanvasElement
+    detectIPCamLoop(video, canvas);
+
+    return { detector };
+  } catch (error) {
+    isInitializing = false;
+    _stopIPCamFramePump();
+    throw error;
+  }
+}
+
+async function detectIPCamLoop(displayVideo, displayCanvas) {
+  if (!isRunning || !detector || !ipCamCanvas) return;
+
+  try {
+    let objects = lastDetectedObjects;
+    let faces = [];
+    let poses = [];
+
+    try {
+      if (!isRunning || !detector) return;
+      poses = await detector.estimatePoses(ipCamCanvas);
+
+      if (!isRunning || !faceDetector) return;
+      faces = await faceDetector.estimateFaces(ipCamCanvas);
+
+      if (!isRunning) return;
+      if (objectDetector && (Math.random() < 0.5 || lastDetectedObjects.length === 0)) {
+        objects = await objectDetector.detect(ipCamCanvas);
+        if (!isRunning) return;
+        lastDetectedObjects = objects;
+        updateObjectMemory(objects, Date.now());
+      }
+    } catch (e) { console.error(e); }
+
+    if (!isRunning || !ipCamCanvas) return;
+
+    // Mirror MJPEG frames to the visible <video> element via the display canvas
+    if (displayCanvas) {
+      if (displayCanvas.width !== ipCamCanvas.width) {
+        displayCanvas.width = ipCamCanvas.width;
+        displayCanvas.height = ipCamCanvas.height;
+      }
+      const dCtx = displayCanvas.getContext('2d');
+      dCtx.drawImage(ipCamCanvas, 0, 0);
+    }
+
+    if (poses && poses.length > 0) {
+      const pose = poses[0];
+      const width = ipCamCanvas.width || 640;
+      const height = ipCamCanvas.height || 480;
+      const normalizedKeypoints = pose.keypoints.map(p => ({
+        ...p, x: p.x / width, y: p.y / height,
+      }));
+
+      const thresholdFeatures = extractThresholdFeatures(normalizedKeypoints);
+      const lstmFeatures = extractLSTMFeatures(normalizedKeypoints);
+      let smoothedActivity = null;
+      let mouthOpenRatio = 0;
+      let headTiltRatio = 1.0;
+
+      if (faces && faces.length > 0 && faces[0].keypoints) {
+        const faceKp = faces[0].keypoints;
+        if (faceKp[13] && faceKp[14] && faceKp[10] && faceKp[152]) {
+          const lipDist = Math.sqrt(Math.pow(faceKp[13].x - faceKp[14].x, 2) + Math.pow(faceKp[13].y - faceKp[14].y, 2));
+          const faceHeight = Math.sqrt(Math.pow(faceKp[10].x - faceKp[152].x, 2) + Math.pow(faceKp[10].y - faceKp[152].y, 2));
+          mouthOpenRatio = lipDist / (faceHeight || 1);
+        }
+        if (faceKp[152] && faceKp[1] && faceKp[10]) {
+          const chinToNose = faceKp[152].y - faceKp[1].y;
+          const noseToForehead = faceKp[1].y - faceKp[10].y;
+          headTiltRatio = chinToNose / (noseToForehead + 0.001);
+        }
+      }
+
+      mouthHistory.push(mouthOpenRatio);
+      if (mouthHistory.length > 40) mouthHistory.shift();
+
+      let chewingCycles = 0;
+      if (mouthHistory.length > 10) {
+        const mean = mouthHistory.reduce((a, b) => a + b, 0) / mouthHistory.length;
+        for (let i = 5; i < mouthHistory.length - 5; i++) {
+          const prev = mouthHistory[i - 5], curr = mouthHistory[i], next = mouthHistory[i + 5];
+          if (curr > prev + 0.005 && curr > next + 0.005 && curr > 0.02) chewingCycles++;
+        }
+      }
+      const isChewing = chewingCycles >= 1;
+      const isSwallowing = headTiltRatio < 0.8;
+
+      // ── Wrist sustain tracker (IP cam) ───────────────────────────────────
+      if (thresholdFeatures) {
+        const wristMinY = thresholdFeatures[11] ?? 1.0;
+        const wristRaised = wristMinY < 0.45;
+        wristSustainFrames = wristRaised ? wristSustainFrames + 1 : Math.max(0, wristSustainFrames - 2);
+      }
+
+      if (thresholdFeatures) {
+        poseHistory.push(normalizedKeypoints);
+        if (poseHistory.length > HISTORY_SIZE) poseHistory.shift();
+
+        if (lstmFeatures) {
+          featureHistory.push(lstmFeatures);
+          if (featureHistory.length > LSTM_SEQ_LEN) featureHistory.shift();
+        }
+
+        let activityResult = (lstmReady && featureHistory.length >= LSTM_SEQ_LEN)
+          ? classifyWithLSTM(featureHistory) : null;
+
+        const objectResult = classifyActivity(
+          thresholdFeatures, poseHistory, 0,
+          lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles
+        );
+
+        if (objectResult && ['Eating', 'Drinking'].includes(objectResult.activity) && objectResult.confidence >= 0.80) {
+          activityResult = objectResult;
+        } else if (!activityResult) {
+          activityResult = objectResult;
+        }
+
+        // Post-LSTM eating/drinking disambiguation (same as webcam loop)
+        if (activityResult && ['Eating', 'Drinking'].includes(activityResult.activity)) {
+          const hasCup = lastDetectedObjects.some(o => ['cup', 'bottle', 'wine glass'].includes(o.class));
+          const hasFoodOrBowl = lastDetectedObjects.some(o =>
+            ['bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza', 'donut', 'cake',
+              'apple', 'banana', 'orange', 'plate', 'dining table', 'food'].includes(o.class));
+          const now_ts = Date.now();
+          const sawCupR = (now_ts - actionMemory.lastCupSeen) < 5000;
+          const sawFoodR = (now_ts - actionMemory.lastFoodSeen) < 5000;
+          const om = getObjectMemoryStatus();
+          activityResult = disambiguateEatingDrinking({
+            hasCup, hasFoodOrBowl, sawCupRecently: sawCupR, sawFoodRecently: sawFoodR,
+            objectMemory: om,
+            handToMouth: thresholdFeatures[7] ?? 0.5,
+            wristOscillation: thresholdFeatures[13] ?? 0,
+            headTiltRatio, chewingCycles,
+          });
+        }
+
+        if (activityResult) {
+          smoothedActivity = smoothPredictions(activityResult, activityHistory);
+          activityHistory.push(smoothedActivity);
+          if (activityHistory.length > 10) activityHistory.shift();
+
+          if (onActivityCallback) {
+            onActivityCallback({
+              activity_name: smoothedActivity.activity,
+              confidence: smoothedActivity.confidence,
+              detected_at: new Date(),
+              signals: smoothedActivity.signals,
+              features: thresholdFeatures,
+            });
+          }
+        }
+      }
+
+      // Draw COCO-SSD boxes on display canvas
+      if (displayCanvas && displayCanvas.width > 0) {
+        const dCtx = displayCanvas.getContext('2d');
+        if (lastDetectedObjects) {
+          lastDetectedObjects.forEach(obj => {
+            dCtx.strokeStyle = '#00FFFF';
+            dCtx.lineWidth = 2;
+            dCtx.strokeRect(obj.bbox[0], obj.bbox[1], obj.bbox[2], obj.bbox[3]);
+            dCtx.fillStyle = '#00FFFF';
+            dCtx.font = '14px Arial';
+            dCtx.fillText(`${obj.class} (${Math.round(obj.score * 100)}%)`, obj.bbox[0], obj.bbox[1] > 20 ? obj.bbox[1] - 5 : 10);
+          });
+        }
+
+        let isAligned = false;
+        if (smoothedActivity && expectedActivityRef && expectedActivityRef.current) {
+          isAligned = smoothedActivity.activity.toLowerCase() === expectedActivityRef.current.toLowerCase()
+            && smoothedActivity.confidence >= CONFIDENCE_THRESHOLD;
+        }
+        if (isAligned !== currentAlignment) {
+          currentAlignment = isAligned;
+          if (onAlignmentChangeCallback) onAlignmentChangeCallback(isAligned);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in IP cam detection loop:', error);
+  }
+
+  if (isRunning) requestAnimationFrame(() => detectIPCamLoop(displayVideo, displayCanvas));
 }
 
 async function detectPoseLoop() {
@@ -601,6 +1002,18 @@ async function detectPoseLoop() {
       const isChewing = chewingCycles >= 1;
       const isSwallowing = headTiltRatio < 0.8;
 
+      // ── Wrist sustain tracker ────────────────────────────────────────────
+      // Count consecutive frames where EITHER wrist is above mouth level.
+      // Normalized coords: smaller y = higher on screen.
+      if (thresholdFeatures) {
+        const wristMinY = thresholdFeatures[11] ?? 1.0;   // min wrist Y (feature index 11)
+        // Mouth Y ≈ nose Y (landmark 0), normalised — we proxy via handToMouth feature.
+        // A wristMinY < 0.45 means the wrist is in the upper half of the frame, consistent
+        // with a raised drinking arm.
+        const wristRaised = wristMinY < 0.45;
+        wristSustainFrames = wristRaised ? wristSustainFrames + 1 : Math.max(0, wristSustainFrames - 2);
+      }
+
       if (thresholdFeatures) {
         poseHistory.push(normalizedKeypoints);
         if (poseHistory.length > HISTORY_SIZE) poseHistory.shift();
@@ -615,9 +1028,7 @@ async function detectPoseLoop() {
           ? classifyWithLSTM(featureHistory)
           : null;
 
-        // Step 2 — Object-context override: run the threshold classifier regardless
-        // so COCO-SSD cup/food evidence is always evaluated.  When it sees a cup or
-        // food item near the mouth with high confidence, that beats the pose-only LSTM.
+        // Step 2 — Threshold classifier (always runs for object + biomechanical context)
         const objectResult = classifyActivity(
           thresholdFeatures, poseHistory, 0,
           lastDetectedObjects, isChewing, isSwallowing, headTiltRatio, chewingCycles
@@ -628,11 +1039,33 @@ async function detectPoseLoop() {
           ['Eating', 'Drinking'].includes(objectResult.activity) &&
           objectResult.confidence >= 0.80
         ) {
-          // Strong object evidence — override whatever the LSTM said.
+          // Strong object+biomech evidence — override whatever the LSTM said.
           activityResult = objectResult;
         } else if (!activityResult) {
           // LSTM not ready yet — fall back to threshold.
           activityResult = objectResult;
+        }
+
+        // Step 3 — Post-LSTM eating/drinking disambiguation.
+        // Even if LSTM picked one, rerun the biomechanical scorer to correct it.
+        // Only fires when the result is Eating or Drinking (avoids touching other classes).
+        if (activityResult && ['Eating', 'Drinking'].includes(activityResult.activity)) {
+          const hasCup = lastDetectedObjects.some(o => ['cup', 'bottle', 'wine glass'].includes(o.class));
+          const hasFoodOrBowl = lastDetectedObjects.some(o =>
+            ['bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza', 'donut', 'cake',
+              'apple', 'banana', 'orange', 'plate', 'dining table', 'food'].includes(o.class));
+          const now_ts = Date.now();
+          const sawCupR = (now_ts - actionMemory.lastCupSeen) < 5000;
+          const sawFoodR = (now_ts - actionMemory.lastFoodSeen) < 5000;
+          const om = getObjectMemoryStatus();
+          const hand2mouth = thresholdFeatures[7] ?? 0.5;
+          const wristOsc = thresholdFeatures[13] ?? 0;
+
+          activityResult = disambiguateEatingDrinking({
+            hasCup, hasFoodOrBowl, sawCupRecently: sawCupR, sawFoodRecently: sawFoodR,
+            objectMemory: om, handToMouth: hand2mouth, wristOscillation: wristOsc,
+            headTiltRatio, chewingCycles,
+          });
         }
 
         if (activityResult) {
@@ -725,10 +1158,14 @@ export function stopPoseDetection() {
   isRunning = false;
   isInitializing = false;
 
+  // Stop webcam stream if active
   if (videoElement && videoElement.srcObject) {
     videoElement.srcObject.getTracks().forEach(track => track.stop());
     videoElement.srcObject = null;
   }
+
+  // Stop IP cam frame pump if active
+  _stopIPCamFramePump();
 
   detector = null;
   faceDetector = null;
@@ -739,4 +1176,5 @@ export function stopPoseDetection() {
   activityHistory = [];
   featureHistory = [];
   currentAlignment = false;
+  wristSustainFrames = 0;
 }
