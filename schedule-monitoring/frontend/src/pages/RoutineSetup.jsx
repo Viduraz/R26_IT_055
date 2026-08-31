@@ -3,11 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { createSchedule } from "../services/scheduleApi";
 
 const ACTIVITY_TYPES = [
-  "Eating",
-  "Drinking",
-  "Sleeping",
   "Walking",
   "Sitting / rest",
+  "Sleeping",
+  "Eating",
+  "Drinking",
 ];
 
 const START_OFFSET_MINUTES = 5;

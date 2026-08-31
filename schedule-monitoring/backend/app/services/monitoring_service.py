@@ -104,27 +104,26 @@ FINAL_LOG_STATUSES = ("early", "done", "late", "missed", "caregiver_missing")
 
 # ── Activity → task-type mapping ───────────────────────────────────────────
 ACTIVITY_TO_TASK_TYPES: dict[str, list[str]] = {
-    "eating":        ["meal", "caregiver_assisted"],
-    "meal":          ["meal"],
-    "drinking":      ["hydration", "caregiver_assisted"],
-    "hydration":     ["hydration"],
-    "sleeping":      ["sleep"],
-    "lying":         ["sleep", "rest"],
-    "wake_up":       ["sleep"],
-    "sitting":       ["rest"],
-    "rest":          ["rest"],
     "walking":       ["exercise"],
+    "sitting / rest": ["rest"],
+    "sitting":       ["rest"],
+    "sleeping":      ["sleep"],
+    "eating":        ["meal"],
+    "drinking":      ["hydration"],
+    "meal":          ["meal"],
+    "hydration":     ["hydration"],
+    "rest":          ["rest"],
     "exercise":      ["exercise"],
-    "hand_to_mouth": ["medication", "meal"],
-    "medication":    ["medication", "caregiver_assisted"],
-    "feeding":       ["meal", "caregiver_assisted"],
-    "bathing":       ["caregiver_assisted"],
 }
 
 FRONTEND_LABEL_TO_ACTIVITY: dict[str, str] = {
-    "sitting / rest":      "sitting",
-    "taking medications":  "medication",
-    "standing":            "rest",
+    "walking":            "walking",
+    "sitting / rest":     "sitting / rest",
+    "sitting":            "sitting / rest",
+    "sleeping":           "sleeping",
+    "eating":             "eating",
+    "drinking":           "drinking",
+    "standing":           "sitting / rest",
 }
 
 

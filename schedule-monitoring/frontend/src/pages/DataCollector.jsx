@@ -34,8 +34,11 @@ import * as cocoSsd from '@tensorflow-models/coco-ssd';
 // Must match LSTM_ACTIVITY_NAMES in activityDetection.js exactly (order matters
 // for training but not for collection — labels are stored as strings).
 const ACTIVITY_LABELS = [
-  'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
-  'Walking', 'Sitting / rest', 'Standing', 'Movement'
+  'Walking',
+  'Sitting / rest',
+  'Sleeping',
+  'Eating',
+  'Drinking'
 ];
 
 export default function DataCollector() {

@@ -214,8 +214,6 @@ export default function ActivityDetectorMonitor({
       drinking: ["drink", "drinking", "water", "hydrate"],
       sleeping: ["sleep", "sleeping", "bed", "nap"],
       "sitting / rest": ["sit", "sitting", "rest", "resting"],
-      standing: ["stand", "standing"],
-      "taking medications": ["med", "medication", "pill", "tablet"],
     };
 
     for (const act of activities) {
@@ -614,15 +612,6 @@ export default function ActivityDetectorMonitor({
               </div>
               <div
                 className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Standing"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
-              >
-                <span className="text-xs">🧍</span> STANDING
-              </div>
-              <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
                   currentActivity?.activity_name === "Sleeping"
                     ? "bg-green-500/20 border-green-500 text-green-400"
                     : "bg-gray-900 border-gray-700 text-gray-500"
@@ -647,15 +636,6 @@ export default function ActivityDetectorMonitor({
                 }`}
               >
                 <span className="text-xs">🥤</span> DRINKING
-              </div>
-              <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Taking Medications"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
-              >
-                <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
             </div>
           )}
