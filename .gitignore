@@ -74,3 +74,4 @@ logs/
 
 # MongoDB dumps
 dump/
+cloudflare/cloudflared.exe
