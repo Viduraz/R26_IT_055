@@ -81,20 +81,14 @@ class Predictor:
             return False
 
     def load_knn_templates(self, profiles: List[Dict]) -> int:
-        """Load biometric templates from feature profile records."""
-        if not profiles:
-            try:
-                import json
-                local_path = Path("./data/local_db.json")
-                if local_path.exists():
-                    with open(local_path, "r") as f:
-                        data = json.load(f)
-                    profiles = data.get("feature_profiles", [])
-                    if profiles:
-                        log.info("loaded_knn_from_local_db_fallback", count=len(profiles))
-            except Exception as e:
-                log.warning("local_db_knn_fallback_failed", error=str(e))
+        """Load biometric templates from feature profile records.
 
+        Profiles come from MongoDB only. The former fallback that read
+        ./data/local_db.json off disk is gone: it could quietly identify people
+        against stale enrollments that no longer existed in the database.
+        """
+        if not profiles:
+            log.warning("no_feature_profiles_to_load")
         return self.matcher.load_from_profiles(profiles)
 
     @property

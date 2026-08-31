@@ -52,11 +52,8 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
     log.info("gateway_starting", port=settings.gateway_port)
 
-    # Connect to MongoDB
+    # Connect to MongoDB. Raises if unreachable — MongoDB is the only store.
     await MongoDB.connect(settings.mongodb_uri, settings.mongodb_db)
-
-    # Sync data from local JSON database to MongoDB Atlas if connected
-    await MongoDB.sync_local_db()
 
     # Load trained models (if available)
     predictor.load_models()
