@@ -27,17 +27,6 @@ from app.models.tracking_models import (
 
 router = APIRouter()
 
-# ── In-memory Mobile GPS Store ──────────────────────────────────────────────
-# Stores the latest GPS coordinate pushed from a mobile phone.
-_mobile_gps_store: dict = {}
-
-
-class MobileGpsPayload(BaseModel):
-    lat: float
-    lng: float
-    accuracy: Optional[float] = None
-    session_id: Optional[str] = "default"
-
 
 @router.post("/zones")
 async def create_zone(
@@ -122,25 +111,3 @@ async def resolve_alert(
     return alert
 
 
-# ── Mobile GPS Endpoints ─────────────────────────────────────────────────────
-
-@router.post("/mobile-gps")
-async def receive_mobile_gps(payload: MobileGpsPayload):
-    """Receive live GPS location from a mobile companion page."""
-    _mobile_gps_store["latest"] = {
-        "lat": payload.lat,
-        "lng": payload.lng,
-        "accuracy": payload.accuracy,
-        "session_id": payload.session_id,
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
-    return {"status": "ok"}
-
-
-@router.get("/mobile-gps")
-async def get_mobile_gps():
-    """Return the latest GPS location received from a mobile device."""
-    data = _mobile_gps_store.get("latest")
-    if not data:
-        return JSONResponse(status_code=404, content={"detail": "No mobile GPS data yet"})
-    return data
