@@ -20,6 +20,13 @@ mtcnn = MTCNN(
     device=device, keep_all=False
 )
 
+# MTCNN for multi-face detection
+mtcnn_multi = MTCNN(
+    image_size=160, margin=0, min_face_size=20,
+    thresholds=[0.6, 0.7, 0.7], factor=0.709, post_process=True,
+    device=device, keep_all=True
+)
+
 # 2. InceptionResnetV1 for Embedding Extraction (FaceNet)
 resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 
@@ -63,6 +70,28 @@ def get_embedding(base64_img: str) -> list[float] | None:
     except Exception as e:
         print(f"[FaceEmbedder] Error extracting embedding: {e}")
         return None
+
+
+def get_all_embeddings(base64_img: str) -> list[list[float]]:
+    """
+    Detects ALL faces in base64_img and returns a list of 512D embedding vectors.
+    Returns [] if no face is detected.
+    """
+    try:
+        img = decode_base64_image(base64_img)
+        faces_tensor = mtcnn_multi(img)
+        if faces_tensor is None or len(faces_tensor) == 0:
+            return []
+        if faces_tensor.dim() == 3:
+            faces_tensor = faces_tensor.unsqueeze(0)
+        faces_tensor = faces_tensor.to(device)
+        with torch.no_grad():
+            embeddings = resnet(faces_tensor)
+        emb_np = embeddings.cpu().numpy()
+        return [emb_np[i].tolist() for i in range(len(emb_np))]
+    except Exception as e:
+        print(f"[FaceEmbedder] Error extracting multi embeddings: {e}")
+        return []
 
 
 def calculate_similarity(embed1: list[float], embed2: list[float]) -> float:

@@ -15,16 +15,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # auth-service frontend
-        "http://localhost:5174",  # face-verification frontend
-        "http://localhost:5175",  # tracking-geofencing frontend
-        "http://localhost:5176",  # anomaly-detection frontend
-        "http://localhost:5177",  # schedule-monitoring frontend
-        "http://localhost:5178",  # gateway-dashboard frontend
-        "http://localhost:3000",  # fallback for dev
-    ],
-    allow_credentials=True,
+    # Wildcard allows Cloudflare tunnel domains and local dev.
+    # JWT is in Authorization headers — credentials=False is correct.
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

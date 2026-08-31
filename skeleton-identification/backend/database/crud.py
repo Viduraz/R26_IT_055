@@ -40,7 +40,7 @@ class UserCRUD:
 
     @classmethod
     async def list_all(cls) -> List[Dict]:
-        cursor = cls._col().find({}, {"_id": 0})
+        cursor = cls._col().find({"user_id": {"$exists": True}}, {"_id": 0})
         return await cursor.to_list(length=100)
 
     @classmethod
@@ -68,12 +68,12 @@ class UserCRUD:
 
     @classmethod
     async def count(cls) -> int:
-        return await cls._col().count_documents({})
+        return await cls._col().count_documents({"user_id": {"$exists": True}})
 
     @classmethod
     async def clear_all(cls):
         """Reset the collection (danger!)."""
-        await cls._col().delete_many({})
+        await cls._col().delete_many({"user_id": {"$exists": True}})
         log.info("users_cleared")
 
 
@@ -94,36 +94,58 @@ class FeatureProfileCRUD:
         user_id: str,
         static_vector: List[float],
         gait_sequence: Optional[List[List[float]]] = None,
+        feature_version: str = "v2.0_anthropometric",
     ):
         """Add a feature sample and update running statistics."""
+        return await cls.bulk_upsert_samples(
+            user_id=user_id,
+            static_vectors=[static_vector],
+            gait_sequences=[gait_sequence] if gait_sequence else [],
+            feature_version=feature_version,
+        )
+
+    @classmethod
+    async def bulk_upsert_samples(
+        cls,
+        user_id: str,
+        static_vectors: List[List[float]],
+        gait_sequences: Optional[List[List[List[float]]]] = None,
+        feature_version: str = "v2.0_anthropometric",
+    ):
+        """Bulk save multiple feature vectors in a single efficient database transaction."""
+        if not static_vectors:
+            return
+
         existing = await cls._col().find_one({"user_id": user_id})
 
         if existing is None:
+            static_arr = np.array(static_vectors, dtype=np.float64)
             doc = {
                 "user_id": user_id,
+                "feature_version": feature_version,
                 "static_features": {
-                    "mean_vector": static_vector,
-                    "std_vector": [0.0] * len(static_vector),
-                    "samples": [static_vector],
+                    "mean_vector": static_arr.mean(axis=0).tolist(),
+                    "std_vector": static_arr.std(axis=0).tolist(),
+                    "samples": static_vectors,
                 },
                 "gait_features": {
-                    "samples": [gait_sequence] if gait_sequence else [],
+                    "samples": gait_sequences if gait_sequences else [],
                 },
-                "sample_count": 1,
+                "sample_count": len(static_vectors),
                 "last_updated": datetime.utcnow(),
                 "version": 1,
             }
             await cls._col().insert_one(doc)
         else:
-            # Append sample and recompute statistics
             static_samples = existing["static_features"].get("samples", [])
-            static_samples.append(static_vector)
+            static_samples.extend(static_vectors)
 
-            static_arr = np.array(static_samples)
+            static_arr = np.array(static_samples, dtype=np.float64)
             static_mean = static_arr.mean(axis=0).tolist()
             static_std = static_arr.std(axis=0).tolist()
 
             update = {
+                "feature_version": feature_version,
                 "static_features.mean_vector": static_mean,
                 "static_features.std_vector": static_std,
                 "static_features.samples": static_samples,
@@ -131,9 +153,9 @@ class FeatureProfileCRUD:
                 "last_updated": datetime.utcnow(),
             }
 
-            if gait_sequence:
+            if gait_sequences:
                 gait_samples = existing["gait_features"].get("samples", [])
-                gait_samples.append(gait_sequence)
+                gait_samples.extend(gait_sequences)
                 update["gait_features.samples"] = gait_samples
 
             await cls._col().update_one(

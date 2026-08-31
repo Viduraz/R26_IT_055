@@ -11,6 +11,31 @@ from pathlib import Path
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from typing import Optional, Any, Dict, List
 from datetime import datetime
+import socket
+
+# Apply DNS resolution patch for MongoDB Atlas hostnames to handle flaky local DNS/IPv6 config
+try:
+    import dns.resolver
+    _orig_getaddrinfo = socket.getaddrinfo
+    _dns_resolver = dns.resolver.Resolver(configure=False)
+    _dns_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+    
+    # Configure default resolver for dnspython SRV lookup
+    dns.resolver.default_resolver = _dns_resolver
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if 'mongodb.net' in host:
+            try:
+                answers = _dns_resolver.resolve(host, 'A')
+                if answers:
+                    return _orig_getaddrinfo(str(answers[0]), port, *args, **kwargs)
+            except Exception:
+                pass
+        return _orig_getaddrinfo(host, port, *args, **kwargs)
+        
+    socket.getaddrinfo = _patched_getaddrinfo
+except Exception:
+    pass
 
 log = structlog.get_logger()
 
@@ -46,7 +71,11 @@ class LocalCursor:
                 match = True
                 for k,v in self._query.items():
                     if k.startswith("$"): continue
-                    if doc.get(k) != v: match = False; break
+                    if isinstance(v, dict) and "$exists" in v:
+                        exists = v["$exists"]
+                        has_key = k in doc
+                        if has_key != exists: match = False; break
+                    elif doc.get(k) != v: match = False; break
                 if match: filtered.append(doc)
             data = filtered
             
@@ -215,6 +244,11 @@ class LocalDatabase:
     def __getitem__(self, name: str):
         return LocalCollection(self, name)
 
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return LocalCollection(self, name)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MONGODB CONNECTION MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -244,8 +278,10 @@ class MongoDB:
             log.info("connecting_to_mongodb", uri=uri.split("@")[-1]) # Hide credentials
             cls._client = AsyncIOMotorClient(
                 uri,
-                serverSelectionTimeoutMS=3000,
-                connectTimeoutMS=3000,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                tls=True,
+                tlsAllowInvalidCertificates=True,
             )
             # Verify connection
             await cls._client.admin.command("ping")
@@ -254,20 +290,27 @@ class MongoDB:
             log.info("mongodb_connected_atlas", db=db_name)
             await cls._create_indexes()
         except Exception as e:
-            log.warning("mongodb_atlas_failed_switching_to_local", error=str(e))
+            log.error("mongodb_atlas_connection_failed", error=str(e))
+            log.info("falling_back_to_local_db", path=settings.local_db_path)
             cls._is_local = True
             cls._db = LocalDatabase(settings.local_db_path)
-            log.info("local_db_initialized", path=settings.local_db_path)
 
     @classmethod
     async def _create_indexes(cls):
         """Create required indexes (Cloud only)."""
         if cls._is_local: return
         db = cls.get_db()
-        await db.users.create_index("user_id", unique=True)
-        await db.feature_profiles.create_index("user_id", unique=True)
-        await db.identification_logs.create_index("timestamp")
-        await db.trained_models.create_index([("model_type", 1), ("is_active", 1)])
+        for col_name, key, kwargs in [
+            ("users", "user_id", {"unique": True, "sparse": True}),
+            ("feature_profiles", "user_id", {"unique": True}),
+            ("identification_logs", "timestamp", {}),
+            ("trained_models", [("model_type", 1), ("is_active", 1)], {}),
+        ]:
+            try:
+                await db[col_name].create_index(key, **kwargs)
+            except Exception as e:
+                # If index exists with slightly different specs, ignore safely
+                log.debug("index_note", collection=col_name, error=str(e))
         log.info("mongodb_indexes_created")
 
     @classmethod
@@ -279,6 +322,71 @@ class MongoDB:
     @classmethod
     def get_collection(cls, name: str):
         return cls.get_db()[name]
+
+    @classmethod
+    async def sync_local_db(cls):
+        """Sync data from local JSON database to cloud MongoDB Atlas if needed (fast bulk check)."""
+        if cls._is_local:
+            return
+
+        from config import settings
+        local_db_path = settings.local_db_path
+        if not os.path.exists(local_db_path):
+            log.info("sync_no_local_db_found", path=local_db_path)
+            return
+
+        try:
+            log.info("syncing_local_db_to_atlas_started", path=local_db_path)
+            with open(local_db_path, "r") as f:
+                data = json.load(f)
+
+            db = cls.get_db()
+            
+            # Fast check for existing user_ids in cloud DB
+            existing_user_ids = set(await db.users.distinct("user_id"))
+            existing_profile_ids = set(await db.feature_profiles.distinct("user_id"))
+            
+            # Sync missing users
+            users = data.get("users", [])
+            users_to_insert = []
+            for u in users:
+                if u.get("user_id") not in existing_user_ids:
+                    u_copy = u.copy()
+                    for k in ["created_at", "updated_at"]:
+                        if k in u_copy and isinstance(u_copy[k], str):
+                            try:
+                                u_copy[k] = datetime.fromisoformat(u_copy[k])
+                            except Exception:
+                                pass
+                    users_to_insert.append(u_copy)
+
+            if users_to_insert:
+                await db.users.insert_many(users_to_insert)
+
+            # Sync missing feature_profiles
+            profiles = data.get("feature_profiles", [])
+            profiles_to_insert = []
+            for p in profiles:
+                if p.get("user_id") not in existing_profile_ids:
+                    p_copy = p.copy()
+                    if "last_updated" in p_copy and isinstance(p_copy["last_updated"], str):
+                        try:
+                            p_copy["last_updated"] = datetime.fromisoformat(p_copy["last_updated"])
+                        except Exception:
+                            pass
+                    profiles_to_insert.append(p_copy)
+
+            if profiles_to_insert:
+                await db.feature_profiles.insert_many(profiles_to_insert)
+
+            log.info(
+                "sync_local_db_to_atlas_success",
+                users=len(users_to_insert),
+                profiles=len(profiles_to_insert),
+                models=0,
+            )
+        except Exception as e:
+            log.warning("sync_local_db_to_atlas_skipped", error=str(e))
 
     @classmethod
     async def close(cls):

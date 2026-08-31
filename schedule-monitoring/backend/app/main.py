@@ -1,12 +1,18 @@
 """
 schedule-monitoring/backend/app/main.py
 """
+
+"""
+schedule-monitoring/backend/app/main.py
+"""
 import time
 import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.routes.schedule_routes import router as schedule_router
 from app.routes.monitoring_routes import router as monitoring_router
+from app.services.monitoring_service import MonitoringService
 
 app = FastAPI(
     title="Secure Elder Care — Schedule Monitoring Service",
@@ -15,15 +21,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", # Auth
-        "http://localhost:5174", # Face
-        "http://localhost:5175", # Tracking
-        "http://localhost:5176", # Anomaly
-        "http://localhost:5177", # Schedule
-        "http://localhost:5178", # Gateway
-    ],
-    allow_credentials=True,
+    # Wildcard allows Cloudflare tunnel domains and local dev.
+    # JWT is in Authorization headers — credentials=False is correct.
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,7 +36,6 @@ app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitorin
 # ── Background sweep thread ────────────────────────────────────────────────
 def _missed_task_sweep():
     """Runs every 60 s; marks tasks MISSED once their time window closes."""
-    from app.services.monitoring_service import MonitoringService
     svc = MonitoringService()
     while True:
         try:

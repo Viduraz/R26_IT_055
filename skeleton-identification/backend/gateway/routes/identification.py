@@ -68,7 +68,14 @@ class EnrollFrameRequest(BaseModel):
     gait_features: Optional[List[float]] = None
 
 
+class EnrollUserImagesRequest(BaseModel):
+    user_id: str
+    frames: List[str]
+
+
 class TrainRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_type: str = "ensemble"  # svm | lstm | ensemble
     epochs: int = 100
     batch_size: int = 32
@@ -135,7 +142,7 @@ async def verify_frame(req: VerifyFrameRequest):
     finally:
         pose.close()
 
-
+#Live Identification (The "Brain" in action)
 @router.post("/identify")
 async def identify(req: IdentifyRequest):
     """Identify a person from extracted features."""
@@ -161,7 +168,7 @@ async def identify(req: IdentifyRequest):
 
     return result
 
-
+#enrollment logic
 @router.post("/enroll/frame")
 async def enroll_frame(req: EnrollFrameRequest):
     """Add a single enrollment frame's features for a user."""
@@ -181,10 +188,15 @@ async def enroll_frame(req: EnrollFrameRequest):
     # Update enrollment progress
     profile = await FeatureProfileCRUD.get_by_user(req.user_id)
     count = profile["sample_count"] if profile else 0
-    min_frames = settings.min_enrollment_frames  # configurable (default 50)
+    min_frames = settings.min_enrollment_frames
     status = "completed" if count >= min_frames else "in_progress"
 
     await UserCRUD.update_enrollment_status(req.user_id, status, count)
+
+    # Instant template reload if completed
+    if status == "completed" and predictor is not None:
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
 
     return {
         "user_id": req.user_id,
@@ -194,6 +206,72 @@ async def enroll_frame(req: EnrollFrameRequest):
     }
 
 
+@router.post("/enroll/user-images")
+async def enroll_user_images(req: EnrollUserImagesRequest):
+    """Extract MediaPipe static features from Base64 images and store to user feature profile."""
+    from services.video_processing.processor import VideoProcessor
+    from services.pose_estimation.estimator import PoseEstimator
+    from services.feature_extraction.static_features import StaticFeatureExtractor
+    from config import settings
+
+    user = await UserCRUD.get_by_id(req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    pose = PoseEstimator(
+        static_image_mode=True,
+        model_complexity=settings.mediapipe_model_complexity,
+        min_detection_confidence=settings.min_detection_confidence,
+        min_tracking_confidence=settings.min_tracking_confidence,
+    )
+    static_ext = StaticFeatureExtractor()
+    processor = VideoProcessor()
+
+    extracted_vectors = []
+    try:
+        for base64_frame in req.frames:
+            frame_bgr = processor.base64_to_frame(base64_frame)
+            if frame_bgr is None:
+                continue
+            rgb = processor.preprocess_frame(frame_bgr)
+            all_kps = pose.estimate(rgb)
+            if all_kps is None:
+                continue
+            body_kps = pose.get_body_keypoints(all_kps)
+            if body_kps is None:
+                continue
+            raw_features = static_ext.extract_all(body_kps)
+            if raw_features is None:
+                continue
+            static_vector = static_ext.to_vector(raw_features)
+            extracted_vectors.append(static_vector.tolist())
+    finally:
+        pose.close()
+
+    if extracted_vectors:
+        await FeatureProfileCRUD.bulk_upsert_samples(
+            user_id=req.user_id,
+            static_vectors=extracted_vectors,
+            feature_version=StaticFeatureExtractor.FEATURE_VERSION,
+        )
+
+    profile = await FeatureProfileCRUD.get_by_user(req.user_id)
+    count = profile["sample_count"] if profile else 0
+    await UserCRUD.update_enrollment_status(req.user_id, "completed", count)
+
+    # Instant template reload
+    if predictor is not None:
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
+
+    return {
+        "user_id": req.user_id,
+        "processed_frames": len(extracted_vectors),
+        "total_samples": count,
+        "status": "completed",
+    }
+
+#model training logic
 @router.post("/train")
 async def train_model(req: TrainRequest):
     """Trigger model training using all enrolled user data."""
@@ -267,9 +345,11 @@ async def train_model(req: TrainRequest):
             log.warning("lstm_training_skipped", error=str(e))
             lstm_result = {"success": False, "message": str(e)}
 
-    # Reload models
+    # Reload models and refresh KNN templates
     if predictor is not None:
         predictor.load_models()
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
 
     duration = (time.perf_counter() - t_start) * 1000
 

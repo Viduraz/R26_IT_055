@@ -38,7 +38,6 @@ def _decode_frame(base64_img: str):
     np_arr = np.frombuffer(img_bytes, np.uint8)
     return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-
 class SkeletonTracker:
 
     @staticmethod

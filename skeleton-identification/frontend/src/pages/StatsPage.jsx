@@ -1,19 +1,58 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchStats, downloadReportPdf } from '../services/api';
+import { fetchStats, fetchUsers, downloadReportPdf } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
+
+function formatDateTime(timestamp) {
+  if (!timestamp) return '—';
+  // Standardize the ISO string: if it does not contain a timezone indicator ('Z' or '+'), append 'Z'
+  // so that the browser interprets it as UTC, preventing timezone offsets from displaying incorrect times.
+  let utcString = timestamp;
+  if (typeof utcString === 'string' && !utcString.endsWith('Z') && !utcString.includes('+')) {
+    utcString += 'Z';
+  }
+  const date = new Date(utcString);
+  if (isNaN(date.getTime())) return timestamp;
+
+  // Format to a readable string (e.g. YYYY-MM-DD HH:MM:SS) in local timezone
+  const pad = (n) => String(n).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  const mm = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const min = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
 
 export default function StatsPage() {
   const toast = useToast();
   const [stats, setStats] = useState(null);
+  const [usersMap, setUsersMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchStats();
-      setStats(data);
+      const statsData = await fetchStats();
+      setStats(statsData);
+      
+      try {
+        const usersList = await fetchUsers();
+        const map = {};
+        if (Array.isArray(usersList)) {
+          usersList.forEach(u => {
+            if (u.user_id) {
+              map[u.user_id] = u.name;
+            }
+          });
+        }
+        setUsersMap(map);
+      } catch (err) {
+        console.warn('Failed to fetch users for mapping:', err);
+      }
     } catch {
       toast('Failed to load statistics', 'error');
     } finally {
@@ -30,7 +69,9 @@ export default function StatsPage() {
       const url  = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `identification-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+      // Get local date in YYYY-MM-DD format
+      const localDate = new Date().toLocaleDateString('en-CA');
+      link.download = `identification-report-${localDate}.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -52,6 +93,11 @@ export default function StatsPage() {
     { label: 'Avg Confidence',        value: `${Math.round((idStats.avg_confidence ?? 0) * 100)}%` },
     { label: 'Avg Latency',           value: `${Math.round(idStats.avg_latency_ms ?? 0)}ms` },
   ];
+
+  const getDisplayName = (id) => {
+    if (!id || id === 'unknown' || id === 'Unknown Person') return 'Unknown Person';
+    return usersMap[id] || id;
+  };
 
   return (
     <div className="flex-1 p-6 overflow-y-auto space-y-6">
@@ -111,8 +157,8 @@ export default function StatsPage() {
                   <tbody>
                     {recent.map((r, i) => (
                       <tr key={i}>
-                        <td className="font-mono text-xs">{new Date(r.timestamp).toLocaleTimeString()}</td>
-                        <td className="font-medium">{r.predicted_user_id || 'Unknown'}</td>
+                        <td className="font-mono text-xs">{formatDateTime(r.timestamp)}</td>
+                        <td className="font-medium">{getDisplayName(r.predicted_user_id)}</td>
                         <td>
                           <ConfidencePill value={Math.round((r.confidence || 0) * 100)} />
                         </td>
