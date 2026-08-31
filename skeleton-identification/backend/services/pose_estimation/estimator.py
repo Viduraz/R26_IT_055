@@ -24,13 +24,26 @@ log = structlog.get_logger()
 
 @dataclass
 class Keypoint:
-    """Single skeleton keypoint with 3D coordinates and visibility."""
+    """Single skeleton keypoint.
+
+    x/y/z are MediaPipe's *image-normalized* coordinates (x by frame width, y by
+    frame height) and are only safe for drawing, bounding boxes and face crops.
+
+    wx/wy/wz are MediaPipe's *world* coordinates: metres, origin at the mid-hip,
+    independent of where the person stands and how far they are from the camera.
+    Biometric measurements must use these — image coordinates encode camera
+    geometry, not body geometry.
+    """
     index: int
     name: str
     x: float
     y: float
     z: float
     visibility: float
+    wx: float = 0.0
+    wy: float = 0.0
+    wz: float = 0.0
+    has_world: bool = False
 
 
 class PoseEstimator:
@@ -123,10 +136,18 @@ class PoseEstimator:
             mode=running_mode.name,
         )
 
-    def _landmarks_to_keypoints(self, landmarks) -> List[Dict]:
-        """Convert a single MediaPipe pose's landmark list into our keypoint dicts."""
+    def _landmarks_to_keypoints(self, landmarks, world_landmarks=None) -> List[Dict]:
+        """Convert a single MediaPipe pose's landmark list into our keypoint dicts.
+
+        world_landmarks is the index-aligned metric landmark list for the same
+        pose. It is attached alongside the image-normalized coordinates so that
+        downstream anthropometry measures the body instead of the projection.
+        """
         keypoints = []
         for idx, landmark in enumerate(landmarks):
+            world = None
+            if world_landmarks is not None and idx < len(world_landmarks):
+                world = world_landmarks[idx]
             kp = Keypoint(
                 index=idx,
                 name=self.LANDMARK_NAMES[idx] if idx < len(self.LANDMARK_NAMES) else f"landmark_{idx}",
@@ -134,9 +155,21 @@ class PoseEstimator:
                 y=float(landmark.y),
                 z=float(landmark.z),
                 visibility=float(landmark.visibility),
+                wx=float(world.x) if world is not None else 0.0,
+                wy=float(world.y) if world is not None else 0.0,
+                wz=float(world.z) if world is not None else 0.0,
+                has_world=world is not None,
             )
             keypoints.append(asdict(kp))
         return keypoints
+
+    @staticmethod
+    def _world_landmarks_for(results, pose_index: int):
+        """Return the world landmark list matching pose_index, or None."""
+        world_lists = getattr(results, "pose_world_landmarks", None)
+        if not world_lists or pose_index >= len(world_lists):
+            return None
+        return world_lists[pose_index]
 
     def _detect(self, rgb_frame: np.ndarray):
         """Run the landmarker and return the raw MediaPipe result."""
@@ -161,7 +194,9 @@ class PoseEstimator:
         if not results.pose_landmarks or len(results.pose_landmarks) == 0:
             return None
 
-        return self._landmarks_to_keypoints(results.pose_landmarks[0])
+        return self._landmarks_to_keypoints(
+            results.pose_landmarks[0], self._world_landmarks_for(results, 0)
+        )
 
     @staticmethod
     def _compute_pose_bbox(kps: List[Dict], min_vis: float = 0.02) -> Optional[List[float]]:
@@ -266,7 +301,10 @@ class PoseEstimator:
         results = self._detect(rgb_frame)
         if not results.pose_landmarks:
             return []
-        raw_poses = [self._landmarks_to_keypoints(landmarks) for landmarks in results.pose_landmarks]
+        raw_poses = [
+            self._landmarks_to_keypoints(landmarks, self._world_landmarks_for(results, i))
+            for i, landmarks in enumerate(results.pose_landmarks)
+        ]
         return self.filter_and_suppress_poses(raw_poses)
 
     def get_body_keypoints(

@@ -24,11 +24,6 @@ async def test_all():
     await MongoDB.connect(settings.mongodb_uri, settings.mongodb_db)
     print(f"MongoDB connected in {(time.perf_counter() - t0)*1000:.1f}ms")
     
-    print("=== 2. Testing Fast Local DB Sync ===")
-    t0 = time.perf_counter()
-    await MongoDB.sync_local_db()
-    print(f"Local DB sync completed in {(time.perf_counter() - t0)*1000:.1f}ms")
-    
     print("=== 3. Testing Model Loading (SVM + LSTM + KNN) ===")
     pred = Predictor()
     pred.load_models()

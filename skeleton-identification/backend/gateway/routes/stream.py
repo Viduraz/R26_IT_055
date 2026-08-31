@@ -48,6 +48,13 @@ TRACK_POSITION_SMOOTHING_ALPHA = 0.5  # EMA on a track's reference position
 TRACK_EXPIRE_S = 4.5                 # drop a track if unmatched for 4.5 seconds
 CONFIDENCE_SMOOTHING_ALPHA = 0.35    # EMA applied to confidence number
 
+# Identity stability. A single frame is no longer allowed to force a name (the
+# threshold-bypassing fallbacks that did so are gone), so an established identity
+# is held briefly through the odd inconclusive frame, and a *different* name has
+# to win several consecutive frames before it replaces one already on screen.
+IDENTITY_HOLD_S = 2.0
+IDENTITY_SWITCH_FRAMES = 5
+
 # A brand-new track commits to whatever its very first frame says, with no
 # confirmation — that's what keeps a genuinely new person's box/name feeling
 # immediate. But it also means a single bad-angle/motion-blur misread of an
@@ -157,6 +164,49 @@ def _compute_head_pose(keypoints: List[Dict]) -> Dict:
     }
 
 
+# Minimum change (degrees) in any posture component before an enrollment frame is
+# accepted as a genuinely new keyframe.
+POSE_DIVERSITY_MIN_CHANGE_DEG = 6.0
+
+
+def _pose_descriptor(body_kps: Dict[str, Dict], angles: Dict[str, float]) -> np.ndarray:
+    """Describe the subject's transient posture in degrees.
+
+    Enrollment diversity has to be judged on *posture*, not on the biometric
+    vector. The biometric vector is built to stay constant for a given person, so
+    using it to detect "the user is holding still" would reject every frame once
+    the features became properly invariant. Body yaw is included because turning
+    on the spot barely changes internal joint angles but is one of the postures
+    the guided protocol asks for.
+    """
+    components = [float(angles.get(k, 90.0)) for k in sorted(angles.keys())]
+
+    def _coords(name: str) -> Optional[np.ndarray]:
+        kp = body_kps.get(name)
+        if not kp:
+            return None
+        if kp.get("has_world"):
+            return np.array([kp.get("wx", 0.0), kp.get("wy", 0.0), kp.get("wz", 0.0)], dtype=np.float64)
+        return np.array([kp.get("x", 0.0), kp.get("y", 0.0), kp.get("z", 0.0)], dtype=np.float64)
+
+    l_sh, r_sh = _coords("left_shoulder"), _coords("right_shoulder")
+    l_hip, r_hip = _coords("left_hip"), _coords("right_hip")
+
+    yaw = 0.0
+    if l_sh is not None and r_sh is not None:
+        shoulder_vec = r_sh - l_sh
+        yaw = float(np.degrees(np.arctan2(shoulder_vec[2], shoulder_vec[0])))
+    components.append(yaw)
+
+    lean = 0.0
+    if l_sh is not None and r_sh is not None and l_hip is not None and r_hip is not None:
+        spine = ((l_sh + r_sh) / 2.0) - ((l_hip + r_hip) / 2.0)
+        lean = float(np.degrees(np.arctan2(spine[0], abs(spine[1]) + 1e-6)))
+    components.append(lean)
+
+    return np.array(components, dtype=np.float64)
+
+
 def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.05) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] region around a person's head, padded
     very generously — MTCNN (used by the face-verification service) needs the
@@ -257,7 +307,7 @@ class StreamPipeline:
         self._enrollment_buffer: List[List[float]] = []
         self._enrollment_gait: List[List[List[float]]] = []
         self._enrollment_user_id: Optional[str] = None
-        self._last_enrolled_vec: Optional[np.ndarray] = None
+        self._last_enrolled_pose: Optional[np.ndarray] = None
 
         self.single_track = {
             "first_seen": None,
@@ -271,6 +321,9 @@ class StreamPipeline:
             "committed_confidence": 0.0,
             "committed_method": "none",
             "unknown_since": None,
+            "identified_at": None,
+            "pending_name": None,
+            "pending_count": 0,
         }
         self.tracks: List[Dict] = []
         self._next_track_id = 0
@@ -341,23 +394,63 @@ class StreamPipeline:
         self.single_track["committed_confidence"] = round(confidence, 4)
         self.single_track["committed_method"] = method
 
+        held_fresh = (
+            self.single_track.get("committed_is_known")
+            and self.single_track.get("identified_at") is not None
+            and (now - self.single_track["identified_at"]) < IDENTITY_HOLD_S
+        )
+
+        def _commit_identity():
+            self.single_track.update(
+                state="identified",
+                committed_name=cand_name,
+                committed_role=cand_role,
+                committed_is_known=True,
+                unknown_since=None,
+                identified_at=now,
+                pending_name=None,
+                pending_count=0,
+            )
+
         if status == "KNOWN" and is_known_for_display and cand_name != "Unknown Person":
-            self.single_track["state"] = "identified"
-            self.single_track["committed_name"] = cand_name
-            self.single_track["committed_role"] = cand_role
-            self.single_track["committed_is_known"] = True
+            if held_fresh and cand_name != self.single_track["committed_name"]:
+                # A different name arriving on an already-identified subject has to
+                # persist for several consecutive frames before it replaces the one
+                # on screen — one marginal frame must never rename the person.
+                prev_pending = self.single_track.get("pending_name")
+                streak = self.single_track.get("pending_count", 0) + 1 if prev_pending == cand_name else 1
+                self.single_track["pending_name"] = cand_name
+                self.single_track["pending_count"] = streak
+                if streak >= IDENTITY_SWITCH_FRAMES:
+                    _commit_identity()
+            else:
+                _commit_identity()
+        elif held_fresh:
+            # Hold an established identity through a momentary inconclusive frame.
             self.single_track["unknown_since"] = None
+            self.single_track["pending_name"] = None
+            self.single_track["pending_count"] = 0
         elif status == "AMBIGUOUS":
-            self.single_track["state"] = "ambiguous"
-            self.single_track["committed_name"] = f"Ambiguous ({cand_name}?)"
-            self.single_track["committed_role"] = "Awaiting movement verification"
-            self.single_track["committed_is_known"] = False
-            self.single_track["unknown_since"] = None
+            self.single_track.update(
+                state="ambiguous",
+                committed_name=f"Ambiguous ({cand_name}?)",
+                committed_role="Awaiting movement verification",
+                committed_is_known=False,
+                unknown_since=None,
+                identified_at=None,
+                pending_name=None,
+                pending_count=0,
+            )
         else:
-            self.single_track["state"] = "unknown"
-            self.single_track["committed_name"] = "Unknown Person"
-            self.single_track["committed_role"] = "Visitor / Unregistered"
-            self.single_track["committed_is_known"] = False
+            self.single_track.update(
+                state="unknown",
+                committed_name="Unknown Person",
+                committed_role="Visitor / Unregistered",
+                committed_is_known=False,
+                identified_at=None,
+                pending_name=None,
+                pending_count=0,
+            )
             if not self.single_track["unknown_since"]:
                 self.single_track["unknown_since"] = now
 
@@ -415,6 +508,9 @@ class StreamPipeline:
                 self.single_track["committed_name"] = "Unknown Person"
                 self.single_track["committed_role"] = "Visitor / Unregistered"
                 self.single_track["committed_is_known"] = False
+                self.single_track["identified_at"] = None
+                self.single_track["pending_name"] = None
+                self.single_track["pending_count"] = 0
                 self.prev_features = None
                 self.gait_ext.reset()
             return {
@@ -504,64 +600,64 @@ class StreamPipeline:
 
             skel_uid = identification.get("predicted_user", "unknown")
             skel_conf = float(identification.get("confidence", 0.0))
+            skel_status = identification.get("status", "UNKNOWN")
 
-            chosen_user_id = None
+            chosen_user_id = "unknown"
             final_conf = 0.0
-            fusion_method = "Dual-Biometric Fusion"
+            fusion_method = "Unregistered Person"
             ident_status = "UNKNOWN"
+            ident_reason_override = None
+
+            # The skeleton branch has already applied open-set rejection and the
+            # ambiguity margin. Its verdict is honoured as-is: a KNOWN result may
+            # name the person, an AMBIGUOUS one may not, and confidences are
+            # reported as measured rather than floored to a reassuring number.
 
             # 1. Dual Match: Both Face and Skeleton identify the SAME registered user
-            if face_matched_uid and skel_uid == face_matched_uid:
+            if face_matched_uid and skel_status == "KNOWN" and skel_uid == face_matched_uid:
                 chosen_user_id = face_matched_uid
-                final_conf = min(0.99, max(skel_conf, face_conf) + 0.20)
+                final_conf = min(0.99, max(skel_conf, face_conf) + 0.10)
                 fusion_method = "Dual Biometric Verified (Face + Skeleton)"
                 ident_status = "KNOWN"
 
             # 2. Face Only Match: Face microservice confirmed registered identity (>= 35%)
             elif face_matched_uid and face_conf >= 0.35:
                 chosen_user_id = face_matched_uid
-                final_conf = max(0.88, face_conf)
+                final_conf = face_conf
                 fusion_method = "Face Verification Match"
                 ident_status = "KNOWN"
 
-            # 3. Skeleton Only Match: Skeleton feature extractor identified registered user (>= 25%)
-            elif skel_uid != "unknown" and skel_conf >= 0.25:
+            # 3. Skeleton Only Match: matcher cleared both threshold and margin
+            elif skel_status == "KNOWN" and skel_uid != "unknown":
                 chosen_user_id = skel_uid
-                final_conf = max(0.85, skel_conf)
+                final_conf = skel_conf
                 fusion_method = "Skeleton Biometric Match"
                 ident_status = "KNOWN"
 
-            # 4. Top-K Skeleton Candidate Match for Enrolled Profiles (>= 20%)
-            elif identification.get("top_k") and len(self.user_name_map) > 0:
-                top_cand = identification["top_k"][0]
-                cand_uid = top_cand.get("user_id")
-                cand_conf = float(top_cand.get("confidence", 0.0))
-                if cand_uid in self.user_name_map and cand_conf >= 0.20:
-                    chosen_user_id = cand_uid
-                    final_conf = max(0.82, cand_conf)
-                    fusion_method = "Skeleton Vector Match"
-                    ident_status = "KNOWN"
-                else:
-                    chosen_user_id = "unknown"
-                    final_conf = 0.0
-                    fusion_method = "Unregistered Person"
-                    ident_status = "UNKNOWN"
+            # 4. Two enrolled templates are too close to separate. Naming the
+            #    marginal winner here is what makes person 1 read as person 2, so
+            #    the ambiguity is surfaced and movement is requested instead.
+            elif skel_status == "AMBIGUOUS" and skel_uid != "unknown":
+                chosen_user_id = skel_uid
+                final_conf = skel_conf
+                fusion_method = "Ambiguous — body proportions too close to separate"
+                ident_status = "AMBIGUOUS"
+                ident_reason_override = (
+                    "Two enrolled profiles match this build almost equally. "
+                    "Walk a few steps so gait can break the tie."
+                )
 
             # 5. UNKNOWN / UNREGISTERED PERSON
-            else:
-                chosen_user_id = "unknown"
-                final_conf = 0.0
-                fusion_method = "Unregistered Person"
-                ident_status = "UNKNOWN"
-
             identification = {
                 **identification,
                 "predicted_user": chosen_user_id,
                 "confidence": round(final_conf, 2),
-                "is_known": (ident_status in ["KNOWN", "AMBIGUOUS"]),
+                "is_known": ident_status == "KNOWN",
                 "status": ident_status,
                 "method": fusion_method,
             }
+            if ident_reason_override:
+                identification["reason"] = ident_reason_override
 
             self._last_face_conf = face_conf
             self._last_skeleton_conf = skel_conf
@@ -583,7 +679,7 @@ class StreamPipeline:
             is_model_known
             and raw_user_id != "unknown"
             and predicted_name is not None
-            and ident_status in ["KNOWN", "AMBIGUOUS"]
+            and ident_status == "KNOWN"
         )
         display_user = predicted_name if is_known_for_display else "unknown"
 
@@ -668,25 +764,26 @@ class StreamPipeline:
                     self._enrollment_user_id = user_id
                     self._enrollment_buffer = []
                     self._enrollment_gait = []
-                    self._last_enrolled_vec = None
+                    self._last_enrolled_pose = None
 
                 now_skel_ts = time.time()
                 is_time_elapsed = (now_skel_ts - getattr(self, "_last_skel_sample_time", 0.0)) >= 0.30
 
-                # Strict Posture Diversity Check:
-                # If static_vector is too close to _last_enrolled_vec (diff < 0.038), user is holding posture.
-                # Capture only 1 frame per posture position and wait for user to physically move!
+                # Posture Diversity Check, measured on transient posture rather than
+                # on the biometric vector: capture one keyframe per distinct pose and
+                # wait for the user to actually move before taking the next.
+                pose_desc = _pose_descriptor(body_kps, angles)
                 is_diverse = True
                 posture_holding = False
-                if self._last_enrolled_vec is not None:
-                    diff = float(np.mean(np.abs(static_vector - self._last_enrolled_vec)))
-                    if diff < 0.038:
+                if self._last_enrolled_pose is not None and len(self._last_enrolled_pose) == len(pose_desc):
+                    max_change = float(np.max(np.abs(pose_desc - self._last_enrolled_pose)))
+                    if max_change < POSE_DIVERSITY_MIN_CHANGE_DEG:
                         is_diverse = False
                         posture_holding = True
 
                 if is_time_elapsed and is_diverse:
                     self._enrollment_buffer.append(static_vector.tolist())
-                    self._last_enrolled_vec = static_vector
+                    self._last_enrolled_pose = pose_desc
                     self._last_skel_sample_time = now_skel_ts
                     if gait_sequence is not None:
                         self._enrollment_gait.append(gait_sequence.tolist())
@@ -723,23 +820,22 @@ class StreamPipeline:
 
                 status = "in_progress"
                 if count >= target_frames:
-                    # Synthetic Biometric Augmentation in memory
-                    augmented_vectors = list(self._enrollment_buffer)
-                    for vec in self._enrollment_buffer:
-                        arr = np.array(vec, dtype=np.float64)
-                        # Distance & posture scaling perturbations
-                        augmented_vectors.append((arr * 1.02).tolist())
-                        augmented_vectors.append((arr * 0.98).tolist())
+                    # No synthetic ±2% scaling here. Scaling the whole vector
+                    # inflates every user's template cloud along the same axis,
+                    # which grows each template's variance, shrinks the
+                    # regularized Mahalanobis distance, and pushes neighbouring
+                    # users into overlap — the observed cross-identification.
+                    enrolled_vectors = list(self._enrollment_buffer)
 
                     try:
                         # Single Bulk Database Save
                         await FeatureProfileCRUD.bulk_upsert_samples(
                             user_id=user_id,
-                            static_vectors=augmented_vectors,
+                            static_vectors=enrolled_vectors,
                             gait_sequences=self._enrollment_gait if self._enrollment_gait else None,
                             feature_version=StaticFeatureExtractor.FEATURE_VERSION,
                         )
-                        await UserCRUD.update_enrollment_status(user_id, "completed", len(augmented_vectors))
+                        await UserCRUD.update_enrollment_status(user_id, "completed", len(enrolled_vectors))
                         # Instant In-Memory Template Reload
                         await self._refresh_knn_templates()
                         status = "completed"
@@ -955,6 +1051,7 @@ class StreamPipeline:
                 continue
 
             name, role, confidence, is_known, method = "Unknown", "Visitor / Unknown", 0.0, False, "none"
+            status, reason = "UNKNOWN", "No usable skeleton"
 
             # ── Multi-model scale-invariant skeleton identification + Face fusion ──
             body_kps = self.pose.get_body_keypoints(kps)
@@ -964,39 +1061,50 @@ class StreamPipeline:
                     vector = self.static_ext.to_vector(raw_features)
                     ident = self.predictor.identify(static_features=vector)
                     skel_uid = ident.get("predicted_user", "unknown")
-                    skel_known = bool(ident.get("is_known", False)) and skel_uid != "unknown"
+                    skel_status = ident.get("status", "UNKNOWN")
                     skel_conf = float(ident.get("confidence", 0.0))
-                    top_k = ident.get("top_k", [])
 
+                    status = skel_status
+                    reason = ident.get("reason", "")
+                    confidence = skel_conf
+                    method = ident.get("method", "skeleton")
+
+                    # Face verification is the only evidence allowed to name a
+                    # person on its own; the skeleton branch must have cleared
+                    # both the acceptance threshold and the ambiguity margin.
                     chosen_uid = None
+                    face_verified = False
                     if face_result and face_result.get("verified"):
                         f_name = (face_result.get("caregiver_details") or {}).get("name", "")
                         for uid, uname in self.user_name_map.items():
                             if uname.lower() == f_name.lower():
                                 chosen_uid = uid
+                                face_verified = True
                                 break
                         if not chosen_uid and f_name:
                             chosen_uid = f"face_{f_name.lower().strip()}"
                             self.user_name_map[chosen_uid] = f_name
                             self.user_role_map[chosen_uid] = "caregiver"
 
-                    if not chosen_uid and skel_known:
+                    if not chosen_uid and skel_status == "KNOWN" and skel_uid != "unknown":
                         chosen_uid = skel_uid
 
-                    if not chosen_uid and top_k and len(self.user_name_map) > 0:
-                        cand_uid = top_k[0].get("user_id")
-                        if cand_uid in self.user_name_map:
-                            chosen_uid = cand_uid
-
+                    # Deliberately no top-k fallback here. Taking top_k[0] when the
+                    # matcher reported UNKNOWN or AMBIGUOUS discards the open-set
+                    # rejection and the ambiguity margin, which is exactly how two
+                    # people with near-identical templates get each other's name.
                     if chosen_uid and chosen_uid in self.user_name_map:
                         name = self.user_name_map[chosen_uid]
                         role = self.user_role_map.get(chosen_uid, "caregiver")
-                        confidence = max(skel_conf, 0.90)
                         is_known = True
-                        method = "Skeleton + Face Fusion"
-                    else:
-                        confidence = skel_conf
-                        method = ident.get("method", "skeleton")
+                        status = "KNOWN"
+                        if face_verified:
+                            face_conf = float(face_result.get("confidence", 0.0)) / 100.0
+                            confidence = max(skel_conf, face_conf)
+                            method = "Skeleton + Face Fusion" if skel_uid == chosen_uid else "Face Verification Match"
+                        else:
+                            confidence = skel_conf
+                            method = "Skeleton Biometric Match"
 
             raw_detections.append({
                 "bbox": bbox,
@@ -1005,6 +1113,8 @@ class StreamPipeline:
                 "confidence": min(confidence, 1.0),
                 "is_known": is_known,
                 "method": method,
+                "status": status,
+                "reason": reason,
                 "keypoints": [{"x": kp["x"], "y": kp["y"], "visibility": kp["visibility"]} for kp in kps],
             })
 
@@ -1055,9 +1165,16 @@ class StreamPipeline:
                     track, best_dist = t, dist
 
             is_known = bool(raw["is_known"]) and raw["name"] not in ("Unknown", "Unknown Person", "Analyzing Posture...")
+            raw_status = raw.get("status", "KNOWN" if is_known else "UNKNOWN")
             st_name = raw["name"] if is_known else "Unknown Person"
-            st_role = raw["role"] if is_known else "Visitor / Unregistered"
-            st_state = "identified" if is_known else "unknown"
+            if is_known:
+                st_role, st_state = raw["role"], "identified"
+            elif raw_status == "AMBIGUOUS":
+                # Two enrolled templates are too close to call. Naming either one
+                # would be a coin flip, so report the ambiguity instead.
+                st_role, st_state = "Ambiguous — awaiting movement verification", "ambiguous"
+            else:
+                st_role, st_state = "Visitor / Unregistered", "unknown"
 
             if track is None:
                 self._next_track_id += 1
@@ -1077,19 +1194,66 @@ class StreamPipeline:
                     "committed_method": raw["method"],
                     "unknown_since": now if not is_known else None,
                 }
+                track["identified_at"] = now if is_known else None
+                track["pending_name"] = None
+                track["pending_count"] = 0
                 self.tracks.append(track)
             else:
                 track["cx"] = TRACK_POSITION_SMOOTHING_ALPHA * cx + (1 - TRACK_POSITION_SMOOTHING_ALPHA) * track["cx"]
                 track["cy"] = TRACK_POSITION_SMOOTHING_ALPHA * cy + (1 - TRACK_POSITION_SMOOTHING_ALPHA) * track["cy"]
                 track["last_seen"] = now
                 track["_matched"] = True
-                track["state"] = st_state
-                track["committed_name"] = st_name
-                track["committed_role"] = st_role
-                track["committed_is_known"] = is_known
                 track["committed_confidence"] = float(raw["confidence"])
-                track["committed_method"] = raw["method"]
-                if is_known:
+
+                held_name = track["committed_name"] if track.get("committed_is_known") else None
+                held_fresh = (
+                    held_name is not None
+                    and track.get("identified_at") is not None
+                    and (now - track["identified_at"]) < IDENTITY_HOLD_S
+                )
+
+                if is_known and st_name == held_name:
+                    track["identified_at"] = now
+                    track["pending_name"] = None
+                    track["pending_count"] = 0
+                    track["state"], track["committed_role"] = st_state, st_role
+                    track["committed_method"] = raw["method"]
+                elif is_known and held_fresh:
+                    # A different name on an already-identified track. Switching on
+                    # a single frame is how a momentary near-tie becomes somebody
+                    # else's name on screen, so make the new identity earn it.
+                    if track.get("pending_name") == st_name:
+                        track["pending_count"] += 1
+                    else:
+                        track["pending_name"], track["pending_count"] = st_name, 1
+
+                    if track["pending_count"] >= IDENTITY_SWITCH_FRAMES:
+                        track.update(
+                            committed_name=st_name, committed_role=st_role,
+                            committed_is_known=True, committed_method=raw["method"],
+                            state=st_state, identified_at=now,
+                            pending_name=None, pending_count=0,
+                        )
+                elif is_known:
+                    track.update(
+                        committed_name=st_name, committed_role=st_role,
+                        committed_is_known=True, committed_method=raw["method"],
+                        state=st_state, identified_at=now,
+                        pending_name=None, pending_count=0,
+                    )
+                elif held_fresh:
+                    # Momentary UNKNOWN/AMBIGUOUS on someone already identified —
+                    # hold the established name rather than flickering to "Unknown".
+                    track["pending_name"], track["pending_count"] = None, 0
+                else:
+                    track.update(
+                        committed_name=st_name, committed_role=st_role,
+                        committed_is_known=False, committed_method=raw["method"],
+                        state=st_state, identified_at=None,
+                        pending_name=None, pending_count=0,
+                    )
+
+                if track["committed_is_known"]:
                     track["unknown_since"] = None
                 elif not track.get("unknown_since"):
                     track["unknown_since"] = now
@@ -1107,6 +1271,8 @@ class StreamPipeline:
                 "method": track["committed_method"],
                 "track_id": track["id"],
                 "unknown_ms": unknown_ms,
+                "status": raw_status,
+                "reason": raw.get("reason", ""),
                 "analysis_progress": 1.0,
                 "time_remaining": 0.0,
             })

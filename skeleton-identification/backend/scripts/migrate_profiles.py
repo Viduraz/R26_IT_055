@@ -115,18 +115,4 @@ async def run_migration():
         )
         print(f'Migrated user {uid}: {len(migrated_samples)} samples, max val = {round(max(migrated_mean), 2) if migrated_mean else None}')
 
-    local_path = Path('data/local_db.json')
-    if local_path.exists():
-        with open(local_path, 'r') as f:
-            local_data = json.load(f)
-        for lp in local_data.get('feature_profiles', []):
-            lstatic = lp.get('static_features', {})
-            lsamples = lstatic.get('samples', [])
-            lmean = lstatic.get('mean_vector', [])
-            lstatic['samples'] = [migrate_vector(s) for s in lsamples]
-            lstatic['mean_vector'] = migrate_vector(lmean) if lmean else []
-        with open(local_path, 'w') as f:
-            json.dump(local_data, f, indent=2)
-        print('Migrated data/local_db.json successfully!')
-
 asyncio.run(run_migration())
