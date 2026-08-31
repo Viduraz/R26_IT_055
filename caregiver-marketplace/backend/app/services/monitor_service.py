@@ -3,6 +3,7 @@ caregiver-marketplace/backend/app/services/monitor_service.py
 Validates patient IDs and aggregates live status from existing monitoring services.
 """
 import httpx
+from fastapi import HTTPException, status
 from shared.backend.config.settings import settings
 from app.services.booking_service import BookingService
 
@@ -86,3 +87,41 @@ class MonitorService:
                 status["services_status"]["schedule"] = "offline"
 
         return status
+
+    async def get_video_frame(self, patient_id: str, user_id: str, token: str) -> dict:
+        """
+        Proxy a single JPEG frame from the anomaly-detection camera-snapshot endpoint.
+        Validates the patient ID belongs to the requesting user first.
+        Returns { "frame": "data:image/jpeg;base64,..." }
+        """
+        booking = await self.validate_patient_id(patient_id, user_id)
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to stream video for this Patient ID."
+            )
+
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            try:
+                resp = await client.get(
+                    f"{settings.ANOMALY_SERVICE_URL}/api/anomaly/camera-snapshot",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # camera-snapshot returns a plain string (the data URL)
+                    frame = data if isinstance(data, str) else data.get("frame") or data.get("snapshot")
+                    return {"frame": frame}
+                else:
+                    raise HTTPException(
+                        status_code=resp.status_code,
+                        detail=f"Camera snapshot error: {resp.text[:200]}"
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Anomaly service unreachable: {type(exc).__name__}"
+                )

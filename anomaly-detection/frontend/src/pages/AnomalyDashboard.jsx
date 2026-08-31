@@ -17,76 +17,79 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Webcam from "react-webcam";
 import axios from "axios";
+import Navbar from "../components/Navbar";
+import { useToast } from "../context/ToastContext";
 
-const ANOMALY_API  = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
-const POLL_MS      = 200;
-const SNAPSHOT_MS  = 500;
-const TRAIL_LEN    = 25;
+const ANOMALY_API = import.meta.env.VITE_ANOMALY_BACKEND_URL || "http://localhost:8003/api/anomaly";
+const MJPEG_STREAM_URL = `${ANOMALY_API}/camera-stream`;
+const POLL_MS = 80;   // 80ms ≈ 12 FPS — decoupled from ML latency via preview messages
+const SNAPSHOT_MS = 500;
+const TRAIL_LEN = 25;
 const MAX_TIMELINE = 20;
-const METRICS_MS   = 3000; // refresh metrics every 3s
+const METRICS_MS = 3000; // refresh metrics every 3s
 
 // ── Anomaly UI config ─────────────────────────────────────────────────────────
 const ANOMALY_UI = {
-  normal_activity:      { label: "Normal Activity",      color: "emerald", icon: "✅", pulse: false },
-  fall_detected:        { label: "FALL DETECTED",         color: "red",     icon: "🚨", pulse: true  },
-  aggression_detected:  { label: "Aggression Detected",  color: "orange",  icon: "⚠️", pulse: true  },
-  prolonged_inactivity: { label: "Prolonged Inactivity", color: "yellow",  icon: "😴", pulse: true  },
-  inactivity_warning:   { label: "Inactivity Warning",   color: "yellow",  icon: "⏱️", pulse: false },
-  unusual_movement:     { label: "Unusual Movement",     color: "indigo",  icon: "❓", pulse: true  },
-  no_person:            { label: "No Person in Frame",   color: "gray",    icon: "👁️", pulse: false },
+  normal_activity: { label: "Normal Activity", color: "emerald", icon: "✅", pulse: false },
+  fall_detected: { label: "FALL DETECTED", color: "red", icon: "🚨", pulse: true },
+  aggression_detected: { label: "Aggression Detected", color: "orange", icon: "⚠️", pulse: true },
+  prolonged_inactivity: { label: "Prolonged Inactivity", color: "yellow", icon: "😴", pulse: true },
+  inactivity_warning: { label: "Inactivity Warning", color: "yellow", icon: "⏱️", pulse: false },
+  unusual_movement: { label: "Unusual Movement", color: "indigo", icon: "❓", pulse: true },
+  no_person: { label: "No Person in Frame", color: "gray", icon: "👁️", pulse: false },
 };
 
 const COLORS = {
-  emerald: { border: "border-emerald-500", bg: "bg-emerald-900/30", text: "text-emerald-400", badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", box: "rgba(16,185,129,0.9)",  bar: "#10b981" },
-  red:     { border: "border-red-500",     bg: "bg-red-900/30",     text: "text-red-400",     badge: "bg-red-500/20 text-red-300 border-red-500/50",             box: "rgba(239,68,68,0.95)", bar: "#ef4444" },
-  orange:  { border: "border-orange-500",  bg: "bg-orange-900/30",  text: "text-orange-400",  badge: "bg-orange-500/20 text-orange-300 border-orange-500/40",    box: "rgba(249,115,22,0.9)", bar: "#f97316" },
-  yellow:  { border: "border-yellow-500",  bg: "bg-yellow-900/30",  text: "text-yellow-400",  badge: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",    box: "rgba(234,179,8,0.9)",  bar: "#eab308" },
-  indigo:  { border: "border-indigo-500",  bg: "bg-indigo-900/30",  text: "text-indigo-400",  badge: "bg-indigo-500/20 text-indigo-300 border-indigo-500/40",    box: "rgba(99,102,241,0.9)", bar: "#6366f1" },
-  gray:    { border: "border-gray-700",    bg: "bg-gray-800/50",    text: "text-gray-400",    badge: "bg-gray-700/50 text-gray-400 border-gray-600/40",           box: "rgba(156,163,175,0.6)",bar: "#6b7280" },
+  emerald: { border: "border-emerald-500", bg: "bg-emerald-900/30", text: "text-emerald-400", badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", box: "rgba(16,185,129,0.9)", bar: "#10b981" },
+  red: { border: "border-red-500", bg: "bg-red-900/30", text: "text-red-400", badge: "bg-red-500/20 text-red-300 border-red-500/50", box: "rgba(239,68,68,0.95)", bar: "#ef4444" },
+  orange: { border: "border-orange-500", bg: "bg-orange-900/30", text: "text-orange-400", badge: "bg-orange-500/20 text-orange-300 border-orange-500/40", box: "rgba(249,115,22,0.9)", bar: "#f97316" },
+  yellow: { border: "border-yellow-500", bg: "bg-yellow-900/30", text: "text-yellow-400", badge: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40", box: "rgba(234,179,8,0.9)", bar: "#eab308" },
+  indigo: { border: "border-indigo-500", bg: "bg-indigo-900/30", text: "text-indigo-400", badge: "bg-indigo-500/20 text-indigo-300 border-indigo-500/40", box: "rgba(99,102,241,0.9)", bar: "#6366f1" },
+  gray: { border: "border-gray-700", bg: "bg-gray-800/50", text: "text-gray-400", badge: "bg-gray-700/50 text-gray-400 border-gray-600/40", box: "rgba(156,163,175,0.6)", bar: "#6b7280" },
 };
 
 const SEV_BADGE = {
   critical: "bg-red-600/30 text-red-300 border border-red-600/40",
-  high:     "bg-orange-600/30 text-orange-300 border border-orange-600/40",
-  medium:   "bg-yellow-600/30 text-yellow-300 border border-yellow-600/40",
-  low:      "bg-indigo-600/30 text-indigo-300 border border-indigo-600/40",
-  none:     "bg-gray-700/30 text-gray-400 border border-gray-700/40",
+  high: "bg-orange-600/30 text-orange-300 border border-orange-600/40",
+  medium: "bg-yellow-600/30 text-yellow-300 border border-yellow-600/40",
+  low: "bg-indigo-600/30 text-indigo-300 border border-indigo-600/40",
+  none: "bg-gray-700/30 text-gray-400 border border-gray-700/40",
 };
 
 const RISK_LEVEL = {
-  fall_detected:        { label: "CRITICAL", cls: "text-red-300 bg-red-900/40 border-red-600/50" },
-  aggression_detected:  { label: "HIGH",     cls: "text-orange-300 bg-orange-900/40 border-orange-600/50" },
-  prolonged_inactivity: { label: "HIGH",     cls: "text-orange-300 bg-orange-900/40 border-orange-600/50" },
-  inactivity_warning:   { label: "MEDIUM",   cls: "text-yellow-300 bg-yellow-900/40 border-yellow-600/50" },
-  unusual_movement:     { label: "LOW",      cls: "text-indigo-300 bg-indigo-900/40 border-indigo-600/50" },
-  normal_activity:      { label: "SAFE",     cls: "text-emerald-300 bg-emerald-900/40 border-emerald-600/50" },
-  no_person:            { label: "UNKNOWN",  cls: "text-gray-400 bg-gray-800 border-gray-700" },
+  fall_detected: { label: "CRITICAL", cls: "text-red-300 bg-red-900/40 border-red-600/50" },
+  aggression_detected: { label: "HIGH", cls: "text-orange-300 bg-orange-900/40 border-orange-600/50" },
+  prolonged_inactivity: { label: "HIGH", cls: "text-orange-300 bg-orange-900/40 border-orange-600/50" },
+  inactivity_warning: { label: "MEDIUM", cls: "text-yellow-300 bg-yellow-900/40 border-yellow-600/50" },
+  unusual_movement: { label: "LOW", cls: "text-indigo-300 bg-indigo-900/40 border-indigo-600/50" },
+  normal_activity: { label: "SAFE", cls: "text-emerald-300 bg-emerald-900/40 border-emerald-600/50" },
+  no_person: { label: "UNKNOWN", cls: "text-gray-400 bg-gray-800 border-gray-700" },
 };
 
 const SOURCE_BADGE = {
-  "rule_engine":    { label: "Rule Engine", cls: "bg-blue-800/50 text-blue-300" },
-  "lstm":           { label: "LSTM",        cls: "bg-purple-800/50 text-purple-300" },
-  "lstm+rule":      { label: "Hybrid",      cls: "bg-violet-800/50 text-violet-300" },
-  "rule_engine+ae": { label: "Rule+AE",     cls: "bg-teal-800/50 text-teal-300" },
-  "autoencoder":    { label: "Autoencoder", cls: "bg-cyan-800/50 text-cyan-300" },
-  "simulation":     { label: "SIM",         cls: "bg-pink-800/50 text-pink-300" },
+  "rule_engine": { label: "Rule Engine", cls: "bg-blue-800/50 text-blue-300" },
+  "lstm": { label: "LSTM", cls: "bg-purple-800/50 text-purple-300" },
+  "lstm+rule": { label: "Hybrid", cls: "bg-violet-800/50 text-violet-300" },
+  "rule_engine+ae": { label: "Rule+AE", cls: "bg-teal-800/50 text-teal-300" },
+  "autoencoder": { label: "Autoencoder", cls: "bg-cyan-800/50 text-cyan-300" },
+  "simulation": { label: "SIM", cls: "bg-pink-800/50 text-pink-300" },
 };
 
 const SKELETON_PAIRS = [
-  [11,12],[11,13],[13,15],[12,14],[14,16],
-  [11,23],[12,24],[23,24],
-  [23,25],[25,27],[24,26],[26,28],
-  [0,11],[0,12],
+  [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+  [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [24, 26], [26, 28],
+  [0, 11], [0, 12],
 ];
 
 const DIST_LABELS = {
-  fall_detected:        "Fall",
-  aggression_detected:  "Aggression",
+  fall_detected: "Fall",
+  aggression_detected: "Aggression",
   prolonged_inactivity: "Inactivity",
-  inactivity_warning:   "Warning",
-  unusual_movement:     "Unusual",
-  normal_activity:      "Normal",
-  no_person:            "No Person",
+  inactivity_warning: "Warning",
+  unusual_movement: "Unusual",
+  normal_activity: "Normal",
+  no_person: "No Person",
 };
 
 // ── Mini bar chart ────────────────────────────────────────────────────────────
@@ -121,44 +124,47 @@ function Skeleton({ h = "h-4", w = "w-full" }) {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AnomalyDashboard() {
-  const [isOn,          setIsOn]          = useState(false);
-  const [cameraSource,  setCameraSource]  = useState("webcam");
-  const [anomalyType,   setAnomalyType]   = useState("no_person");
-  const [confidence,    setConfidence]    = useState(0);
-  const [severity,      setSeverity]      = useState("none");
-  const [source,        setSource]        = useState("rule_engine");
-  const [poseValid,     setPoseValid]     = useState(false);
-  const [bbox,          setBbox]          = useState(null);
-  const [keypoints,     setKeypoints]     = useState(null);
-  const [evidence,      setEvidence]      = useState({});
-  const [explanation,   setExplanation]   = useState(null);
-  const [personId,      setPersonId]      = useState("patient_001");
-  const [lastUpdate,    setLastUpdate]    = useState(null);
-  const [latencyMs,     setLatencyMs]     = useState(null);
-  const [wsStatus,      setWsStatus]      = useState("disconnected");
-  const [error,         setError]         = useState("");
-  const [isSimulating,  setIsSimulating]  = useState(false);
-  const [simLoading,    setSimLoading]    = useState(null);
-  const [timeline,      setTimeline]      = useState([]);
-  const [metrics,       setMetrics]       = useState(null);
+  const { fireAnomalyToast } = useToast();
+  const [isOn, setIsOn] = useState(false);
+  const [cameraSource, setCameraSource] = useState("webcam");
+  const [anomalyType, setAnomalyType] = useState("no_person");
+  const [confidence, setConfidence] = useState(0);
+  const [severity, setSeverity] = useState("none");
+  const [source, setSource] = useState("rule_engine");
+  const [poseValid, setPoseValid] = useState(false);
+  const [bbox, setBbox] = useState(null);
+  const [keypoints, setKeypoints] = useState(null);
+  const [evidence, setEvidence] = useState({});
+  const [explanation, setExplanation] = useState(null);
+  const [personId, setPersonId] = useState("patient_001");
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [latencyMs, setLatencyMs] = useState(null);
+  const [wsStatus, setWsStatus] = useState("disconnected");
+  const [error, setError] = useState("");
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simLoading, setSimLoading] = useState(null);
+  const [timeline, setTimeline] = useState([]);
+  const [metrics, setMetrics] = useState(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
-  const [activeTab,     setActiveTab]     = useState("monitor"); // monitor | analytics | research
+  const [activeTab, setActiveTab] = useState("monitor"); // monitor | analytics | research
+  const [sessionLogs, setSessionLogs] = useState([]);
+  const [sessionLogsLoading, setSessionLogsLoading] = useState(false);
 
   // IP camera
-  const [ipFrame,   setIpFrame]   = useState(null);
-  const [ipError,   setIpError]   = useState(null);
+  const [ipFrame, setIpFrame] = useState(null);
+  const [ipError, setIpError] = useState(null);
   const [ipLoading, setIpLoading] = useState(false);
 
-  const webcamRef  = useRef(null);
-  const canvasRef  = useRef(null);
+  const webcamRef = useRef(null);
+  const canvasRef = useRef(null);
   const wrapperRef = useRef(null);
-  const pollRef    = useRef(null);
-  const wsRef      = useRef(null);
-  const trailRef   = useRef([]);
-  const isOnRef    = useRef(false);
-  const sourceRef  = useRef("webcam");
+  const pollRef = useRef(null);
+  const wsRef = useRef(null);
+  const trailRef = useRef([]);
+  const isOnRef = useRef(false);
+  const sourceRef = useRef("webcam");
 
-  useEffect(() => { isOnRef.current = isOn; },          [isOn]);
+  useEffect(() => { isOnRef.current = isOn; }, [isOn]);
   useEffect(() => { sourceRef.current = cameraSource; }, [cameraSource]);
 
   // ── Fetch metrics periodically ─────────────────────────────────────────────
@@ -166,7 +172,9 @@ export default function AnomalyDashboard() {
     const fetchMetrics = async () => {
       setMetricsLoading(true);
       try {
-        const { data } = await axios.get(`${ANOMALY_API}/metrics`, { timeout: 3000 });
+        const token = localStorage.getItem("access_token");
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const { data } = await axios.get(`${ANOMALY_API}/metrics`, { headers, timeout: 3000 });
         setMetrics(data);
       } catch { /* silent */ } finally {
         setMetricsLoading(false);
@@ -179,12 +187,12 @@ export default function AnomalyDashboard() {
 
   // ── Canvas drawing ─────────────────────────────────────────────────────────
   const drawCanvas = useCallback((bboxData, kpts, trail, boxColor) => {
-    const canvas  = canvasRef.current;
+    const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
     if (!canvas || !wrapper) return;
     const W = wrapper.clientWidth;
     const H = wrapper.clientHeight;
-    canvas.width  = W;
+    canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, W, H);
@@ -196,14 +204,14 @@ export default function AnomalyDashboard() {
         const alpha = 0.15 + (i / trail.length) * 0.7;
         ctx.strokeStyle = `rgba(99,102,241,${alpha})`;
         ctx.beginPath();
-        ctx.moveTo(trail[i-1].x * W, trail[i-1].y * H);
+        ctx.moveTo(trail[i - 1].x * W, trail[i - 1].y * H);
         ctx.lineTo(pt.x * W, pt.y * H);
         ctx.stroke();
       });
     }
     if (bboxData) {
       const { x, y, w, h } = bboxData;
-      const [rx,ry,rw,rh] = [x*W, y*H, w*W, h*H];
+      const [rx, ry, rw, rh] = [x * W, y * H, w * W, h * H];
       ctx.shadowColor = boxColor; ctx.shadowBlur = 14;
       ctx.strokeStyle = boxColor; ctx.lineWidth = 2.5;
       ctx.strokeRect(rx, ry, rw, rh);
@@ -211,18 +219,18 @@ export default function AnomalyDashboard() {
     }
     if (kpts && kpts.length >= 29) {
       ctx.strokeStyle = "rgba(139,92,246,0.6)"; ctx.lineWidth = 1.5;
-      SKELETON_PAIRS.forEach(([a,b]) => {
+      SKELETON_PAIRS.forEach(([a, b]) => {
         const pa = kpts[a], pb = kpts[b];
         if (!pa || !pb || pa[2] < 0.3 || pb[2] < 0.3) return;
         ctx.beginPath();
-        ctx.moveTo(pa[0]*W, pa[1]*H);
-        ctx.lineTo(pb[0]*W, pb[1]*H);
+        ctx.moveTo(pa[0] * W, pa[1] * H);
+        ctx.lineTo(pb[0] * W, pb[1] * H);
         ctx.stroke();
       });
-      kpts.forEach(([kx,ky,vis]) => {
+      kpts.forEach(([kx, ky, vis]) => {
         if (vis < 0.3) return;
         ctx.beginPath();
-        ctx.arc(kx*W, ky*H, 3.5, 0, Math.PI*2);
+        ctx.arc(kx * W, ky * H, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(167,139,250,0.9)";
         ctx.fill();
       });
@@ -232,7 +240,7 @@ export default function AnomalyDashboard() {
   useEffect(() => {
     if (!isOn) {
       const c = canvasRef.current;
-      if (c) c.getContext("2d").clearRect(0,0,c.width,c.height);
+      if (c) c.getContext("2d").clearRect(0, 0, c.width, c.height);
       trailRef.current = [];
       return;
     }
@@ -240,30 +248,27 @@ export default function AnomalyDashboard() {
     drawCanvas(bbox, keypoints, trailRef.current, col.box);
   }, [bbox, keypoints, anomalyType, isOn, drawCanvas]);
 
-  // ── IP Camera preview ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (cameraSource !== "ip_camera" || !isOn) return;
-    let active = true;
-    setIpLoading(true); setIpError(null); setIpFrame(null);
-    const fetchPreview = async () => {
-      try {
-        const { data } = await axios.get(`${ANOMALY_API}/camera-snapshot`, { timeout: 10000 });
-        if (active) { setIpFrame(data.frame); setIpError(null); setIpLoading(false); }
-      } catch (err) {
-        if (active) { setIpError(err.response?.data?.detail || "IP camera unreachable"); setIpLoading(false); }
-      }
-    };
-    fetchPreview();
-    const timer = setInterval(fetchPreview, SNAPSHOT_MS);
-    return () => { active = false; clearInterval(timer); };
-  }, [cameraSource, isOn]);
+  // ── IP Camera: MJPEG stream is handled by native <img> tag ─────────────────
+  // No polling needed — the browser keeps one persistent HTTP connection
+  // and the backend pushes ~20 FPS frames via multipart/x-mixed-replace.
+
 
   // ── Handle WS message ─────────────────────────────────────────────────────
   const handleMessage = useCallback((data) => {
+    // ── Camera preview: only update the video frame, skip all ML state ──────
+    // Backend sends this BEFORE running the ML pipeline for minimum display latency.
+    if (data.camera_preview_only) {
+      if (data.camera_frame) {
+        setIpFrame(`data:image/jpeg;base64,${data.camera_frame}`);
+        setIpError(null);
+      }
+      return;
+    }
+
     const atype = data.anomaly_type || "no_person";
-    const conf  = data.confidence   || 0;
-    const sev   = data.severity     || "none";
-    const src   = data.source       || "rule_engine";
+    const conf = data.confidence || 0;
+    const sev = data.severity || "none";
+    const src = data.source || "rule_engine";
 
     setAnomalyType(atype);
     setConfidence(conf);
@@ -278,10 +283,19 @@ export default function AnomalyDashboard() {
     setLatencyMs(data.latency_ms || null);
     setError(data.error || "");
 
+    // IP camera frame echoed back from backend via WS
+    if (data.camera_frame) {
+      setIpFrame(`data:image/jpeg;base64,${data.camera_frame}`);
+      setIpError(null);
+    } else if (data.camera_error) {
+      // Camera is genuinely offline / RTSP failed
+      setIpError(data.camera_error);
+    }
+
     if (data.bbox) {
       const cx = data.bbox.x + data.bbox.w / 2;
       const cy = data.bbox.y + data.bbox.h / 2;
-      trailRef.current = [...trailRef.current.slice(-(TRAIL_LEN-1)), { x: cx, y: cy }];
+      trailRef.current = [...trailRef.current.slice(-(TRAIL_LEN - 1)), { x: cx, y: cy }];
     }
 
     if (atype !== "normal_activity" && atype !== "no_person") {
@@ -292,8 +306,13 @@ export default function AnomalyDashboard() {
         explanation: data.explanation || null,
         simulated: !!data.simulated,
       }, ...prev].slice(0, MAX_TIMELINE));
+
+      // ── Fire toast for critical/high severity events ──────────────────────
+      if (sev === "critical" || sev === "high") {
+        fireAnomalyToast(atype, conf, personId, sev);
+      }
     }
-  }, []);
+  }, [personId, fireAnomalyToast]);
 
   // ── Send frame via WS ─────────────────────────────────────────────────────
   const sendFrame = useCallback(() => {
@@ -312,18 +331,20 @@ export default function AnomalyDashboard() {
   // ── WebSocket lifecycle ───────────────────────────────────────────────────
   useEffect(() => {
     if (isOn) {
-      const wsUrl = ANOMALY_API.replace(/^http/, "ws") + "/ws/process";
+      const token = localStorage.getItem("access_token") || "";
+      const wsUrl = ANOMALY_API.replace(/^http/, "ws") + "/ws/process" + (token ? `?token=${token}` : "");
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-      ws.onopen    = () => { setWsStatus("connected"); setError(""); pollRef.current = setInterval(sendFrame, POLL_MS); };
-      ws.onmessage = (evt) => { try { handleMessage(JSON.parse(evt.data)); } catch(e) { console.error(e); } };
-      ws.onerror   = () => { setWsStatus("error"); setError("WebSocket connection failed"); };
-      ws.onclose   = () => { setWsStatus("disconnected"); clearInterval(pollRef.current); };
+      ws.onopen = () => { setWsStatus("connected"); setError(""); pollRef.current = setInterval(sendFrame, POLL_MS); };
+      ws.onmessage = (evt) => { try { handleMessage(JSON.parse(evt.data)); } catch (e) { console.error(e); } };
+      ws.onerror = () => { setWsStatus("error"); setError("WebSocket connection failed"); };
+      ws.onclose = () => { setWsStatus("disconnected"); clearInterval(pollRef.current); };
     } else {
       if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
       clearInterval(pollRef.current);
       setAnomalyType("no_person"); setBbox(null); setKeypoints(null);
       setConfidence(0); setPoseValid(false); setWsStatus("disconnected");
+      setIpFrame(null); setIpError(null);
     }
     return () => { if (wsRef.current) wsRef.current.close(); clearInterval(pollRef.current); };
   }, [isOn, sendFrame, handleMessage]);
@@ -342,9 +363,11 @@ export default function AnomalyDashboard() {
   // ── Scenario Mode ─────────────────────────────────────────────────────────
   const runScenario = useCallback(async (scenario) => {
     setSimLoading(scenario);
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
       const { data } = await axios.post(`${ANOMALY_API}/simulate/${scenario}`, null,
-        { params: { person_id: personId }, timeout: 5000 });
+        { params: { person_id: personId }, headers: authHeaders, timeout: 5000 });
       handleMessage(data);
       setIsSimulating(true);
       setTimeout(() => setIsSimulating(false), 4000);
@@ -357,8 +380,10 @@ export default function AnomalyDashboard() {
 
   // ── Reset Session ─────────────────────────────────────────────────────────
   const resetSession = useCallback(async () => {
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      await axios.post(`${ANOMALY_API}/reset-session`);
+      await axios.post(`${ANOMALY_API}/reset-session`, null, { headers: authHeaders });
       setTimeline([]);
       setAnomalyType("no_person");
       setConfidence(0);
@@ -372,8 +397,10 @@ export default function AnomalyDashboard() {
 
   // ── Export logs ───────────────────────────────────────────────────────────
   const exportLogs = useCallback(async () => {
+    const token = localStorage.getItem("access_token");
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     try {
-      const { data } = await axios.get(`${ANOMALY_API}/session-logs`);
+      const { data } = await axios.get(`${ANOMALY_API}/session-logs`, { headers: authHeaders });
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -385,28 +412,29 @@ export default function AnomalyDashboard() {
   }, []);
 
   // ── Derived UI ────────────────────────────────────────────────────────────
-  const ui        = ANOMALY_UI[anomalyType] || ANOMALY_UI.no_person;
-  const colors    = COLORS[ui.color];
-  const isFall    = anomalyType === "fall_detected";
-  const srcBadge  = SOURCE_BADGE[source] || SOURCE_BADGE["rule_engine"];
-  const riskInfo  = RISK_LEVEL[anomalyType] || RISK_LEVEL.no_person;
+  const ui = ANOMALY_UI[anomalyType] || ANOMALY_UI.no_person;
+  const colors = COLORS[ui.color];
+  const isFall = anomalyType === "fall_detected";
+  const srcBadge = SOURCE_BADGE[source] || SOURCE_BADGE["rule_engine"];
+  const riskInfo = RISK_LEVEL[anomalyType] || RISK_LEVEL.no_person;
   const motionScore = evidence?.pose_energy ?? null;
-  const wristVel    = evidence?.wrist_velocity ?? null;
+  const wristVel = evidence?.wrist_velocity ?? null;
 
   const wsIndicator = {
-    connected:    { dot: "bg-emerald-500 animate-pulse", label: "LIVE" },
-    disconnected: { dot: "bg-gray-500",                  label: "OFFLINE" },
-    error:        { dot: "bg-red-500 animate-pulse",     label: "ERROR" },
+    connected: { dot: "bg-emerald-500 animate-pulse", label: "LIVE" },
+    disconnected: { dot: "bg-gray-500", label: "OFFLINE" },
+    error: { dot: "bg-red-500 animate-pulse", label: "ERROR" },
   }[wsStatus];
 
   const tabs = [
-    { id: "monitor",  label: "🖥️ Monitor"  },
-    { id: "analytics",label: "📊 Analytics" },
-    { id: "research", label: "🔬 Research"  },
+    { id: "monitor", label: "🖥️ Monitor" },
+    { id: "analytics", label: "📊 Analytics" },
+    { id: "research", label: "🔬 Research" },
   ];
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
+      <Navbar />
 
       {/* ── FALL BANNER ───────────────────────────────────────────────────── */}
       {isFall && (
@@ -478,10 +506,10 @@ export default function AnomalyDashboard() {
             {/* Camera source toggle */}
             {!isOn && (
               <div className="flex items-center gap-2 mb-5 p-1 bg-gray-900 rounded-xl border border-gray-700 max-w-xs">
-                {[{id:"webcam",label:"🖥️ Webcam"},{id:"ip_camera",label:"📡 IP Camera"}].map(({id,label}) => (
+                {[{ id: "webcam", label: "🖥️ Webcam" }, { id: "ip_camera", label: "📡 IP Camera" }].map(({ id, label }) => (
                   <button key={id} id={`source-toggle-${id}`} onClick={() => setCameraSource(id)}
                     className={`flex-1 py-2 px-4 rounded-lg text-sm font-semibold transition-all
-                      ${cameraSource===id ? "bg-indigo-600 text-white shadow" : "text-gray-400 hover:text-white"}`}>
+                      ${cameraSource === id ? "bg-indigo-600 text-white shadow" : "text-gray-400 hover:text-white"}`}>
                     {label}
                   </button>
                 ))}
@@ -516,18 +544,32 @@ export default function AnomalyDashboard() {
                         {cameraSource === "webcam" && (
                           <>
                             <Webcam ref={webcamRef} audio={false} screenshotFormat="image/jpeg"
-                              videoConstraints={{width:1280,height:720,facingMode:"user"}}
-                              className="w-full h-full object-cover" style={{transform:"scaleX(-1)"}} />
+                              videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
+                              className="w-full h-full object-cover" style={{ transform: "scaleX(-1)" }} />
                             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full"
-                              style={{pointerEvents:"none",transform:"scaleX(-1)"}} />
+                              style={{ pointerEvents: "none", transform: "scaleX(-1)" }} />
                           </>
                         )}
                         {cameraSource === "ip_camera" && (
                           <>
-                            {ipLoading && <div className="flex items-center justify-center py-20"><div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" /></div>}
-                            {ipError && !ipLoading && <div className="flex flex-col items-center justify-center gap-2 text-red-400 py-20"><span className="text-5xl">📡</span><p>{ipError}</p></div>}
-                            {ipFrame && !ipLoading && <img src={ipFrame} alt="IP camera" className="w-full h-full object-cover" />}
-                            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{pointerEvents:"none"}} />
+                            {!isOn ? null : ipFrame ? (
+                              <img
+                                src={ipFrame}
+                                alt="IP camera live"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex items-center justify-center w-full h-full">
+                                <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                              </div>
+                            )}
+                            {ipError && (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-red-400 bg-gray-950/80">
+                                <span className="text-5xl">📡</span>
+                                <p>{ipError}</p>
+                              </div>
+                            )}
+                            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ pointerEvents: "none" }} />
                           </>
                         )}
                         <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 bg-red-600/90 text-white text-xs font-black px-3 py-1 rounded-full animate-pulse tracking-widest">
@@ -540,7 +582,7 @@ export default function AnomalyDashboard() {
                           </span>
                           {confidence > 0 && (
                             <span className={`backdrop-blur-sm text-xs font-mono px-3 py-1 rounded-full border ${colors.badge}`}>
-                              {ui.icon} {(confidence*100).toFixed(0)}%
+                              {ui.icon} {(confidence * 100).toFixed(0)}%
                             </span>
                           )}
                         </div>
@@ -576,10 +618,10 @@ export default function AnomalyDashboard() {
                               <span>{evUi.icon}</span>
                               <div>
                                 <p className={`font-bold ${evColor.text}`}>
-                                  {ev.type.replace(/_/g," ").toUpperCase()}
+                                  {ev.type.replace(/_/g, " ").toUpperCase()}
                                   {ev.simulated && <span className="ml-1 text-pink-500">[SIM]</span>}
                                 </p>
-                                <p className="text-gray-500 mt-0.5">{(ev.conf*100).toFixed(0)}% · {ev.src?.replace(/_/g," ")}</p>
+                                <p className="text-gray-500 mt-0.5">{(ev.conf * 100).toFixed(0)}% · {ev.src?.replace(/_/g, " ")}</p>
                               </div>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
@@ -653,14 +695,14 @@ export default function AnomalyDashboard() {
                         <p className="text-xs text-gray-500 font-semibold mb-2">Contributing Factors</p>
                         {Object.entries(explanation.contributing_factors).map(([k, v]) => (
                           <div key={k} className="flex items-center gap-2 text-xs">
-                            <span className="text-gray-500 w-36 truncate shrink-0">{k.replace(/_/g," ")}</span>
+                            <span className="text-gray-500 w-36 truncate shrink-0">{k.replace(/_/g, " ")}</span>
                             {typeof v === "number" && v <= 1.0 && v >= 0.0 ? (
                               <>
                                 <div className="flex-1 bg-gray-800 h-1.5 rounded-full overflow-hidden">
                                   <div className="h-full rounded-full bg-indigo-500 transition-all duration-500"
-                                    style={{width:`${(v*100).toFixed(0)}%`}} />
+                                    style={{ width: `${(v * 100).toFixed(0)}%` }} />
                                 </div>
-                                <span className="text-indigo-300 w-10 text-right font-mono">{(v*100).toFixed(0)}%</span>
+                                <span className="text-indigo-300 w-10 text-right font-mono">{(v * 100).toFixed(0)}%</span>
                               </>
                             ) : (
                               <span className="text-indigo-300 font-mono ml-auto">{typeof v === "number" ? v.toFixed(typeof v === "number" && v > 10 ? 0 : 4) : String(v)}</span>
@@ -684,12 +726,12 @@ export default function AnomalyDashboard() {
                   <div>
                     <div className="flex justify-between text-xs mb-1">
                       <span className="text-gray-500">Anomaly Confidence</span>
-                      <span className="text-white font-mono font-bold">{(confidence*100).toFixed(0)}%</span>
+                      <span className="text-white font-mono font-bold">{(confidence * 100).toFixed(0)}%</span>
                     </div>
                     <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden">
                       <div className={`h-full rounded-full transition-all duration-500
                         ${confidence > 0.8 ? "bg-red-500" : confidence > 0.6 ? "bg-yellow-500" : "bg-emerald-500"}`}
-                        style={{width:`${(confidence*100).toFixed(0)}%`}} />
+                        style={{ width: `${(confidence * 100).toFixed(0)}%` }} />
                     </div>
                   </div>
                   {motionScore !== null && (
@@ -700,7 +742,7 @@ export default function AnomalyDashboard() {
                       </div>
                       <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
                         <div className="h-full rounded-full transition-all duration-500 bg-indigo-500"
-                          style={{width:`${Math.min(motionScore*200,100).toFixed(0)}%`}} />
+                          style={{ width: `${Math.min(motionScore * 200, 100).toFixed(0)}%` }} />
                       </div>
                     </div>
                   )}
@@ -712,7 +754,7 @@ export default function AnomalyDashboard() {
                       </div>
                       <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
                         <div className="h-full rounded-full transition-all duration-500 bg-violet-500"
-                          style={{width:`${Math.min(wristVel*500,100).toFixed(0)}%`}} />
+                          style={{ width: `${Math.min(wristVel * 500, 100).toFixed(0)}%` }} />
                       </div>
                     </div>
                   )}
@@ -724,7 +766,7 @@ export default function AnomalyDashboard() {
                   <div className="space-y-2 text-xs font-mono">
                     <div className="flex justify-between">
                       <span className="text-gray-500">WebSocket</span>
-                      <span className={wsStatus==="connected" ? "text-emerald-400" : wsStatus==="error" ? "text-red-400" : "text-gray-500"}>
+                      <span className={wsStatus === "connected" ? "text-emerald-400" : wsStatus === "error" ? "text-red-400" : "text-gray-500"}>
                         {wsStatus.toUpperCase()}
                       </span>
                     </div>
@@ -757,10 +799,10 @@ export default function AnomalyDashboard() {
                   </p>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { id:"fall",       label:"🚨 Fall",       cls:"bg-red-800/40 border-red-700 hover:bg-red-700/50 text-red-300" },
-                      { id:"aggression", label:"⚠️ Aggression",  cls:"bg-orange-800/40 border-orange-700 hover:bg-orange-700/50 text-orange-300" },
-                      { id:"inactivity", label:"😴 Inactivity",  cls:"bg-yellow-800/40 border-yellow-700 hover:bg-yellow-700/50 text-yellow-300" },
-                      { id:"normal",     label:"✅ Normal",      cls:"bg-emerald-800/40 border-emerald-700 hover:bg-emerald-700/50 text-emerald-300" },
+                      { id: "fall", label: "🚨 Fall", cls: "bg-red-800/40 border-red-700 hover:bg-red-700/50 text-red-300" },
+                      { id: "aggression", label: "⚠️ Aggression", cls: "bg-orange-800/40 border-orange-700 hover:bg-orange-700/50 text-orange-300" },
+                      { id: "inactivity", label: "😴 Inactivity", cls: "bg-yellow-800/40 border-yellow-700 hover:bg-yellow-700/50 text-yellow-300" },
+                      { id: "normal", label: "✅ Normal", cls: "bg-emerald-800/40 border-emerald-700 hover:bg-emerald-700/50 text-emerald-300" },
                     ].map(s => (
                       <button key={s.id} id={`sim-${s.id}-btn`}
                         onClick={() => runScenario(s.id)}
@@ -794,7 +836,7 @@ export default function AnomalyDashboard() {
               <p className="text-sm font-bold text-gray-300 mb-1">📊 Event Distribution</p>
               <p className="text-xs text-gray-500 mb-5">Breakdown of all processed frames by detection type</p>
               {metricsLoading && !metrics ? (
-                <div className="space-y-3">{Array(6).fill(0).map((_,i)=><Skeleton key={i} h="h-4" />)}</div>
+                <div className="space-y-3">{Array(6).fill(0).map((_, i) => <Skeleton key={i} h="h-4" />)}</div>
               ) : metrics?.event_distribution ? (
                 <div className="space-y-3">
                   {Object.entries(metrics.event_distribution).map(([key, val]) => {
@@ -828,13 +870,13 @@ export default function AnomalyDashboard() {
                     const evColor = COLORS[evUi.color];
                     return (
                       <div key={ev.id} className="flex items-start gap-3 text-xs">
-                        <span className="text-gray-600 font-mono w-6 shrink-0">{String(idx+1).padStart(2,"0")}</span>
-                        <div className={`w-2 h-2 rounded-full mt-1 shrink-0`} style={{backgroundColor: evColor.bar}} />
+                        <span className="text-gray-600 font-mono w-6 shrink-0">{String(idx + 1).padStart(2, "0")}</span>
+                        <div className={`w-2 h-2 rounded-full mt-1 shrink-0`} style={{ backgroundColor: evColor.bar }} />
                         <div className="flex-1">
-                          <p className={`font-bold ${evColor.text}`}>{ev.type.replace(/_/g," ").toUpperCase()}</p>
-                          <p className="text-gray-500">{(ev.conf*100).toFixed(0)}% conf · {ev.sev} · {ev.time}</p>
+                          <p className={`font-bold ${evColor.text}`}>{ev.type.replace(/_/g, " ").toUpperCase()}</p>
+                          <p className="text-gray-500">{(ev.conf * 100).toFixed(0)}% conf · {ev.sev} · {ev.time}</p>
                           {ev.explanation?.reason && (
-                            <p className="text-gray-600 mt-0.5 leading-relaxed">{ev.explanation.reason.slice(0,120)}…</p>
+                            <p className="text-gray-600 mt-0.5 leading-relaxed">{ev.explanation.reason.slice(0, 120)}…</p>
                           )}
                         </div>
                       </div>
@@ -850,19 +892,19 @@ export default function AnomalyDashboard() {
               {timeline.length === 0 ? (
                 <p className="text-gray-600 text-sm text-center py-8">No events recorded</p>
               ) : (() => {
-                const sevCount = { critical:0, high:0, medium:0, low:0, none:0 };
+                const sevCount = { critical: 0, high: 0, medium: 0, low: 0, none: 0 };
                 timeline.forEach(ev => { sevCount[ev.sev] = (sevCount[ev.sev] || 0) + 1; });
                 const total = timeline.length;
                 return (
                   <div className="space-y-3">
-                    {[["critical","bg-red-500"],["high","bg-orange-500"],["medium","bg-yellow-500"],["low","bg-indigo-500"]].map(([sev,bar]) => (
+                    {[["critical", "bg-red-500"], ["high", "bg-orange-500"], ["medium", "bg-yellow-500"], ["low", "bg-indigo-500"]].map(([sev, bar]) => (
                       <div key={sev} className="flex items-center gap-2 text-xs">
                         <span className="w-16 text-gray-400 capitalize">{sev}</span>
                         <div className="flex-1 bg-gray-800 h-2 rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${bar}`}
-                            style={{width:`${((sevCount[sev]||0)/total*100).toFixed(0)}%`}} />
+                            style={{ width: `${((sevCount[sev] || 0) / total * 100).toFixed(0)}%` }} />
                         </div>
-                        <span className="text-gray-500 w-6 text-right">{sevCount[sev]||0}</span>
+                        <span className="text-gray-500 w-6 text-right">{sevCount[sev] || 0}</span>
                       </div>
                     ))}
                   </div>
@@ -888,7 +930,7 @@ export default function AnomalyDashboard() {
                           <span className={`px-2 py-0.5 rounded text-xs font-mono ${sb.cls}`}>{sb.label}</span>
                           <div className="flex-1 bg-gray-800 h-2 rounded-full overflow-hidden">
                             <div className="h-full rounded-full bg-indigo-500"
-                              style={{width:`${(cnt/total*100).toFixed(0)}%`}} />
+                              style={{ width: `${(cnt / total * 100).toFixed(0)}%` }} />
                           </div>
                           <span className="text-gray-500 w-6 text-right">{cnt}</span>
                         </div>
@@ -897,6 +939,65 @@ export default function AnomalyDashboard() {
                   </div>
                 );
               })()}
+            </div>
+
+            {/* Session Alerts — full width */}
+            <div className="lg:col-span-2 bg-gray-900 border border-gray-800 rounded-3xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm font-bold text-gray-300">🔔 Session Alerts</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Persisted alerts from MongoDB & log file</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setSessionLogsLoading(true);
+                    const token = localStorage.getItem("access_token");
+                    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+                    axios.get(`${ANOMALY_API}/session-logs`, { headers, timeout: 5000 })
+                      .then(({ data }) => {
+                        const logs = data.memory_alerts || data.file_logs || [];
+                        setSessionLogs(Array.isArray(logs) ? logs.slice(-20).reverse() : []);
+                      })
+                      .catch(() => { })
+                      .finally(() => setSessionLogsLoading(false));
+                  }}
+                  className="text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-xl transition-all"
+                >
+                  ↻ Refresh
+                </button>
+              </div>
+              {sessionLogsLoading ? (
+                <div className="space-y-2">{Array(3).fill(0).map((_, i) => <Skeleton key={i} h="h-12" />)}</div>
+              ) : sessionLogs.length === 0 ? (
+                <p className="text-gray-600 text-sm text-center py-8">No persisted alerts yet — start monitoring to generate events</p>
+              ) : (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {sessionLogs.map((log, i) => {
+                    const evUi = ANOMALY_UI[log.event] || ANOMALY_UI.no_person;
+                    const evColor = COLORS[evUi.color];
+                    const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "–";
+                    return (
+                      <div key={i} className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs ${evColor.bg} ${evColor.border}`}>
+                        <div className="flex items-center gap-2">
+                          <span>{evUi.icon}</span>
+                          <div>
+                            <p className={`font-bold ${evColor.text}`}>{(log.event || "unknown").replace(/_/g, " ").toUpperCase()}</p>
+                            <p className="text-gray-500 mt-0.5">Patient: <span className="font-mono">{log.patient_id || "–"}</span></p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 font-mono shrink-0">
+                          <span className="text-gray-500">{((log.confidence || 0) * 100).toFixed(0)}%</span>
+                          <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${log.severity === "critical" ? "bg-red-600/40 text-red-300" :
+                            log.severity === "high" ? "bg-orange-600/40 text-orange-300" :
+                              log.severity === "medium" ? "bg-yellow-600/40 text-yellow-300" : "bg-gray-700 text-gray-400"
+                            }`}>{log.severity || "none"}</span>
+                          <span className="text-gray-600">{ts}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -909,11 +1010,11 @@ export default function AnomalyDashboard() {
             {/* Metric cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {metricsLoading && !metrics ? (
-                Array(4).fill(0).map((_,i) => <Skeleton key={i} h="h-20" />)
+                Array(4).fill(0).map((_, i) => <Skeleton key={i} h="h-20" />)
               ) : metrics ? (
                 <>
-                  <MetricCard label="System Accuracy (Proxy)" value={(metrics.fall_accuracy_proxy*100).toFixed(1)} unit="%" cls="text-emerald-400" />
-                  <MetricCard label="False Positive Rate" value={(metrics.false_positive_rate*100).toFixed(1)} unit="%" cls={metrics.false_positive_rate < 0.1 ? "text-emerald-400" : "text-yellow-400"} />
+                  <MetricCard label="System Accuracy (Proxy)" value={(metrics.fall_accuracy_proxy * 100).toFixed(1)} unit="%" cls="text-emerald-400" />
+                  <MetricCard label="False Positive Rate" value={(metrics.false_positive_rate * 100).toFixed(1)} unit="%" cls={metrics.false_positive_rate < 0.1 ? "text-emerald-400" : "text-yellow-400"} />
                   <MetricCard label="Avg Response Time" value={metrics.latency_ms.avg} unit="ms" cls={metrics.latency_ms.avg < 100 ? "text-emerald-400" : "text-yellow-400"} />
                   <MetricCard label="Processing FPS" value={metrics.fps} unit="fps" cls="text-indigo-400" />
                 </>
@@ -942,16 +1043,16 @@ export default function AnomalyDashboard() {
               <p className="text-sm font-bold text-gray-300 mb-4">🏗️ System Architecture</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-xs font-mono">
                 {[
-                  ["Pipeline",          metrics?.model_pipeline || "MediaPipe → Rule Engine → LSTM → Autoencoder"],
-                  ["Feature Vector",    `${metrics?.feature_dimensions || 40} dimensions`],
-                  ["Sequence Window",   "30 frames (6 seconds @ 5 FPS)"],
+                  ["Pipeline", metrics?.model_pipeline || "MediaPipe → Rule Engine → LSTM → Autoencoder"],
+                  ["Feature Vector", `${metrics?.feature_dimensions || 40} dimensions`],
+                  ["Sequence Window", "30 frames (6 seconds @ 5 FPS)"],
                   ["Detection Classes", "5 (Fall, Aggression, Inactivity, Warning, Unusual)"],
-                  ["Smoothing Window",  "8 frames majority vote"],
-                  ["Alert Cooldown",    "8 seconds per event-patient pair"],
-                  ["Pose Landmarks",    "33 × [x, y, z, visibility]"],
-                  ["Backbone",          "MediaPipe BlazePose (Google)"],
-                  ["LSTM Hidden Dim",   "128 → 64 → 5-class output"],
-                  ["Autoencoder Dims",  "40→32→16→8→16→32→40"],
+                  ["Smoothing Window", "8 frames majority vote"],
+                  ["Alert Cooldown", "8 seconds per event-patient pair"],
+                  ["Pose Landmarks", "33 × [x, y, z, visibility]"],
+                  ["Backbone", "MediaPipe BlazePose (Google)"],
+                  ["LSTM Hidden Dim", "128 → 64 → 5-class output"],
+                  ["Autoencoder Dims", "40→32→16→8→16→32→40"],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between border-b border-gray-800/50 py-1.5">
                     <span className="text-gray-500">{k}</span>
@@ -975,6 +1076,6 @@ export default function AnomalyDashboard() {
           </div>
         )}
       </div>
-    </div>
+    </div >
   );
 }

@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Shield, MapPin, DollarSign, Star, Award } from "lucide-react";
+import { Shield, MapPin, DollarSign, CheckCircle2, XCircle } from "lucide-react";
 import RatingStars from "./RatingStars";
+import { verifyCaregiver } from "../services/caregiverApi";
 
-const CaregiverCard = ({ caregiver }) => {
+const CaregiverCard = ({ caregiver, isAdmin = false, onVerify }) => {
   const {
     id,
     name,
@@ -16,17 +17,34 @@ const CaregiverCard = ({ caregiver }) => {
     face_verification_status,
   } = caregiver;
 
+  // Optimistic local state so the badge flips instantly after admin action
+  const [localStatus, setLocalStatus] = useState(face_verification_status);
+  const [actionLoading, setActionLoading] = useState(null); // 'approved' | 'rejected' | null
+
   const specs = specializations || [];
 
-  // Placeholder avatar with initial if no photo URL
   const initials = name
-    ? name
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .slice(0, 2)
-        .toUpperCase()
+    ? name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
     : "CG";
+
+  const isVerified = localStatus === "verified";
+  const isRejected = localStatus === "rejected";
+  const isPending = !isVerified && !isRejected;
+
+  const handleVerify = async (action) => {
+    setActionLoading(action);
+    try {
+      await verifyCaregiver(id, action);
+      const newFaceStatus = action === "approved" ? "verified" : "rejected";
+      setLocalStatus(newFaceStatus);
+      onVerify && onVerify(id, action);
+    } catch (err) {
+      console.error("Verify failed:", err);
+      alert(err?.response?.data?.detail || "Failed to update caregiver status.");
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   return (
     <div className="glass-panel glass-panel-hover rounded-2xl p-6 flex flex-col justify-between h-full relative overflow-hidden">
@@ -62,9 +80,13 @@ const CaregiverCard = ({ caregiver }) => {
           </div>
 
           {/* Verification Badge */}
-          {face_verification_status === "verified" ? (
+          {isVerified ? (
             <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
               <Shield className="w-3.5 h-3.5" /> Verified
+            </span>
+          ) : isRejected ? (
+            <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2.5 py-0.5 rounded-full">
+              Rejected
             </span>
           ) : (
             <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full">
@@ -86,7 +108,7 @@ const CaregiverCard = ({ caregiver }) => {
         </div>
 
         {/* Specializations Badges */}
-        <div className="flex flex-wrap gap-1.5 mb-6">
+        <div className="flex flex-wrap gap-1.5 mb-4">
           {specs.slice(0, 3).map((spec, i) => (
             <span
               key={i}
@@ -108,8 +130,29 @@ const CaregiverCard = ({ caregiver }) => {
         </div>
       </div>
 
+      {/* Admin Approve / Reject buttons (only shown to admins for pending caregivers) */}
+      {isAdmin && isPending && (
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => handleVerify("approved")}
+            disabled={!!actionLoading}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-bold rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 transition-all disabled:opacity-50"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {actionLoading === "approved" ? "Approving..." : "Approve"}
+          </button>
+          <button
+            onClick={() => handleVerify("rejected")}
+            disabled={!!actionLoading}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-bold rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 transition-all disabled:opacity-50"
+          >
+            <XCircle className="w-3.5 h-3.5" />
+            {actionLoading === "rejected" ? "Rejecting..." : "Reject"}
+          </button>
+        </div>
+      )}
 
-      {/* Action Button */}
+      {/* View Profile Button */}
       <Link
         to={`/caregivers/${id}`}
         className="w-full text-center py-2.5 px-4 bg-gradient-to-r from-primary-600 to-indigo-600 hover:from-primary-500 hover:to-indigo-500 text-white rounded-xl font-semibold text-sm transition-all duration-300 shadow-md shadow-primary-950/20"

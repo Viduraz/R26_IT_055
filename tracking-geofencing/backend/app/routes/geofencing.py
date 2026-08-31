@@ -4,6 +4,10 @@ No prefix is added here; the prefix comes from app.include_router().
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from datetime import datetime, timezone
+from typing import Optional
 from app.controllers.geofencing_controller import (
     handle_create_zone,
     handle_get_all_zones,
@@ -13,6 +17,7 @@ from app.controllers.geofencing_controller import (
     handle_check_breach,
     handle_get_alerts,
     handle_resolve_alert,
+    handle_clear_alerts,
 )
 from app.models.tracking_models import (
     ZoneCreateRequest,
@@ -83,9 +88,16 @@ async def check_breach(
 @router.get("/alerts")
 async def get_alerts(
     resolved: bool = Query(None),
+    since: str = Query(None),
 ):
-    """Retrieve geofence alerts, optionally filtered by resolved status."""
-    return await handle_get_alerts(resolved)
+    """Retrieve geofence alerts, optionally filtered by resolved status and since timestamp."""
+    return await handle_get_alerts(resolved, since)
+
+
+@router.delete("/alerts")
+async def clear_alerts():
+    """Clear all geofence alerts."""
+    return await handle_clear_alerts()
 
 
 @router.put("/alerts/{alert_id}/resolve")
@@ -97,3 +109,5 @@ async def resolve_alert(
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return alert
+
+

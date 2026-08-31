@@ -62,6 +62,20 @@ from app.services.schedule_service import ScheduleService
 def run_tests():
     svc = ScheduleService()
     now = datetime.now()
+
+    # 0. Verify schedule auto-arranges from local time (+2 min, 3 min blocks)
+    created = svc.create_schedule(
+        "test_user",
+        [
+            {"activity_name": "Eating"},
+            {"activity_name": "Walking"},
+        ],
+        "Auto timing"
+    )
+    expected_anchor = now.replace(second=0, microsecond=0) + timedelta(minutes=2)
+    assert created["activities"][0]["start_time"] == expected_anchor.strftime("%H:%M"), "First activity should start 2 minutes after save"
+    assert created["activities"][1]["start_time"] == (expected_anchor + timedelta(minutes=3)).strftime("%H:%M"), "Second activity should start 3 minutes later"
+    print("✅ Auto timing logic passed")
     
     # 1. Setup mock schedule
     mock_db["schedules"].insert_one({
@@ -89,17 +103,26 @@ def run_tests():
         confidence=0.9,
         signals={}
     )
-    assert res['status'] == 'Done', f"Expected Done, got {res['status']}"
+    assert res['status'] == 'Completed', f"Expected Completed, got {res['status']}"
     assert len(mock_db['notifications'].data) == 0, "Should not create notification for Done"
-    print("✅ 'Done' logic passed")
+    print("✅ 'Completed' logic passed")
 
-    # 3. Test "Late" (between 1.5 and 3 mins)
+    # 2b. Early detection should be marked early
     start_time_obj = datetime.strptime(mock_db['schedules'].data[0]['activities'][0]['start_time'], "%H:%M").time()
     expected_start = datetime.combine(now.date(), start_time_obj)
-    
+    early_status = svc.check_activity_status("test_user", "Eating", expected_start, expected_start - timedelta(seconds=1))
+    assert early_status['status'] == 'Early', f"Expected Early, got {early_status['status']}"
+    print("✅ 'Early' logic passed")
+
+    # 3. Test "Late" (between 1.5 and 3 mins)
     status_info = svc.check_activity_status("test_user", "Eating", expected_start, expected_start + timedelta(minutes=2))
     assert status_info['status'] == 'Late', f"Expected Late, got {status_info['status']}"
     print("✅ 'Late' logic passed")
+
+    # 3b. Test "Missed" (after 3 mins)
+    missed_status = svc.check_activity_status("test_user", "Eating", expected_start, expected_start + timedelta(minutes=4))
+    assert missed_status['status'] == 'Missed', f"Expected Missed, got {missed_status['status']}"
+    print("✅ 'Missed' logic passed")
     
     # 4. Test "Not Done" (background task)
     svc.check_missed_activities()

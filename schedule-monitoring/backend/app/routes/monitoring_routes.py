@@ -1,8 +1,13 @@
 """
 schedule-monitoring/backend/app/routes/monitoring_routes.py
-Monitoring endpoints: detection events, today's status, logs, notifications.
+Monitoring endpoints: detection events, today's status, logs, notifications,
+and an MJPEG proxy stream for the IP camera.
 """
+import os
+import cv2
+import time
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -18,6 +23,86 @@ from app.controllers.monitoring_controller import (
 
 router = APIRouter()
 
+# ── IP Camera MJPEG Stream ──────────────────────────────────────────────────
+
+def _build_rtsp_url() -> str:
+    """Build RTSP URL from env. Uses IP_CAMERA_RTSP_URL if set, otherwise
+    constructs one from host/user/pass."""
+    rtsp = os.getenv("IP_CAMERA_RTSP_URL", "").strip()
+    if rtsp:
+        return rtsp
+    host = os.getenv("IP_CAMERA_HOST", "169.254.110.15")
+    user = os.getenv("IP_CAMERA_USER", "admin")
+    pwd  = os.getenv("IP_CAMERA_PASS", "admin")
+    return f"rtsp://{user}:{pwd}@{host}:554/stream1"
+
+
+def _mjpeg_generator():
+    """Generator that yields MJPEG frames from the IP camera RTSP stream."""
+    rtsp_url = _build_rtsp_url()
+    cap = None
+    retry_delay = 2  # seconds between reconnect attempts
+
+    while True:
+        try:
+            if cap is None or not cap.isOpened():
+                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            ret, frame = cap.read()
+            if not ret:
+                # Camera temporarily unavailable — send a placeholder frame
+                if cap:
+                    cap.release()
+                    cap = None
+                time.sleep(retry_delay)
+                continue
+
+            # Encode as JPEG (quality 80 for good balance of size vs clarity)
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 80]
+            _, jpeg = cv2.imencode(".jpg", frame, encode_params)
+            data = jpeg.tobytes()
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+            )
+
+        except GeneratorExit:
+            break
+        except Exception as exc:
+            print(f"[ip_cam] stream error: {exc}")
+            if cap:
+                cap.release()
+                cap = None
+            time.sleep(retry_delay)
+
+    if cap:
+        cap.release()
+
+
+@router.get(
+    "/camera/stream",
+    summary="MJPEG proxy stream from the IP camera",
+    response_class=StreamingResponse,
+)
+async def ip_camera_stream():
+    """
+    Returns a multipart/x-mixed-replace MJPEG stream directly from the
+    IP camera RTSP feed, so the browser can consume it as a plain <video>
+    or <img> src without needing RTSP support.
+    """
+    return StreamingResponse(
+        _mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+# ── Detection / Monitoring Routes ───────────────────────────────────────────
 
 class DetectionEventPayload(BaseModel):
     patient_id: str = "patient_001"

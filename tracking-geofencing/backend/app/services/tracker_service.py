@@ -18,7 +18,7 @@ from app.services.geofence_service import (
 )
 
 
-async def process_frame(frame_data: str, elder_id: str = None) -> dict:
+async def process_frame(frame_data: str, elder_id: str = None, tracker_type: str = "bytetrack") -> dict:
     """Process a single video frame through the persistent tracker."""
     frame_id = str(uuid.uuid4())
     try:
@@ -37,7 +37,7 @@ async def process_frame(frame_data: str, elder_id: str = None) -> dict:
             print("[SVC] ⚠ No frame_data provided")
 
         # Process through persistent tracker engine
-        tracked_persons = tracker_engine.process_frame(frame_bytes)
+        tracked_persons = tracker_engine.process_frame(frame_bytes, tracker_type)
         now = datetime.now(timezone.utc).isoformat()
 
         # ── Exit detection pipeline ───────────────────────────────

@@ -74,4 +74,11 @@ logs/
 
 # MongoDB dumps
 dump/
-cloudflare/cloudflared.exe
+
+# ML Datasets & Scripts (Do not commit the 5GB dataset)
+raw_downloads/
+datasets/
+KGAT_*/
+build_real_dataset.py
+retrain_models.py
+fix_dataset_copy.py

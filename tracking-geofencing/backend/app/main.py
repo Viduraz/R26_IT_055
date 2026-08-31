@@ -3,7 +3,8 @@ tracking-geofencing/backend/app/main.py
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes.tracking_routes import router as tracking_router
+from app.routes.tracking import router as tracking_router
+from app.routes.geofencing import router as geofencing_router
 
 app = FastAPI(
     title="Secure Elder Care — Tracking & Geofencing Service",
@@ -20,7 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(tracking_router, prefix="/api/tracking", tags=["Tracking & Geofencing"])
+app.include_router(tracking_router, prefix="/api/tracking", tags=["Tracking"])
+app.include_router(geofencing_router, prefix="/api/geofence", tags=["Geofencing"])
 
 
 @app.get("/health")

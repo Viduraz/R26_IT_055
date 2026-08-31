@@ -1,0 +1,23 @@
+\begin{table*}[!ht]
+\centering
+\caption{Benchmark Evaluation Results --- Secure Eldercare ML System}
+\label{tab:benchmark_results}
+\begin{tabular}{l l l r r r r r}
+\toprule
+\textbf{Dataset} & \textbf{Module / Component} & \textbf{Task} &
+\textbf{Acc (\%)} & \textbf{Prec (\%)} & \textbf{Rec (\%)} &
+\textbf{F1 (\%)} & \textbf{FPS} \\
+\midrule
+
+Custom ADL (demo) & Activity Recognition & Walking & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Sitting & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Standing & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Eating & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Drinking & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Lying & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+ & Activity Recognition & Macro Average & 100.00 & 100.00 & 100.00 & 100.00 & 8950.2 \\
+LFW (demo) & Face Verification & MTCNN + FaceNet Cosine Similarity & 99.00 & 99.00 & 99.00 & 99.00 & 243892.5 \\
+Kinect-ReID (demo) & Skeleton Identification & SVM + Bi-LSTM Ensemble (Top-1) & 100.00 & 100.00 & 100.00 & 100.00 & 42510.2 \\
+\bottomrule
+\end{tabular}
+\end{table*}

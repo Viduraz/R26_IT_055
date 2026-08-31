@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: "http://localhost:8002",
+  baseURL: "",
   timeout: 10000,
 });
 
@@ -35,8 +35,8 @@ API.interceptors.response.use(
 // Health check (no auth needed)
 export async function checkBackendHealth() {
   try {
-    const res = await axios.get("http://localhost:8002/health", { timeout: 5000 });
-    return res.data && res.data.status === "ok";
+    const res = await axios.get("/api/tracking/diagnostics", { timeout: 5000 });
+    return res.status === 200;
   } catch {
     return false;
   }
@@ -44,8 +44,8 @@ export async function checkBackendHealth() {
 
 // Tracking API
 export const trackingApi = {
-  processFrame: (frameBase64) =>
-    API.post("/api/tracking/process-frame", { frame: frameBase64 }),
+  processFrame: (frameBase64, trackerType = "bytetrack") =>
+    API.post("/api/tracking/process-frame", { frame: frameBase64, tracker_type: trackerType }),
   getHistory: (page = 1, pageSize = 50) =>
     API.get("/api/tracking/history", { params: { page, page_size: pageSize } }),
   getActive: () => API.get("/api/tracking/active"),
@@ -63,12 +63,14 @@ export const geofenceApi = {
   updateZone: (zoneId, data) => API.put(`/api/geofence/zones/${zoneId}`, data),
   deleteZone: (zoneId) => API.delete(`/api/geofence/zones/${zoneId}`),
   checkBreach: (data) => API.post("/api/geofence/check-breach", data),
-  getAlerts: (resolved) => {
+  getAlerts: (resolved, since) => {
     const params = {};
     if (resolved !== undefined && resolved !== null) params.resolved = resolved;
+    if (since) params.since = since;
     return API.get("/api/geofence/alerts", { params });
   },
   resolveAlert: (alertId) => API.put(`/api/geofence/alerts/${alertId}/resolve`),
+  clearAlerts: () => API.delete("/api/geofence/alerts"),
 };
 
 export default API;

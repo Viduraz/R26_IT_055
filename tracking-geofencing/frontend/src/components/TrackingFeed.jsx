@@ -29,6 +29,44 @@ function pointInPolygon(point, polygon) {
   return inside;
 }
 
+function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  if (dx === 0 && dy === 0) {
+    return {
+      distance: Math.sqrt((px - x1) ** 2 + (py - y1) ** 2),
+      closestPoint: [x1, y1]
+    };
+  }
+  let t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  t = Math.max(0, Math.min(1, t));
+  const closestX = x1 + t * dx;
+  const closestY = y1 + t * dy;
+  return {
+    distance: Math.sqrt((px - closestX) ** 2 + (py - closestY) ** 2),
+    closestPoint: [closestX, closestY]
+  };
+}
+
+function pointToPolygonDistance(point, polygon) {
+  const [px, py] = point;
+  if (pointInPolygon(point, polygon)) {
+    return { distance: 0, closestPoint: [px, py] };
+  }
+  let minDistance = Infinity;
+  let closestPoint = null;
+  for (let i = 0; i < polygon.length; i++) {
+    const p1 = polygon[i];
+    const p2 = polygon[(i + 1) % polygon.length];
+    const res = pointToSegmentDistance(px, py, p1[0], p1[1], p2[0], p2[1]);
+    if (res.distance < minDistance) {
+      minDistance = res.distance;
+      closestPoint = res.closestPoint;
+    }
+  }
+  return { distance: minDistance, closestPoint };
+}
+
 const ZONE_COLORS = { safe: "#00FF9D", restricted: "#FF3B5C", alert: "#FFB347" };
 
 /* ── Alert Sound ────────────────────────────────────────────────── */
@@ -47,6 +85,18 @@ const playAlertSound = () => {
     oscillator.start(ctx.currentTime);
     oscillator.stop(ctx.currentTime + 0.5);
   } catch (e) { /* ignore audio errors */ }
+};
+
+const speakAlert = (message) => {
+  try {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // Cancel any ongoing speech
+      const utterance = new SpeechSynthesisUtterance(message);
+      utterance.rate = 0.95;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  } catch (e) { /* ignore speech errors */ }
 };
 
 /* ── Drawing Functions ──────────────────────────────────────────── */
@@ -80,7 +130,7 @@ function drawZones(ctx, zones, scaleX, scaleY) {
   });
 }
 
-function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
+function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, warningIds = new Set(), warningRemaining = new Map(), zones = []) {
   persons.forEach((person) => {
     const x = person.bbox.x * scaleX;
     const y = person.bbox.y * scaleY;
@@ -88,6 +138,12 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
     const h = person.bbox.h * scaleY;
     const dur = person.duration_seconds || 0;
     const isBreach = breachedIds.has(person.person_id);
+    const isWarning = warningIds.has(person.person_id);
+
+    // Tracker-specific default colors: Neon Green vs Electric Purple
+    const isByteTrack = person.tracker_name === "ByteTrack" || (person.person_id && person.person_id.includes("(ByteTrack)"));
+    const trackerName = isByteTrack ? "ByteTrack" : "DeepSORT";
+    const defaultColor = isByteTrack ? "#00FF9D" : "#8A4FFF";
 
     // Identity-aware coloring
     const idInfo = identityMap.get(person.person_id);
@@ -96,9 +152,9 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
 
     let boxColor;
     if (isBreach) boxColor = "#FF3B5C";
+    else if (isWarning) boxColor = "#FF8C00";
     else if (isCaregiver) boxColor = "#00D4FF";
-    else if (isIdentified) boxColor = "#00FF9D";
-    else boxColor = "#FFB347"; // unknown/identifying
+    else boxColor = defaultColor;
 
     // Trajectory trail
     if (person.trajectory && person.trajectory.length > 1) {
@@ -137,11 +193,11 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
     // Label
     let label, sublabel, roleBadge;
     if (isIdentified) {
-      label = idInfo.name;
+      label = `${idInfo.name} (${trackerName})`;
       roleBadge = `[${idInfo.role}]`;
       sublabel = `${dur.toFixed(1)}s`;
     } else {
-      label = "Identifying...";
+      label = person.person_id; // e.g. "P-001 (ByteTrack)"
       roleBadge = null;
       sublabel = `${dur.toFixed(1)}s`;
     }
@@ -150,7 +206,7 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
     const labelTextW = ctx.measureText(label).width;
     const badgeW = roleBadge ? ctx.measureText(` ${roleBadge}`).width : 0;
     const totalLabelW = labelTextW + badgeW + 16;
-    const labelH = isBreach ? 50 : 36;
+    const labelH = (isBreach || isWarning) ? 50 : 36;
     ctx.fillStyle = hexToRgba(boxColor, 0.85);
     ctx.fillRect(x, y - labelH, totalLabelW, labelH);
 
@@ -169,11 +225,16 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
     ctx.fillStyle = "#0A0F1E";
     ctx.fillText(sublabel, x + 5, y - labelH + 30);
 
-    // Breach badge
+    // Breach/Warning badge
     if (isBreach) {
       ctx.fillStyle = "#FFFFFF";
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.fillText("⚠ RESTRICTED", x + 5, y - labelH + 44);
+    } else if (isWarning) {
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = 'bold 10px "JetBrains Mono", monospace';
+      const remainingSec = warningRemaining.get(person.person_id) || 5;
+      ctx.fillText(`⚠ PENDING (${remainingSec}s)`, x + 5, y - labelH + 44);
     }
 
     // Centroid dot
@@ -186,6 +247,115 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap) {
     ctx.shadowBlur = 6;
     ctx.fill();
     ctx.shadowBlur = 0;
+
+    // Calculate and draw distance line to the closest restricted zone (door)
+    const feetX = person.bbox.x + person.bbox.w / 2;
+    const feetY = person.bbox.y + person.bbox.h;
+    const restrictedZones = zones.filter(
+      (z) => z.is_active && z.zone_type === "restricted" && z.polygon?.length >= 3
+    );
+
+    if (restrictedZones.length > 0) {
+      let closestZone = null;
+      let minDistancePx = Infinity;
+      let closestPointOnZone = null;
+
+      restrictedZones.forEach((zone) => {
+        const res = pointToPolygonDistance([feetX, feetY], zone.polygon);
+        if (res.distance < minDistancePx) {
+          minDistancePx = res.distance;
+          closestPointOnZone = res.closestPoint;
+          closestZone = zone;
+        }
+      });
+
+      if (closestZone && closestPointOnZone) {
+        const bboxW = person.bbox.w || 0;
+        const bboxH = person.bbox.h || 0;
+        const aspectRatio = bboxH > 0 ? (bboxW / bboxH) : 0;
+        const isSitting = person.is_sitting !== undefined ? person.is_sitting : (aspectRatio >= 0.55);
+
+        const effectiveHeightPx = isSitting ? Math.max(bboxH, bboxW / 0.45) : bboxH;
+        const pixelsPerMeter = effectiveHeightPx > 0 ? (effectiveHeightPx / 1.7) : 1;
+        const dist2DPixels = minDistancePx;
+        const dist2DMeters = dist2DPixels / pixelsPerMeter;
+
+        const personDistFromCam = effectiveHeightPx > 0 ? (850 / effectiveHeightPx) : 0;
+        const zoneDistFromCam = closestZone.camera_distance || 4.0;
+        const feetInPolygon = pointInPolygon([feetX, feetY], closestZone.polygon);
+
+        let effectiveDistanceMeters = 0.0;
+        let isBreaching = false;
+
+        if (isSitting) {
+          // Person sitting in a chair: suppress restricted area entry/breach alert
+          isBreaching = false;
+          effectiveDistanceMeters = feetInPolygon ? 0.0 : dist2DMeters;
+        } else if (feetInPolygon) {
+          if (personDistFromCam < zoneDistFromCam - 0.5) {
+            effectiveDistanceMeters = zoneDistFromCam - personDistFromCam;
+            isBreaching = false;
+          } else {
+            effectiveDistanceMeters = 0.0;
+            isBreaching = true;
+          }
+        } else {
+          if (personDistFromCam < zoneDistFromCam - 0.5) {
+            effectiveDistanceMeters = dist2DMeters + (zoneDistFromCam - personDistFromCam);
+            isBreaching = false;
+          } else {
+            effectiveDistanceMeters = dist2DMeters;
+            isBreaching = false;
+          }
+        }
+
+        const startX = feetX * scaleX;
+        const startY = feetY * scaleY;
+        const endX = closestPointOnZone[0] * scaleX;
+        const endY = closestPointOnZone[1] * scaleY;
+
+        // Draw line connecting feet to closest boundary point
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = isBreaching ? "#FF3B5C" : "#FFD700"; // Red if inside, gold if outside
+        ctx.lineWidth = 2;
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw foot target dot
+        ctx.beginPath();
+        ctx.arc(startX, startY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#FFD700";
+        ctx.fill();
+
+        // Draw zone target dot
+        ctx.beginPath();
+        ctx.arc(endX, endY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = "#FF3B5C";
+        ctx.fill();
+
+        // Display floating distance text label
+        const statusLabel = isSitting ? " (Sitting)" : ((feetInPolygon && personDistFromCam < zoneDistFromCam - 0.5) ? " (In Front)" : "");
+        const distText = isBreaching ? "Inside" : `${effectiveDistanceMeters.toFixed(1)}m${statusLabel}`;
+        const midX = (startX + endX) / 2;
+        const midY = (startY + endY) / 2 - 6;
+
+        ctx.font = 'bold 11px "JetBrains Mono", monospace';
+        ctx.textAlign = "center";
+
+        // Draw label background
+        const textWidth = ctx.measureText(distText).width;
+        ctx.fillStyle = "rgba(10, 15, 30, 0.85)";
+        ctx.fillRect(midX - textWidth / 2 - 4, midY - 9, textWidth + 8, 14);
+
+        // Draw label text
+        ctx.fillStyle = isBreaching ? "#FF3B5C" : "#FFD700";
+        ctx.fillText(distText, midX, midY + 2);
+        ctx.textAlign = "left";
+      }
+    }
   });
 }
 
@@ -223,12 +393,22 @@ function drawPendingPolygon(ctx, points, scaleX, scaleY, zoneType) {
 
 /* ── Component ──────────────────────────────────────────────────── */
 
-export default function TrackingFeed({ backendOnline, zones = [], alerts = [], onZoneSaved }) {
-  const [monitoring, setMonitoring] = useState(false);
+export default function TrackingFeed({ backendOnline, zones = [], alerts = [], onZoneSaved, persons = [], setPersons, monitoring, setMonitoring, onNewAlert }) {
   const [videoReady, setVideoReady] = useState(false);
-  const [persons, setPersons] = useState([]);
   const [breachActive, setBreachActive] = useState(false);
   const [error, setError] = useState(null);
+
+  // Tracker selection state
+  const [trackerType, setTrackerType] = useState("bytetrack");
+  const trackerTypeRef = useRef(trackerType);
+  useEffect(() => { trackerTypeRef.current = trackerType; }, [trackerType]);
+
+  // Delayed breach state
+  const breachStartTimes = useRef(new Map()); // "personId:zoneId" -> timestamp
+  const [warningIds, setWarningIds] = useState(new Set());
+  const warningIdsRef = useRef(new Set());
+  const [warningRemaining, setWarningRemaining] = useState(new Map());
+  const warningRemainingRef = useRef(new Map());
 
   // Drawing mode state
   const [drawingMode, setDrawingMode] = useState(false);
@@ -237,6 +417,7 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   const [zoneName, setZoneName] = useState("");
   const [zoneType, setZoneType] = useState("restricted");
   const [savingZone, setSavingZone] = useState(false);
+  const [cameraDistance, setCameraDistance] = useState("4.0");
 
   // Identity state
   const identityMapRef = useRef(new Map()); // personId -> { name, role, confidence, cachedAt }
@@ -260,7 +441,9 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   const drawingPointsRef = useRef(drawingPoints);
   const zoneTypeRef = useRef(zoneType);
 
-  useEffect(() => { zonesRef.current = zones; }, [zones]);
+  const personsRef = useRef(persons);
+  useEffect(() => { personsRef.current = persons; }, [persons]);
+
   useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
   useEffect(() => { drawingPointsRef.current = drawingPoints; }, [drawingPoints]);
   useEffect(() => { zoneTypeRef.current = zoneType; }, [zoneType]);
@@ -270,7 +453,7 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   const stopMonitoring = useCallback(() => {
     setMonitoring(false);
     setVideoReady(false);
-    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    if (intervalRef.current) { clearTimeout(intervalRef.current); intervalRef.current = null; }
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
     if (videoRef.current) videoRef.current.srcObject = null;
     setPersons([]);
@@ -284,6 +467,8 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     setError(null);
     failCountRef.current = 0;
     breachLoggedRef.current.clear();
+    if (breachStartTimes.current) breachStartTimes.current.clear();
+    if (breachedIdsRef.current) breachedIdsRef.current = new Set();
     identityMapRef.current.clear();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -331,10 +516,19 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   useEffect(() => {
     if (!monitoring || !backendOnline || !videoReady) return;
 
+    let isActive = true;
+
     const captureAndSend = async () => {
+      if (!isActive || !monitoring) return;
+
       const video = videoRef.current;
       const captureCanvas = captureCanvasRef.current;
-      if (!video || !captureCanvas || !video.videoWidth || !video.videoHeight) return;
+      if (!video || !captureCanvas || !video.videoWidth || !video.videoHeight) {
+        if (isActive && monitoring) {
+          intervalRef.current = setTimeout(captureAndSend, 100);
+        }
+        return;
+      }
 
       const ctx = captureCanvas.getContext("2d");
       captureCanvas.width = video.videoWidth;
@@ -345,7 +539,9 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       const base64 = dataUrl.split(",")[1];
 
       try {
-        const res = await trackingApi.processFrame(base64);
+        const res = await trackingApi.processFrame(base64, trackerTypeRef.current);
+        if (!isActive) return;
+
         if (res.data) {
           const newPersons = res.data.persons || [];
           setPersons(newPersons);
@@ -366,10 +562,10 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
               ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
               const scaleX = overlayCanvasRef.current.width / (video.videoWidth || 640);
               const scaleY = overlayCanvasRef.current.height / (video.videoHeight || 480);
-              
+
               drawZones(ctx, zonesRef.current, scaleX, scaleY);
-              drawPersons(ctx, newPersons, scaleX, scaleY, breachedIdsRef.current, identityMapRef.current);
-              
+              drawPersons(ctx, newPersons, scaleX, scaleY, breachedIdsRef.current, identityMapRef.current, warningIdsRef.current, warningRemainingRef.current, zonesRef.current);
+
               if (drawingModeRef.current && drawingPointsRef.current.length > 0) {
                 drawPendingPolygon(ctx, drawingPointsRef.current, scaleX, scaleY, zoneTypeRef.current);
               }
@@ -389,6 +585,7 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
           failCountRef.current++;
         }
       } catch {
+        if (!isActive) return;
         failCountRef.current++;
       }
 
@@ -397,17 +594,18 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       if (frameCountRef.current % 10 === 0) {
         try {
           const idRes = await trackingApi.identifyPerson(base64);
-          if (idRes.data && idRes.data.matched) {
+          if (idRes.data && idRes.data.matched && isActive) {
             const now = Date.now();
             // Cache identity for all visible persons (face match applies to current frame)
-            const persons_ = persons;
-            if (persons_.length > 0) {
-              const firstPerson = persons_[0];
-              identityMapRef.current.set(firstPerson.person_id, {
-                name: idRes.data.identity,
-                role: idRes.data.role,
-                confidence: idRes.data.confidence,
-                cachedAt: now,
+            const currentPersons = personsRef.current || [];
+            if (currentPersons.length > 0) {
+              currentPersons.forEach((p) => {
+                identityMapRef.current.set(p.person_id, {
+                  name: idRes.data.identity,
+                  role: idRes.data.role,
+                  confidence: idRes.data.confidence,
+                  cachedAt: now,
+                });
               });
             }
           }
@@ -424,11 +622,18 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
 
       if (failCountRef.current >= 3) {
         setError("Backend offline — monitoring paused.");
+        stopMonitoring();
+      } else if (isActive && monitoring) {
+        intervalRef.current = setTimeout(captureAndSend, 500);
       }
     };
 
-    intervalRef.current = setInterval(captureAndSend, 500);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    intervalRef.current = setTimeout(captureAndSend, 500);
+
+    return () => {
+      isActive = false;
+      if (intervalRef.current) clearTimeout(intervalRef.current);
+    };
   }, [monitoring, backendOnline, videoReady, stopMonitoring]);
 
   /* ── Breach detection (client-side) ───────────────────────────── */
@@ -436,30 +641,118 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   useEffect(() => {
     if (!persons.length || !zones.length) {
       setBreachActive(false);
+      setWarningIds(new Set());
+      warningIdsRef.current = new Set();
+      setWarningRemaining(new Map());
+      warningRemainingRef.current = new Map();
+      breachedIdsRef.current = new Set();
+      breachStartTimes.current.clear();
       return;
     }
 
     const restrictedZones = zones.filter((z) => z.is_active && z.zone_type === "restricted" && z.polygon?.length >= 3);
     const newBreachedIds = new Set();
+    const newWarningIds = new Set();
+    const newWarningRemaining = new Map();
+    const activeBreachKeys = new Set();
+
+    const now = Date.now();
 
     persons.forEach((person) => {
-      const cx = person.bbox.x + person.bbox.w / 2;
-      const cy = person.bbox.y + person.bbox.h / 2;
+      const feetX = person.bbox.x + person.bbox.w / 2;
+      const feetY = person.bbox.y + person.bbox.h;
+
+      const bboxW = person.bbox.w || 0;
+      const bboxH = person.bbox.h || 0;
+      const aspectRatio = bboxH > 0 ? (bboxW / bboxH) : 0;
+      const isSitting = person.is_sitting !== undefined ? person.is_sitting : (aspectRatio >= 0.55);
 
       restrictedZones.forEach((zone) => {
-        if (pointInPolygon([cx, cy], zone.polygon)) {
-          newBreachedIds.add(person.person_id);
+        const res = pointToPolygonDistance([feetX, feetY], zone.polygon);
+        const effectiveHeightPx = isSitting ? Math.max(bboxH, bboxW / 0.45) : bboxH;
+        const pixelsPerMeter = effectiveHeightPx > 0 ? (effectiveHeightPx / 1.7) : 1;
+        const distanceMeters = res.distance / pixelsPerMeter;
+
+        const personDistFromCam = effectiveHeightPx > 0 ? (850 / effectiveHeightPx) : 0;
+        const zoneDistFromCam = zone.camera_distance || 4.0;
+        const feetInPolygon = pointInPolygon([feetX, feetY], zone.polygon);
+
+        let isBreaching = false;
+
+        // If person is sitting in a chair, ignore restricted area entry alert!
+        if (!isSitting) {
+          if (feetInPolygon) {
+            if (personDistFromCam >= zoneDistFromCam - 0.5) {
+              isBreaching = true;
+            }
+          } else {
+            if (distanceMeters < 0.15 && personDistFromCam >= zoneDistFromCam - 0.5) {
+              isBreaching = true;
+            }
+          }
+        }
+
+        // Trigger breach if breaching
+        if (isBreaching) {
           const breachKey = `${person.person_id}:${zone.zone_id}`;
-          if (!breachLoggedRef.current.has(breachKey)) {
-            breachLoggedRef.current.add(breachKey);
-            geofenceApi.checkBreach({ person_id: person.person_id, x: cx, y: cy }).catch(() => {});
+          activeBreachKeys.add(breachKey);
+
+          // If this is the first time we see them in the zone, record the time
+          if (!breachStartTimes.current.has(breachKey)) {
+            breachStartTimes.current.set(breachKey, now);
+          }
+
+          const entryTime = breachStartTimes.current.get(breachKey);
+          const elapsed = (now - entryTime) / 1000;
+
+          if (elapsed >= 0.0) {
+            // Official breach!
+            newBreachedIds.add(person.person_id);
+            if (!breachLoggedRef.current.has(breachKey)) {
+              breachLoggedRef.current.add(breachKey);
+              geofenceApi.checkBreach({ person_id: person.person_id, x: feetX, y: feetY })
+                .then((res) => {
+                  playAlertSound();
+                  
+                  const idInfo = identityMapRef.current.get(person.person_id);
+                  const displayName = idInfo && idInfo.name
+                    ? idInfo.name
+                    : `Person ${person.person_id.split(" ")[0]}`;
+                  speakAlert(`Warning. ${displayName} has entered the restricted area.`);
+
+                  if (res && res.data && Array.isArray(res.data.breaches) && res.data.breaches.length > 0) {
+                    if (typeof onNewAlert === "function") {
+                      res.data.breaches.forEach((b) => onNewAlert(b));
+                    }
+                  }
+                })
+                .catch(() => { });
+            }
           }
         }
       });
     });
 
+    // Clean up breachStartTimes for keys no longer active
+    for (const key of breachStartTimes.current.keys()) {
+      if (!activeBreachKeys.has(key)) {
+        breachStartTimes.current.delete(key);
+      }
+    }
+
+    // Clean up breachLoggedRef if they are completely out of the zone
+    for (const key of Array.from(breachLoggedRef.current)) {
+      if (!activeBreachKeys.has(key)) {
+        breachLoggedRef.current.delete(key);
+      }
+    }
+
     setBreachActive(newBreachedIds.size > 0);
     breachedIdsRef.current = newBreachedIds;
+    setWarningIds(newWarningIds);
+    warningIdsRef.current = newWarningIds;
+    setWarningRemaining(newWarningRemaining);
+    warningRemainingRef.current = newWarningRemaining;
   }, [persons, zones]);
 
   /* ── Draw everything on overlay canvas ────────────────────────── */
@@ -479,12 +772,12 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     const scaleY = canvas.height / videoH;
 
     drawZones(ctx, zones, scaleX, scaleY);
-    drawPersons(ctx, persons, scaleX, scaleY, breachedIdsRef.current, identityMapRef.current);
+    drawPersons(ctx, persons, scaleX, scaleY, breachedIdsRef.current, identityMapRef.current, warningIds, warningRemaining, zones);
 
     if (drawingMode && drawingPoints.length > 0) {
       drawPendingPolygon(ctx, drawingPoints, scaleX, scaleY, zoneType);
     }
-  }, [persons, zones, drawingMode, drawingPoints, zoneType]);
+  }, [persons, zones, drawingMode, drawingPoints, zoneType, warningIds, warningRemaining]);
 
   /* ── Canvas click handler (drawing mode) ──────────────────────── */
 
@@ -523,10 +816,12 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
         zone_type: zoneType,
         polygon: drawingPoints,
         color: ZONE_COLORS[zoneType],
+        camera_distance: parseFloat(cameraDistance) || 4.0,
       });
       setDrawingPoints([]);
       setShowZoneForm(false);
       setZoneName("");
+      setCameraDistance("4.0");
       setDrawingMode(false);
       if (onZoneSaved) onZoneSaved();
     } catch (err) {
@@ -540,6 +835,7 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     setDrawingPoints([]);
     setShowZoneForm(false);
     setZoneName("");
+    setCameraDistance("4.0");
     setDrawingMode(false);
   };
 
@@ -554,6 +850,29 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       <div className="panel-header">
         <h2><span className="icon">📹</span> Live Tracking Feed</h2>
         <div className="feed-toolbar">
+          <select
+            value={trackerType}
+            onChange={(e) => setTrackerType(e.target.value)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              background: "rgba(0, 212, 255, 0.1)",
+              border: "1px solid rgba(0, 212, 255, 0.25)",
+              padding: "4px 10px",
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              fontWeight: "bold",
+              color: "#00D4FF",
+              fontFamily: "var(--font-mono)",
+              marginRight: "10px",
+              cursor: "pointer",
+              outline: "none"
+            }}
+          >
+            <option value="bytetrack" style={{ background: "#0A0F1E", color: "#00D4FF" }}>⚡ Tracker: ByteTrack</option>
+            <option value="deepsort" style={{ background: "#0A0F1E", color: "#00D4FF" }}>⚡ Tracker: DeepSORT</option>
+          </select>
           {monitoring && !drawingMode && (
             <button className="btn btn-ghost btn-sm" onClick={() => { setDrawingMode(true); setDrawingPoints([]); }}>
               📐 Draw Zone
@@ -649,6 +968,33 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
                   ))}
                 </div>
               </div>
+              {zoneType === "restricted" && (
+                <div className="form-row" style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: "0.75rem", color: "rgba(255, 59, 92, 0.8)", fontFamily: "var(--font-mono)" }}>
+                    Door Distance from Camera (meters):
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.5"
+                    max="20"
+                    placeholder="e.g. 4.0"
+                    value={cameraDistance}
+                    onChange={(e) => setCameraDistance(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      background: "rgba(10, 15, 30, 0.75)",
+                      border: "1px solid rgba(255, 59, 92, 0.35)",
+                      borderRadius: 4,
+                      color: "#FF3B5C",
+                      fontSize: "0.8rem",
+                      fontFamily: "var(--font-mono)",
+                      outline: "none"
+                    }}
+                  />
+                </div>
+              )}
               <div className="form-row" style={{ marginTop: 8 }}>
                 <button className="btn btn-primary btn-sm" onClick={handleSaveZone} disabled={savingZone}>
                   {savingZone ? "Saving..." : "💾 Save Zone"}

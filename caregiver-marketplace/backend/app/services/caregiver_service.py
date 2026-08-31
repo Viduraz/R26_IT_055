@@ -3,6 +3,7 @@ caregiver-marketplace/backend/app/services/caregiver_service.py
 Queries the existing `users` collection for caregivers and manages
 marketplace profile fields.
 """
+import traceback
 from bson import ObjectId
 from shared.backend.config.database import get_db
 
@@ -49,11 +50,16 @@ class CaregiverService:
             results = []
             for doc in cursor:
                 doc["id"] = str(doc.pop("_id"))
-                if "created_at" in doc:
-                    doc["created_at"] = str(doc["created_at"])
+                # Safely serialise any non-JSON-friendly fields
+                for k, v in list(doc.items()):
+                    if isinstance(v, ObjectId):
+                        doc[k] = str(v)
+                    elif hasattr(v, "isoformat"):  # datetime
+                        doc[k] = v.isoformat()
                 results.append(doc)
             return results
         except Exception as e:
+            traceback.print_exc()
             print(f"[ERROR] caregiver_service.search: {repr(e)}")
             return []
 
@@ -105,12 +111,28 @@ class CaregiverService:
         except Exception as e:
             print(f"[ERROR] caregiver_service.update_rating: {repr(e)}")
 
-    async def get_total_count(self, query: dict | None = None) -> int:
-        """Count caregivers matching an optional query filter."""
-        base = {"role": "caregiver"}
-        if query:
-            base.update(query)
+    async def verify_caregiver(self, user_id: str, action: str) -> bool:
+        """
+        Admin action: approve or reject a caregiver.
+        Sets verification_status AND syncs face_verification_status so the
+        existing card badge reflects the change immediately.
+        action: 'approved' | 'rejected'
+        """
+        allowed = {"approved", "rejected"}
+        if action not in allowed:
+            return False
+        # Mirror into face_verification_status so the existing card badge works
+        face_status = "verified" if action == "approved" else "rejected"
         try:
-            return self._users().count_documents(base)
-        except Exception:
-            return 0
+            result = self._users().update_one(
+                {"_id": ObjectId(user_id), "role": "caregiver"},
+                {"$set": {
+                    "verification_status": action,
+                    "face_verification_status": face_status,
+                }},
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"[ERROR] caregiver_service.verify: {repr(e)}")
+            return False
+
