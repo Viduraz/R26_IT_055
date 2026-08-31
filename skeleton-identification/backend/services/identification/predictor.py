@@ -1,7 +1,11 @@
 """
 services/identification/predictor.py
-Real-time prediction pipeline using the ensemble model (SVM + LSTM)
-combined with a KNN template matcher for multi-model identification.
+Hybrid Open-Set Biometric Identifier.
+
+Combines:
+  1. Static Anthropometric Prototype Matcher (Regularized Mahalanobis Distance on Invariant Ratios)
+  2. Temporal Gait Motion Branch (PyTorch LSTM sequence model)
+  3. Multi-modal Decision Fusion (Open-set rejection + Same-pose ambiguity resolution)
 """
 import numpy as np
 import time
@@ -9,39 +13,54 @@ import structlog
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+from .models.biometric_template import BiometricTemplateMatcher
+from .models.lstm_model import SkeletonLSTM
 from .models.ensemble import EnsembleIdentifier
-from .models.template_knn import TemplateIdentifier
+from .fusion import DecisionFusion
 
 log = structlog.get_logger()
 
 
 class Predictor:
-    """Real-time identification using SVM ensemble + KNN template matching.
-
-    Multi-model strategy:
-      1. SVM ensemble (static + optional gait) produces a prediction
-      2. KNN template matcher (cosine similarity vs enrolled vectors) produces a prediction
-      3. Fuse: agreement boosts confidence, disagreement uses the stronger signal
-    """
+    """Hybrid Biometric Person Identifier with Open-Set Stranger Rejection."""
 
     def __init__(
         self,
         model_dir: str = "./models",
-        svm_weight: float = 0.5,
-        lstm_weight: float = 0.5,
-        confidence_threshold: float = 0.65,
+        acceptance_threshold: float = 0.70,
+        ambiguity_margin: float = 0.04,
+        static_weight: float = 0.65,
+        temporal_weight: float = 0.35,
+        svm_weight: Optional[float] = None,
+        lstm_weight: Optional[float] = None,
+        confidence_threshold: Optional[float] = None,
+        **kwargs,
     ):
+        if confidence_threshold is not None:
+            acceptance_threshold = confidence_threshold
+        if svm_weight is not None:
+            static_weight = svm_weight
+        if lstm_weight is not None:
+            temporal_weight = lstm_weight
+
         self.model_dir = model_dir
-        self.ensemble = EnsembleIdentifier(
-            svm_weight=svm_weight,
-            lstm_weight=lstm_weight,
-            confidence_threshold=confidence_threshold,
+        self.matcher = BiometricTemplateMatcher(
+            acceptance_threshold=acceptance_threshold,
+            ambiguity_margin=ambiguity_margin,
         )
-        self.knn = TemplateIdentifier()
-        self._loaded = False
+        self.temporal_model = SkeletonLSTM()
+        self.fusion = DecisionFusion(
+            static_weight=static_weight,
+            temporal_weight=temporal_weight,
+            confidence_threshold=acceptance_threshold,
+            ambiguity_margin=ambiguity_margin,
+        )
+        # Retain legacy ensemble instance for optional auxiliary signals
+        self.ensemble = EnsembleIdentifier(confidence_threshold=acceptance_threshold)
+        self._models_loaded = False
 
     def load_models(self) -> bool:
-        """Load trained models from disk."""
+        """Load trained auxiliary models from disk."""
         path = Path(self.model_dir)
         if not path.exists():
             log.warning("model_dir_not_found", path=str(path))
@@ -49,22 +68,20 @@ class Predictor:
 
         try:
             self.ensemble.load(self.model_dir)
-            self._loaded = self.ensemble.is_trained
-            log.info(
-                "models_loaded",
-                svm=self.ensemble.svm_ready,
-                lstm=self.ensemble.lstm_ready,
-            )
-            return self._loaded
+            if (path / "lstm_model.pt").exists():
+                try:
+                    self.temporal_model.load(self.model_dir)
+                except Exception as e:
+                    log.warning("temporal_lstm_load_warning", error=str(e))
+            self._models_loaded = True
+            log.info("models_loaded", svm=self.ensemble.svm_ready, lstm=self.temporal_model.is_trained)
+            return True
         except Exception as e:
-            log.error("model_load_failed", error=str(e))
-            self._loaded = self.ensemble.is_trained
-            return self._loaded
+            log.warning("model_load_partial", error=str(e))
+            return False
 
     def load_knn_templates(self, profiles: List[Dict]) -> int:
-        """Load KNN templates from feature profile dicts.
-        Call this after DB is connected and periodically to refresh.
-        Returns the number of users loaded."""
+        """Load biometric templates from feature profile records."""
         if not profiles:
             try:
                 import json
@@ -78,31 +95,39 @@ class Predictor:
             except Exception as e:
                 log.warning("local_db_knn_fallback_failed", error=str(e))
 
-        return self.knn.load_from_profiles(profiles)
+        return self.matcher.load_from_profiles(profiles)
 
     @property
     def is_ready(self) -> bool:
-        # Ready if either ensemble (SVM/LSTM) or KNN is available
-        return (self._loaded and self.ensemble.is_trained) or self.knn.is_ready
+        """System is ready if biometric templates are loaded."""
+        return self.matcher.is_ready or (self._models_loaded and self.ensemble.is_trained)
 
     @property
     def knn_ready(self) -> bool:
-        return self.knn.is_ready
+        return self.matcher.is_ready
+
+    @property
+    def knn(self):
+        """Backward compatibility access to template matcher."""
+        return self.matcher
 
     def identify(
         self,
         static_features: Optional[np.ndarray] = None,
         gait_sequence: Optional[np.ndarray] = None,
+        is_moving: bool = False,
         top_k: int = 5,
     ) -> Dict[str, Any]:
-        """Run multi-model identification (SVM + KNN).
+        """Execute hybrid open-set person identification.
 
         Args:
-            static_features: (42,) static feature vector
-            gait_sequence: (30, 8) angle time series for LSTM
+            static_features: 24-dim pure anthropometric feature vector
+            gait_sequence: (30, 8) temporal joint angle sequence (optional)
+            is_moving: Boolean flag indicating if subject is in active walking motion
+            top_k: Number of top candidate identities to return
 
         Returns:
-            Identification result dict with fused SVM + KNN output
+            Structured decision dictionary with timing diagnostics
         """
         t_start = time.perf_counter()
 
@@ -111,149 +136,50 @@ class Predictor:
                 "predicted_user": "unknown",
                 "confidence": 0.0,
                 "is_known": False,
+                "status": "UNKNOWN",
+                "reason": "Biometric templates not loaded",
                 "method": "none",
-                "error": "Models not loaded",
                 "latency_ms": 0.0,
+                "benchmarks": {},
+                "top_k": [],
             }
 
-        # ── SVM ensemble prediction ──────────────────────────────────────
-        svm_result = None
-        if self._loaded and self.ensemble.is_trained and static_features is not None:
-            svm_result = self.ensemble.predict(
-                static_features=static_features,
-                gait_sequence=gait_sequence,
-                top_k=top_k,
-            )
-
-        # ── KNN template prediction ──────────────────────────────────────
-        knn_result = None
-        if self.knn.is_ready and static_features is not None:
-            knn_result = self.knn.identify(
+        # ── 1. Static Anthropometric Branch ────────────────────────────────────
+        t_static_start = time.perf_counter()
+        static_result = None
+        if self.matcher.is_ready and static_features is not None:
+            static_result = self.matcher.identify(
                 feature_vector=static_features,
                 top_k=top_k,
             )
+        static_latency = (time.perf_counter() - t_static_start) * 1000
 
-        # ── Fuse SVM + KNN ───────────────────────────────────────────────
-        result = self._fuse_svm_knn(svm_result, knn_result)
+        # ── 2. Temporal Motion Branch ──────────────────────────────────────────
+        t_temporal_start = time.perf_counter()
+        temporal_result = None
+        if gait_sequence is not None and self.temporal_model.is_trained:
+            try:
+                temporal_result = self.temporal_model.predict(
+                    sequence=gait_sequence,
+                    top_k=top_k,
+                )
+            except Exception as exc:
+                log.debug("temporal_prediction_skipped", error=str(exc))
+        temporal_latency = (time.perf_counter() - t_temporal_start) * 1000
 
-        latency = (time.perf_counter() - t_start) * 1000
-        result["latency_ms"] = round(latency, 2)
-
-        return result
-
-    def _fuse_svm_knn(
-        self,
-        svm_result: Optional[Dict],
-        knn_result: Optional[Dict],
-    ) -> Dict[str, Any]:
-        """Fuse SVM ensemble and KNN template predictions for open-set biometric identification.
-
-        Core Principle:
-          - KNN performs open-set distance metric verification against enrolled templates.
-            If KNN rejects the candidate (knn_known is False), the person is UNKNOWN.
-            A closed-set classifier (SVM) cannot override an open-set template rejection.
-          - If KNN confirms an enrolled template match:
-              * If SVM agrees on the same user -> high confidence ensemble match (boosted).
-              * If SVM disagrees or is unavailable -> trust KNN metric.
-        """
-        svm_known = svm_result and svm_result.get("is_known", False)
-        knn_known = knn_result and knn_result.get("is_known", False)
-
-        svm_user = svm_result.get("predicted_user", "unknown") if svm_result else "unknown"
-        knn_user = knn_result.get("predicted_user", "unknown") if knn_result else "unknown"
-        svm_conf = float(svm_result.get("confidence", 0.0)) if svm_result else 0.0
-        knn_conf = float(knn_result.get("confidence", 0.0)) if knn_result else 0.0
-
-        merged_top_k = self._merge_top_k(
-            svm_result.get("top_k", []) if svm_result else [],
-            knn_result.get("top_k", []) if knn_result else [],
+        # ── 3. Decision Fusion ─────────────────────────────────────────────────
+        decision = self.fusion.fuse(
+            static_result=static_result,
+            temporal_result=temporal_result,
+            is_moving=is_moving,
         )
 
-        threshold = self.ensemble.confidence_threshold  # default 0.72
-
-        # 1. KNN template matcher is active
-        if knn_result is not None and self.knn_ready:
-            if not knn_known or knn_conf < threshold or knn_user == "unknown":
-                # Rejected by open-set template matching -> Strictly UNKNOWN
-                return {
-                    "predicted_user": "unknown",
-                    "confidence": round(knn_conf, 4),
-                    "is_known": False,
-                    "method": "knn_rejected",
-                    "svm_prediction": svm_result,
-                    "knn_prediction": knn_result,
-                    "top_k": merged_top_k,
-                }
-
-            # KNN verified an enrolled user match
-            if svm_user != "unknown" and svm_user == knn_user:
-                # Both models agree -> Boosted ensemble confidence
-                fused_conf = min(max((svm_conf + knn_conf) / 2.0 + 0.05, knn_conf), 0.99)
-                return {
-                    "predicted_user": knn_user,
-                    "confidence": round(fused_conf, 4),
-                    "is_known": True,
-                    "method": "svm+knn",
-                    "svm_prediction": svm_result,
-                    "knn_prediction": knn_result,
-                    "top_k": merged_top_k,
-                }
-
-            # KNN verified match (SVM may differ or be unavailable)
-            return {
-                "predicted_user": knn_user,
-                "confidence": round(knn_conf, 4),
-                "is_known": True,
-                "method": "knn",
-                "svm_prediction": svm_result,
-                "knn_prediction": knn_result,
-                "top_k": merged_top_k,
-            }
-
-        # 2. Fallback when KNN templates are not loaded (e.g. cold start)
-        if svm_known and svm_conf >= 0.85 and svm_user != "unknown":
-            return {
-                "predicted_user": svm_user,
-                "confidence": round(svm_conf, 4),
-                "is_known": True,
-                "method": "svm",
-                "svm_prediction": svm_result,
-                "knn_prediction": knn_result,
-                "top_k": merged_top_k,
-            }
-
-        return {
-            "predicted_user": "unknown",
-            "confidence": round(max(svm_conf, knn_conf), 4),
-            "is_known": False,
-            "method": "none",
-            "svm_prediction": svm_result,
-            "knn_prediction": knn_result,
-            "top_k": merged_top_k,
+        total_latency = (time.perf_counter() - t_start) * 1000
+        decision["latency_ms"] = round(total_latency, 2)
+        decision["benchmarks"] = {
+            "static_match_ms": round(static_latency, 2),
+            "temporal_match_ms": round(temporal_latency, 2),
+            "total_inference_ms": round(total_latency, 2),
         }
 
-    @staticmethod
-    def _merge_top_k(svm_top: List[Dict], knn_top: List[Dict], limit: int = 5) -> List[Dict]:
-        """Merge and deduplicate top-k candidates from both models."""
-        scores: Dict[str, float] = {}
-        for c in svm_top:
-            uid = c.get("user_id", "")
-            scores[uid] = scores.get(uid, 0.0) + float(c.get("confidence", 0.0))
-        for c in knn_top:
-            uid = c.get("user_id", "")
-            scores[uid] = scores.get(uid, 0.0) + float(c.get("confidence", 0.0))
-
-        merged = [{"user_id": uid, "confidence": score} for uid, score in scores.items()]
-        merged.sort(key=lambda x: x["confidence"], reverse=True)
-        return merged[:limit]
-
-    def update_weights(self, svm_weight: float, lstm_weight: float):
-        """Update ensemble fusion weights."""
-        self.ensemble.svm_weight = svm_weight
-        self.ensemble.lstm_weight = lstm_weight
-        log.info("weights_updated", svm=svm_weight, lstm=lstm_weight)
-
-    def update_threshold(self, threshold: float):
-        """Update confidence threshold."""
-        self.ensemble.confidence_threshold = threshold
-        log.info("threshold_updated", threshold=threshold)
+        return decision

@@ -104,8 +104,10 @@ export function drawSkeleton(ctx, keypoints, w, h, data = null) {
       const isKnown = personObj.is_known ?? data.is_known ?? false;
       const progress = personObj.analysis_progress ?? data.analysis_progress;
 
+      const status = personObj.status || data.status || '';
+      const isAmbiguous = state === 'ambiguous' || status === 'AMBIGUOUS';
       const isAnalyzing = state === 'analyzing' || (typeof name === 'string' && name.startsWith('Analyzing'));
-      const isIdentified = isKnown && name !== 'Unknown' && name !== 'Unknown Person' && !isAnalyzing;
+      const isIdentified = isKnown && name !== 'Unknown' && name !== 'Unknown Person' && !isAnalyzing && !isAmbiguous;
 
       let boxColor = '#38bdf8'; // Cyan default
       let tagColor = '#0284c7';
@@ -113,9 +115,12 @@ export function drawSkeleton(ctx, keypoints, w, h, data = null) {
       if (isAnalyzing) {
         boxColor = '#06b6d4'; // Cyan
         tagColor = '#0284c7';
+      } else if (isAmbiguous) {
+        boxColor = '#eab308'; // Amber Yellow
+        tagColor = '#ca8a04';
       } else if (isIdentified) {
         boxColor = '#10b981'; // Emerald Green
-        tagColor = confidence >= 0.85 ? '#10b981' : '#f59e0b';
+        tagColor = confidence >= 0.85 ? '#10b981' : '#059669';
       } else {
         boxColor = '#f43f5e'; // Rose Red
         tagColor = '#f43f5e';
@@ -135,7 +140,7 @@ export function drawSkeleton(ctx, keypoints, w, h, data = null) {
         const fMaxX = Math.max(...hxs) + 8;
         const fMinY = Math.min(...hys) - 10;
         const fMaxY = Math.max(...hys) + 12;
-        ctx.strokeStyle = isIdentified ? '#22c55e' : (isAnalyzing ? '#06b6d4' : '#f43f5e');
+        ctx.strokeStyle = isIdentified ? '#22c55e' : (isAmbiguous ? '#eab308' : (isAnalyzing ? '#06b6d4' : '#f43f5e'));
         ctx.lineWidth = 2;
         ctx.strokeRect(fMinX, fMinY, fMaxX - fMinX, fMaxY - fMinY);
       }
@@ -156,6 +161,8 @@ export function drawSkeleton(ctx, keypoints, w, h, data = null) {
       let label = '';
       if (isAnalyzing) {
         label = `🔍 ${name}`;
+      } else if (isAmbiguous) {
+        label = `⏳ Ambiguous (Move to verify) · ${confPct}%`;
       } else if (isIdentified) {
         label = `✓ ${name}${roleLabel ? ' · ' + roleLabel : ''} · ${confPct}%`;
       } else {

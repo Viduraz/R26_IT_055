@@ -38,9 +38,9 @@ log = structlog.get_logger()
 # ── Shared instances ──────────────────────────────────────────────────────────
 predictor = Predictor(
     model_dir=settings.model_dir,
-    svm_weight=settings.svm_weight,
-    lstm_weight=settings.lstm_weight,
-    confidence_threshold=settings.confidence_threshold,
+    acceptance_threshold=getattr(settings, "confidence_threshold", 0.70),
+    static_weight=getattr(settings, "svm_weight", 0.65),
+    temporal_weight=getattr(settings, "lstm_weight", 0.35),
 )
 trainer = ModelTrainer(model_dir=settings.model_dir)
 

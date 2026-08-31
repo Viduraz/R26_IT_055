@@ -354,9 +354,14 @@ class SkeletonLSTM:
         ]
 
         best = candidates[0]
+        is_known = best["confidence"] >= 0.65
+        status = "KNOWN" if is_known else "UNKNOWN"
+
         return {
-            "predicted_user": best["user_id"],
+            "predicted_user": best["user_id"] if is_known else "unknown",
             "confidence": best["confidence"],
+            "is_known": is_known,
+            "status": status,
             "top_k": candidates,
         }
 

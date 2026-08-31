@@ -608,19 +608,19 @@ export default function LiveFeedPage({ onFpsChange }) {
                     ) : (
                       (() => {
                         const p = people[0];
-                        const isAnalyzing = p.state === 'analyzing' || (typeof p.name === 'string' && p.name.startsWith('Analyzing'));
-                        const isKnown = p.is_known && p.name !== 'Unknown' && p.name !== 'Unknown Person' && !isAnalyzing;
+                        const isAmbiguous = p.state === 'ambiguous' || p.status === 'AMBIGUOUS';
+                        const isKnown = p.is_known && p.name !== 'Unknown' && p.name !== 'Unknown Person' && !isAmbiguous;
+                        const confPct = Math.round((p.confidence || 0) * 100);
+
                         return (
                           <>
-                            <div className={`w-2.5 h-2.5 rounded-full ${isAnalyzing ? 'bg-cyan-400 animate-ping' : isKnown ? 'bg-emerald-400' : 'bg-rose-500'}`} />
+                            <div className={`w-2.5 h-2.5 rounded-full ${isAmbiguous ? 'bg-amber-400 animate-pulse' : isKnown ? 'bg-emerald-400' : 'bg-rose-500'}`} />
                             <div>
-                              <div className={`text-xs font-bold ${isAnalyzing ? 'text-cyan-300' : isKnown ? 'text-emerald-300' : 'text-rose-300'}`}>
-                                {isAnalyzing ? 'Scanning Biometrics...' : isKnown ? `✓ ${p.name}` : '⚠️ Unknown Person'}
+                              <div className={`text-xs font-bold ${isAmbiguous ? 'text-amber-300' : isKnown ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                {isAmbiguous ? '⏳ Ambiguous: Movement Needed' : isKnown ? `✓ ${p.name}` : '⚠️ Unknown Person'}
                               </div>
                               <div className="text-[10px] text-slate-400">
-                                {isAnalyzing
-                                  ? `Evaluating Posture (${p.time_remaining != null ? `${p.time_remaining}s left` : '5-7s'})`
-                                  : `${Math.round((p.confidence || 0) * 100)}% Confidence`}
+                                {isAmbiguous ? `${confPct}% (Close Match)` : `${confPct}% Biometric Confidence`}
                               </div>
                             </div>
                           </>
@@ -758,39 +758,37 @@ export default function LiveFeedPage({ onFpsChange }) {
             ) : (
               <div className={`space-y-3 max-h-[420px] overflow-y-auto pr-1 ${isExpandedView ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 space-y-0' : ''}`}>
                 {people.map((person, idx) => {
-                  const isAnalyzing = person.state === 'analyzing' || (person.name && person.name.startsWith('Analyzing'));
-                  const isKnown = person.is_known && person.name && person.name !== 'Unknown' && person.name !== 'Unknown Person' && !isAnalyzing;
+                  const isAmbiguous = person.state === 'ambiguous' || person.status === 'AMBIGUOUS';
+                  const isKnown = person.is_known && person.name && person.name !== 'Unknown' && person.name !== 'Unknown Person' && !isAmbiguous;
                   const pConf = Math.round((person.confidence || 0) * 100);
 
-                  const cardBorder = isAnalyzing
-                    ? 'border-cyan-500/30 bg-cyan-950/20'
+                  const cardBorder = isAmbiguous
+                    ? 'border-amber-500/30 bg-amber-950/20'
                     : isKnown
                       ? 'border-emerald-500/30 bg-emerald-950/20'
                       : 'border-rose-500/30 bg-rose-950/20';
 
-                  const pTextColor = isAnalyzing
-                    ? 'text-cyan-400'
+                  const pTextColor = isAmbiguous
+                    ? 'text-amber-400 font-semibold'
                     : isKnown
                       ? 'text-emerald-400 font-bold'
-                      : 'text-rose-400';
+                      : 'text-rose-400 font-semibold';
 
-                  const barGradient = isAnalyzing
-                    ? 'from-cyan-500 to-blue-500'
+                  const barGradient = isAmbiguous
+                    ? 'from-amber-400 to-yellow-500'
                     : isKnown
                       ? 'from-emerald-400 to-teal-500'
                       : 'from-rose-500 to-amber-500';
 
-                  const barWidth = isAnalyzing && person.analysis_progress != null
-                    ? Math.max(Math.round(person.analysis_progress * 100), 10)
-                    : Math.max(pConf, 6);
+                  const barWidth = Math.max(pConf, 10);
 
                   return (
                     <div key={idx} className={`p-3 rounded-xl border space-y-2 shadow-sm transition-all ${cardBorder}`}>
                       <div className="flex justify-between items-start gap-2">
                         <div className="min-w-0">
                           <div className={`font-semibold text-xs truncate ${pTextColor}`}>
-                            {isAnalyzing ? (
-                              <span>🔍 {person.name || 'Analyzing Posture...'}</span>
+                            {isAmbiguous ? (
+                              <span>⏳ Ambiguous ({person.name}?)</span>
                             ) : isKnown ? (
                               <span>✓ {person.name}</span>
                             ) : (
@@ -798,9 +796,9 @@ export default function LiveFeedPage({ onFpsChange }) {
                             )}
                           </div>
                           <div className="text-[10px] text-slate-400 font-normal mt-0.5">
-                            {isAnalyzing ? (
-                              <span className="text-cyan-300/80 font-mono">
-                                Scanning Biometrics ({person.time_remaining != null ? `${person.time_remaining}s left` : '5-7s window'})
+                            {isAmbiguous ? (
+                              <span className="text-amber-300/80 font-mono">
+                                Awaiting movement verification
                               </span>
                             ) : isKnown ? (
                               <>
@@ -813,7 +811,7 @@ export default function LiveFeedPage({ onFpsChange }) {
                           </div>
                         </div>
                         <span className={`font-mono font-bold shrink-0 text-sm ${pTextColor}`}>
-                          {isAnalyzing ? `${Math.round((person.analysis_progress || 0) * 100)}%` : `${pConf}%`}
+                          {pConf}%
                         </span>
                       </div>
                       <div className="confidence-bar-track">
@@ -829,8 +827,7 @@ export default function LiveFeedPage({ onFpsChange }) {
             )}
 
             <p className="text-[11px] text-slate-500 leading-relaxed mt-3 pt-2.5 border-t border-white/5">
-              Every person is tracked across a 5–7s biometric analysis window. Scale-invariant bone proportions
-              are matched against enrolled profiles with automatic Unknown Person tagging upon timeout.
+              Instant frame-by-frame biometric identification matching scale-invariant skeletal proportions with temporal motion verification.
             </p>
           </div>
 

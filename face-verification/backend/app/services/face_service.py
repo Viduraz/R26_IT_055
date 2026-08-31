@@ -85,8 +85,11 @@ class FaceService:
 
         db = get_db()
         caregivers = list(db["users"].find({
-            "role": "caregiver",
-            "face_verification_status": "enrolled"
+            "$or": [
+                {"face_verification_status": "enrolled"},
+                {"face_embeddings": {"$exists": True, "$ne": None}},
+                {"enrollment_status": "completed"}
+            ]
         }))
 
         verified_persons = []
