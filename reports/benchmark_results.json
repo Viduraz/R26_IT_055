@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "dataset": "URFD / Le2i (demo)",
+      "module": "Fall & Anomaly Detection",
+      "task": "Binary Fall Classification",
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "fps": 55571.4,
+      "extra": {
+        "specificity": 1.0,
+        "roc_auc": 1.0,
+        "fpr": 0.0,
+        "tp": 200,
+        "tn": 600,
+        "fp": 0,
+        "fn": 0,
+        "avg_latency_ms": 0.02
+      }
+    }
+  ],
+  "total_rows": 1,
+  "elapsed_sec": 3.73,
+  "demo_mode": true,
+  "k_folds": 2
+}
