@@ -2,12 +2,24 @@
 services/feature_extraction/static_features.py
 Anthropometric Biometric Feature Extractor.
 
-Extracts 100% scale-invariant, translation-invariant, and distance-invariant
-biological body proportions from MediaPipe 3D skeleton keypoints.
+Extracts translation-invariant and distance-invariant biological body proportions
+from MediaPipe 3D skeleton keypoints.
 
-Transient standing pose angles are strictly excluded from the biometric identity vector
-so that two different individuals standing in the exact same pose are differentiated
-purely by their internal biological skeletal proportions.
+Measurements are taken from MediaPipe's *world* landmarks (metres, mid-hip origin),
+never from the image-normalized landmarks. Image landmarks are a perspective
+projection: their apparent limb lengths are determined by where the subject stands,
+how far they are from the lens, and the frame aspect ratio. Two different people
+standing on the same spot in the same pose therefore project to nearly identical
+image-space skeletons, and any template built from them collapses onto the same
+point in feature space.
+
+The vector combines two complementary groups:
+  * shape  — scale-free proportions/indices (who has long forearms for their torso)
+  * size   — absolute metric body dimensions (who is actually the broader person)
+
+Absolute size is the strongest single discriminator between two people in the same
+pose, so it is only populated when true world coordinates are present; with image
+coordinates it would encode camera distance instead of body size and is zeroed out.
 """
 import numpy as np
 import structlog
@@ -22,7 +34,10 @@ class StaticFeatureExtractor:
     """Extracts pure anthropometric biological invariants from 3D skeleton keypoints."""
 
     # ── Feature Versioning ────────────────────────────────────────────────────
-    FEATURE_VERSION = "v2.0_anthropometric"
+    # Bumped from v2.0_anthropometric: measurements moved from image-normalized
+    # landmarks to metric world landmarks and absolute size features were added.
+    # v2.0 profiles are not comparable and are rejected at template load time.
+    FEATURE_VERSION = "v3.0_world_metric"
 
     # ── Limb definitions: (start_landmark, end_landmark) ──────────────────────
     LIMB_DEFINITIONS = {
@@ -52,8 +67,19 @@ class StaticFeatureExtractor:
         "right_knee_angle": ("right_hip", "right_knee", "right_ankle"),
     }
 
-    # ── 24 Pure Anthropometric Invariant Features ─────────────────────────────
-    ANTHROPOMETRIC_FEATURE_KEYS = sorted([
+    # ── Absolute metric body dimensions (metres, world coordinates only) ──────
+    # These carry overall body size, which pure ratios deliberately throw away.
+    # Two people with similar proportions but different builds separate here.
+    METRIC_SCALE_FEATURE_KEYS = [
+        "shoulder_width_m",
+        "trunk_scale_m",
+        "arm_length_m",
+        "leg_length_m",
+        "stature_est_m",
+    ]
+
+    # ── Scale-free proportion features ────────────────────────────────────────
+    SHAPE_FEATURE_KEYS = sorted([
         # 12 Normalized Limb Segment Lengths (normalized by invariant trunk scale L_ref)
         "shoulder_width_norm",
         "hip_width_norm",
@@ -82,12 +108,33 @@ class StaticFeatureExtractor:
         "left_right_arm_symmetry",     # Left-to-right arm symmetry
     ])
 
+    # Full ordered biometric vector (shape + size).
+    ANTHROPOMETRIC_FEATURE_KEYS = sorted(SHAPE_FEATURE_KEYS + METRIC_SCALE_FEATURE_KEYS)
+
     ALL_FEATURE_KEYS = ANTHROPOMETRIC_FEATURE_KEYS
+
+    def __init__(self):
+        self._warned_no_world = False
+
+    @staticmethod
+    def has_world_coords(keypoints: Dict[str, Dict]) -> bool:
+        """True when the keypoints carry MediaPipe world (metric) coordinates."""
+        return any(
+            isinstance(kp, dict) and kp.get("has_world") for kp in keypoints.values()
+        )
 
     @staticmethod
     def _get_coords(keypoints: Dict[str, Dict], name: str) -> np.ndarray:
-        """Extract (x, y, z) coordinates from named landmark."""
+        """Extract 3D coordinates from a named landmark.
+
+        Prefers metric world coordinates; falls back to image-normalized ones only
+        when the upstream estimator did not supply world landmarks.
+        """
         kp = keypoints[name]
+        if kp.get("has_world"):
+            return np.array(
+                [kp.get("wx", 0.0), kp.get("wy", 0.0), kp.get("wz", 0.0)], dtype=np.float64
+            )
         return np.array([kp.get("x", 0.0), kp.get("y", 0.0), kp.get("z", 0.0)], dtype=np.float64)
 
     @staticmethod
@@ -133,7 +180,7 @@ class StaticFeatureExtractor:
     def compute_torso_length(self, kps: Dict[str, Dict]) -> float:
         """Torso length calculated as average of left and right torso sides."""
         if "left_shoulder" not in kps or "left_hip" not in kps:
-            return 0.25
+            return 0.45
         left = self._distance(self._get_coords(kps, "left_shoulder"), self._get_coords(kps, "left_hip"))
         right = self._distance(self._get_coords(kps, "right_shoulder"), self._get_coords(kps, "right_hip"))
         return max((left + right) / 2.0, 0.01)
@@ -149,15 +196,25 @@ class StaticFeatureExtractor:
             return None
 
         try:
+            has_world = self.has_world_coords(kps)
+            if not has_world and not self._warned_no_world:
+                # Once per extractor — this runs on every frame of every stream.
+                self._warned_no_world = True
+                log.warning(
+                    "static_features_missing_world_landmarks",
+                    detail="Falling back to image-normalized coordinates; absolute size "
+                           "features are disabled and discrimination is reduced.",
+                )
+
             limbs = self.compute_limb_lengths(kps)
-            
+
             # Shoulder width
             shoulder_w = limbs.get("shoulder_width", 0.0)
             if shoulder_w <= 0.01:
                 if "left_shoulder" in kps and "right_shoulder" in kps:
                     shoulder_w = self._distance(self._get_coords(kps, "left_shoulder"), self._get_coords(kps, "right_shoulder"))
                 else:
-                    shoulder_w = 0.20
+                    shoulder_w = 0.36 if has_world else 0.20
             shoulder_w = max(shoulder_w, 0.03)
 
             # Torso length
@@ -255,6 +312,21 @@ class StaticFeatureExtractor:
             features["pelvis_to_torso_ratio"] = hip_w / (torso + 1e-6)
             features["left_right_arm_symmetry"] = (left_arm + 1e-6) / (right_arm + 1e-6)
 
+            # 3. 5 Absolute Metric Body Dimensions (world coordinates only)
+            # Ratios alone cannot separate two similarly-proportioned people; raw
+            # body size can. With image coordinates these numbers would track the
+            # subject's distance from the camera rather than their build, so they
+            # are zeroed out and contribute nothing to the match distance.
+            if has_world:
+                features["shoulder_width_m"] = shoulder_w
+                features["trunk_scale_m"] = l_ref
+                features["arm_length_m"] = avg_arm
+                features["leg_length_m"] = avg_leg
+                features["stature_est_m"] = height_est
+            else:
+                for k in self.METRIC_SCALE_FEATURE_KEYS:
+                    features[k] = 0.0
+
             return features
 
         except Exception as e:
@@ -273,13 +345,11 @@ class StaticFeatureExtractor:
 
     @classmethod
     def normalize_vector(cls, v: Any) -> np.ndarray:
-        """Ensure feature vector is of the standard 24-dim format."""
-        arr = np.array(v, dtype=np.float64)
-        if len(arr) == len(cls.ANTHROPOMETRIC_FEATURE_KEYS):
-            return arr
-        # Handle legacy 40-dim vectors by mapping existing keys
-        if len(arr) == 40:
-            # Map legacy 40-dim to 24-dim
-            # Truncate or map appropriately
-            return arr[:len(cls.ANTHROPOMETRIC_FEATURE_KEYS)]
-        return arr
+        """Coerce a stored vector to a numpy array without reinterpreting it.
+
+        Vectors of a different length come from an older feature version and are
+        returned unchanged so callers reject them on the length check. Truncating
+        them would silently align unrelated features onto each other and hand the
+        matcher meaningless coordinates.
+        """
+        return np.array(v, dtype=np.float64)

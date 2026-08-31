@@ -13,7 +13,12 @@ class Settings(BaseSettings):
     """Application-wide settings loaded from .env"""
 
     # ── MongoDB ───────────────────────────────────────────────────────────────
-    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_uri: str = (
+        "mongodb://vidura:Vidura2002@ac-6iflcbf-shard-00-00.fki0mc1.mongodb.net:27017,"
+        "ac-6iflcbf-shard-00-01.fki0mc1.mongodb.net:27017,"
+        "ac-6iflcbf-shard-00-02.fki0mc1.mongodb.net:27017/"
+        "?ssl=true&replicaSet=atlas-24gsz4-shard-0&authSource=admin&retryWrites=true&w=majority&appName=Cluster0"
+    )
     mongodb_db: str = Field(default="skeleton_id", validation_alias="mongodb_db_name")
     use_local_db: bool = False
     local_db_path: str = "./data/local_db.json"

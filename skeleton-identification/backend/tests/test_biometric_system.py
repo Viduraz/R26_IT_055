@@ -57,30 +57,61 @@ def _generate_synthetic_skeleton(
         "left_ankle": {"x": offset_x - hw, "y": offset_y + 2 * ll, "z": 0.02 * scale, "visibility": 0.91},
         "right_ankle": {"x": offset_x + hw, "y": offset_y + 2 * ll, "z": 0.02 * scale, "visibility": 0.91},
     }
+
+    # Attach metric world coordinates: mid-hip origin, so they do not depend on
+    # where in the frame the subject stands. This mirrors MediaPipe's
+    # pose_world_landmarks, which is what the biometric path measures.
+    for kp in kps.values():
+        kp["wx"] = kp["x"] - offset_x
+        kp["wy"] = kp["y"] - offset_y
+        kp["wz"] = kp["z"]
+        kp["has_world"] = True
+
     return kps
 
 
 class TestBiometricSystem:
 
-    def test_feature_invariance(self):
-        """Test scale and translation invariance of anthropometric features."""
+    def test_position_invariance(self):
+        """The whole vector must be unaffected by where the subject stands.
+
+        This is the property whose absence caused two people enrolled on the same
+        spot to collapse onto each other: measurements taken in image space move
+        with the subject, so they described the camera geometry rather than the
+        body.
+        """
         ext = StaticFeatureExtractor()
 
-        base_kps = _generate_synthetic_skeleton(scale=1.0, offset_x=0.5, offset_y=0.5)
-        scaled_kps = _generate_synthetic_skeleton(scale=1.65, offset_x=0.2, offset_y=0.8)
+        here = ext.to_vector(ext.extract_all(
+            _generate_synthetic_skeleton(scale=1.0, offset_x=0.5, offset_y=0.5)))
+        there = ext.to_vector(ext.extract_all(
+            _generate_synthetic_skeleton(scale=1.0, offset_x=0.15, offset_y=0.85)))
 
-        feat_base = ext.extract_all(base_kps)
-        feat_scaled = ext.extract_all(scaled_kps)
+        max_diff = np.max(np.abs(here - there))
+        assert max_diff < 1e-9, f"Features moved with the subject, max diff: {max_diff}"
 
-        assert feat_base is not None
-        assert feat_scaled is not None
+    def test_shape_invariance_and_size_sensitivity(self):
+        """Proportions are scale-free; absolute body size is deliberately not.
 
-        vec_base = ext.to_vector(feat_base)
-        vec_scaled = ext.to_vector(feat_scaled)
+        A skeleton scaled up 1.65x is a differently-sized person, so the metric
+        features must track that. Collapsing them (as pure ratios do) throws away
+        the strongest cue for telling two similarly-proportioned people apart.
+        """
+        ext = StaticFeatureExtractor()
+        keys = StaticFeatureExtractor.ANTHROPOMETRIC_FEATURE_KEYS
+        metric_keys = set(StaticFeatureExtractor.METRIC_SCALE_FEATURE_KEYS)
 
-        # Invariant features should match with negligible error across scale & translation
-        max_diff = np.max(np.abs(vec_base - vec_scaled))
-        assert max_diff < 1e-4, f"Features not scale/translation invariant, max diff: {max_diff}"
+        feat_base = ext.extract_all(_generate_synthetic_skeleton(scale=1.0))
+        feat_scaled = ext.extract_all(_generate_synthetic_skeleton(scale=1.65))
+        assert feat_base is not None and feat_scaled is not None
+
+        for k in keys:
+            if k in metric_keys:
+                ratio = feat_scaled[k] / feat_base[k]
+                assert abs(ratio - 1.65) < 1e-6, f"{k} did not track body size (ratio {ratio})"
+            else:
+                # Tolerance covers the 1e-6 epsilons guarding the ratio denominators.
+                assert abs(feat_scaled[k] - feat_base[k]) < 1e-4, f"{k} is not scale-invariant"
 
     def test_quality_checker(self):
         """Test that degraded or incomplete skeletons are caught by quality checker."""
@@ -113,8 +144,8 @@ class TestBiometricSystem:
 
         matcher = BiometricTemplateMatcher(acceptance_threshold=0.70)
         profiles = [
-            {"user_id": "person_a", "static_features": {"samples": [feat_a.tolist(), (feat_a * 1.01).tolist()]}},
-            {"user_id": "person_b", "static_features": {"samples": [feat_b.tolist(), (feat_b * 0.99).tolist()]}},
+            {"user_id": "person_a", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_a.tolist(), (feat_a * 1.01).tolist()]}},
+            {"user_id": "person_b", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_b.tolist(), (feat_b * 0.99).tolist()]}},
         ]
         matcher.load_from_profiles(profiles)
 
@@ -138,7 +169,7 @@ class TestBiometricSystem:
         # Enroll single known user
         kps_enrolled = _generate_synthetic_skeleton(shoulder_width=0.38, hip_width=0.28, torso_length=0.45, leg_length=0.80)
         feat_enrolled = ext.to_vector(ext.extract_all(kps_enrolled))
-        profiles = [{"user_id": "enrolled_user_1", "static_features": {"samples": [feat_enrolled.tolist()]}}]
+        profiles = [{"user_id": "enrolled_user_1", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_enrolled.tolist()]}}]
         matcher.load_from_profiles(profiles)
 
         # Present 10 strangers with different anthropometric proportions
@@ -177,8 +208,8 @@ class TestBiometricSystem:
 
         matcher = BiometricTemplateMatcher(acceptance_threshold=0.70, ambiguity_margin=0.04)
         matcher.load_from_profiles([
-            {"user_id": "user_1", "static_features": {"samples": [feat_1.tolist()]}},
-            {"user_id": "user_2", "static_features": {"samples": [feat_2.tolist()]}},
+            {"user_id": "user_1", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_1.tolist()]}},
+            {"user_id": "user_2", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_2.tolist()]}},
         ])
 
         # Query with borderline features between user 1 and user 2 -> Ambiguous
@@ -216,7 +247,7 @@ class TestBiometricSystem:
         assert res_before["is_known"] is False
 
         # Instant enrollment
-        profiles = [{"user_id": "instant_user_99", "static_features": {"samples": [feat_new.tolist()]}}]
+        profiles = [{"user_id": "instant_user_99", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [feat_new.tolist()]}}]
         predictor.load_knn_templates(profiles)
 
         # After enrollment: recognized on frame 1!
@@ -234,7 +265,7 @@ class TestBiometricSystem:
         feat = ext.to_vector(ext.extract_all(kps))
 
         profiles = [
-            {"user_id": f"user_{i}", "static_features": {"samples": [(feat * (1.0 + 0.02 * i)).tolist()]}}
+            {"user_id": f"user_{i}", "feature_version": StaticFeatureExtractor.FEATURE_VERSION, "static_features": {"samples": [(feat * (1.0 + 0.02 * i)).tolist()]}}
             for i in range(10)
         ]
         predictor.load_knn_templates(profiles)

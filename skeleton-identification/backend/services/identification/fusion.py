@@ -69,7 +69,13 @@ class DecisionFusion:
         t_known = bool(temporal_result.get("is_known", False)) if temporal_result else False
 
         # ── Case 1: Stranger Rejection (Open-Set Thresholding) ─────────────────
-        if s_status == "UNKNOWN" or s_conf < self.confidence_threshold or s_user == "unknown":
+        # Checked *after* ambiguity below, because an ambiguous pair also scores
+        # under the acceptance threshold; testing the threshold first would
+        # report "unregistered visitor" for two enrolled users the matcher simply
+        # could not tell apart, and hide the real reason from the operator.
+        if not s_ambiguous and (
+            s_status == "UNKNOWN" or s_conf < self.confidence_threshold or s_user == "unknown"
+        ):
             return {
                 "predicted_user": "unknown",
                 "confidence": round(s_conf, 4),

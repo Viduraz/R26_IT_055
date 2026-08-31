@@ -8,6 +8,13 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from .connection import MongoDB
 from .schemas import UserInDB, FeatureProfileInDB, IdentificationLog, TrainedModelRecord
+from services.feature_extraction.static_features import StaticFeatureExtractor
+
+# Single source of truth for the feature definition stored alongside every
+# profile. Profiles written under an older version are rejected at match time
+# rather than silently compared against vectors from a different coordinate
+# system.
+CURRENT_FEATURE_VERSION = StaticFeatureExtractor.FEATURE_VERSION
 
 log = structlog.get_logger()
 
@@ -94,7 +101,7 @@ class FeatureProfileCRUD:
         user_id: str,
         static_vector: List[float],
         gait_sequence: Optional[List[List[float]]] = None,
-        feature_version: str = "v2.0_anthropometric",
+        feature_version: str = CURRENT_FEATURE_VERSION,
     ):
         """Add a feature sample and update running statistics."""
         return await cls.bulk_upsert_samples(
@@ -110,7 +117,7 @@ class FeatureProfileCRUD:
         user_id: str,
         static_vectors: List[List[float]],
         gait_sequences: Optional[List[List[List[float]]]] = None,
-        feature_version: str = "v2.0_anthropometric",
+        feature_version: str = CURRENT_FEATURE_VERSION,
     ):
         """Bulk save multiple feature vectors in a single efficient database transaction."""
         if not static_vectors:
@@ -137,8 +144,25 @@ class FeatureProfileCRUD:
             }
             await cls._col().insert_one(doc)
         else:
-            static_samples = existing["static_features"].get("samples", [])
-            static_samples.extend(static_vectors)
+            existing_version = existing.get("feature_version")
+            if existing_version != feature_version:
+                # The stored samples were produced by a different feature
+                # definition, so they are not comparable with the incoming ones.
+                # Replace rather than extend: appending would both mix coordinate
+                # systems and make the samples list ragged, which breaks the
+                # mean/std computation below outright.
+                log.info(
+                    "feature_profile_version_replaced",
+                    user_id=user_id,
+                    old_version=existing_version,
+                    new_version=feature_version,
+                    dropped_samples=len(existing["static_features"].get("samples", [])),
+                )
+                static_samples = list(static_vectors)
+                existing["gait_features"] = {"samples": []}
+            else:
+                static_samples = existing["static_features"].get("samples", [])
+                static_samples.extend(static_vectors)
 
             static_arr = np.array(static_samples, dtype=np.float64)
             static_mean = static_arr.mean(axis=0).tolist()
