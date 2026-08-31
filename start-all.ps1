@@ -22,41 +22,46 @@ Write-Host ""
 
 $processes = @()
 
-# Define services
+# Python executable for services without a dedicated venv.
+# NOTE: The root .venv is incomplete (missing uvicorn etc.), so we use the full
+# system Python311 installation which has all packages installed globally.
+$rootPython = "C:\Users\vidur\AppData\Local\Programs\Python\Python311\python.exe"
+
 $backends = @(
-    @{ Path = "auth-service\backend"; Name = "Auth Backend (8000)" },
-    @{ Path = "face-verification\backend"; Name = "Face Backend (8001)" },
-    @{ Path = "tracking-geofencing\backend"; Name = "Tracking Backend (8002)" },
-    @{ Path = "anomaly-detection\backend"; Name = "Anomaly Backend (8003)" },
-    @{ Path = "schedule-monitoring\backend"; Name = "Schedule Backend (8004)" },
-    @{ Path = "gateway-dashboard\backend"; Name = "Gateway Backend (8005)" },
-    @{ Path = "caregiver-marketplace\backend"; Name = "Marketplace Backend (8006)" },
-    @{ Path = "skeleton-identification\backend"; Name = "Skeleton Backend (8007)" }
+    @{ Path = "auth-service\backend";            Name = "Auth Backend (8000)";        Python = $rootPython },
+    @{ Path = "face-verification\backend";       Name = "Face Backend (8001)";        Python = $rootPython },
+    @{ Path = "tracking-geofencing\backend";     Name = "Tracking Backend (8002)";    Python = $rootPython },
+    @{ Path = "anomaly-detection\backend";       Name = "Anomaly Backend (8003)";     Python = "$PSScriptRoot\anomaly-detection\backend\venv\Scripts\python.exe" },
+    @{ Path = "schedule-monitoring\backend";     Name = "Schedule Backend (8004)";    Python = $rootPython },
+    @{ Path = "gateway-dashboard\backend";       Name = "Gateway Backend (8005)";     Python = $rootPython },
+    @{ Path = "caregiver-marketplace\backend";   Name = "Marketplace Backend (8006)"; Python = $rootPython },
+    @{ Path = "skeleton-identification\backend"; Name = "Skeleton Backend (8007)";    Python = $rootPython }
 )
 
 $frontends = @(
-    @{ Path = "gateway-dashboard\frontend"; Name = "Gateway UI (5178)" },
-    @{ Path = "auth-service\frontend"; Name = "Auth UI (5173)" },
-    @{ Path = "face-verification\frontend"; Name = "Face UI (5174)" },
-    @{ Path = "tracking-geofencing\frontend"; Name = "Tracking UI (5175)" },
-    @{ Path = "anomaly-detection\frontend"; Name = "Anomaly UI (5176)" },
-    @{ Path = "schedule-monitoring\frontend"; Name = "Schedule UI (5177)" },
-    @{ Path = "caregiver-marketplace\frontend"; Name = "Marketplace UI (5179)" },
+    @{ Path = "gateway-dashboard\frontend";      Name = "Gateway UI (5178)" },
+    @{ Path = "auth-service\frontend";           Name = "Auth UI (5173)" },
+    @{ Path = "face-verification\frontend";      Name = "Face UI (5174)" },
+    @{ Path = "tracking-geofencing\frontend";    Name = "Tracking UI (5175)" },
+    @{ Path = "anomaly-detection\frontend";      Name = "Anomaly UI (5176)" },
+    @{ Path = "schedule-monitoring\frontend";    Name = "Schedule UI (5177)" },
+    @{ Path = "caregiver-marketplace\frontend";  Name = "Marketplace UI (5179)" },
     @{ Path = "skeleton-identification\frontend"; Name = "Skeleton UI (3000)" }
 )
 
-# ── 1. Start Backends ──────────────────────────────────────────────────
+# --- 1. Start Backends ---
 Write-Host "[INFO] Starting 8 FastAPI Backends (minimized)..." -ForegroundColor Yellow
 foreach ($be in $backends) {
     $fullPath = Join-Path $PSScriptRoot $be.Path
-    $proc = Start-Process -FilePath "python" -ArgumentList "run.py" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
+    Write-Host "  -> $($be.Name)" -ForegroundColor Gray
+    $proc = Start-Process -FilePath $be.Python -ArgumentList "run.py" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
     $processes += $proc
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 300
 }
 Write-Host "[SUCCESS] Backends started." -ForegroundColor Green
 Write-Host ""
 
-# ── 2. Start Frontends ─────────────────────────────────────────────────
+# --- 2. Start Frontends ---
 Write-Host "[INFO] Starting 8 React Frontends in tunnel mode (minimized)..." -ForegroundColor Yellow
 
 foreach ($fe in $frontends) {
@@ -73,15 +78,25 @@ foreach ($fe in $frontends) {
 Write-Host "[SUCCESS] Frontends started." -ForegroundColor Green
 Write-Host ""
 
-# ── 3. Start Local Reverse Proxy ───────────────────────────────────────
+# --- 3. Start Local Reverse Proxy ---
 $cloudflared = "$PSScriptRoot\cloudflare\cloudflared.exe"
 $proxyScript = "$PSScriptRoot\cloudflare\proxy.js"
 $tunnelLog   = "$PSScriptRoot\tunnel.log"
 
-# Clean up previous processes
+# Clean up previous cloudflared processes
 Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 300
 if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
+
+# Kill any process already holding port 8080 (prevents EADDRINUSE on re-run)
+$port8080Line = netstat -ano | Select-String ":8080 " | Select-String "LISTEN"
+if ($port8080Line) {
+    $parts = ($port8080Line.ToString()).Trim() -split '\s+'
+    $pid8080 = $parts[-1]
+    Write-Host "[INFO] Port 8080 in use by PID $pid8080 - killing it..." -ForegroundColor Yellow
+    Stop-Process -Id ([int]$pid8080) -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+}
 
 Write-Host "[INFO] Starting local Node.js reverse proxy on port 8080..." -ForegroundColor Yellow
 $proxyProcess = Start-Process -FilePath "node" -ArgumentList $proxyScript -NoNewWindow -PassThru
@@ -95,7 +110,7 @@ if ($proxyProcess.HasExited) {
 Write-Host "[SUCCESS] Reverse proxy is running on http://localhost:8080" -ForegroundColor Green
 Write-Host ""
 
-# ── 4. Start Cloudflare Tunnel (with auto-retry & local fallback) ──────
+# --- 4. Start Cloudflare Tunnel (with auto-retry & local fallback) ---
 $tunnelProcess = $null
 $linkFound = $false
 $publicUrl = ""
@@ -109,16 +124,16 @@ if (-not $skipTunnel) {
     $maxAttempts = 3
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
-        
+
         # Alternate protocol arguments if retrying
-        $args = if ($attempt -eq 1) {
-            "tunnel --url http://localhost:8080 --no-autoupdate"
+        if ($attempt -eq 1) {
+            $cfArgs = "tunnel --url http://localhost:8080 --no-autoupdate"
         } else {
-            "tunnel --url http://localhost:8080 --protocol http2 --no-autoupdate"
+            $cfArgs = "tunnel --url http://localhost:8080 --protocol http2 --no-autoupdate"
         }
 
-        $tunnelProcess = Start-Process -FilePath $cloudflared -ArgumentList $args -RedirectStandardError $tunnelLog -NoNewWindow -PassThru
-        
+        $tunnelProcess = Start-Process -FilePath $cloudflared -ArgumentList $cfArgs -RedirectStandardError $tunnelLog -NoNewWindow -PassThru
+
         # Wait up to 15 seconds for public URL in log
         $timeoutSec = 15
         for ($i = 0; $i -lt $timeoutSec; $i++) {
@@ -145,7 +160,7 @@ if (-not $skipTunnel) {
             Stop-Process -Id $tunnelProcess.Id -Force -ErrorAction SilentlyContinue
         }
         if ($attempt -lt $maxAttempts) {
-            Write-Host "[INFO] Retrying Cloudflare tunnel connection (attempt $($attempt + 1)/$maxAttempts)..." -ForegroundColor Yellow
+            Write-Host "[INFO] Retrying Cloudflare tunnel (attempt $($attempt + 1)/$maxAttempts)..." -ForegroundColor Yellow
             Start-Sleep -Seconds 2
         }
     }
@@ -170,7 +185,7 @@ try {
         Write-Host "====================================================================" -ForegroundColor Yellow
         Write-Host "  Local Reverse Proxy:      http://localhost:8080" -ForegroundColor Cyan
         Write-Host "  Gateway Dashboard:        http://localhost:5178 (or http://localhost:8080)" -ForegroundColor White
-        Write-Host "  Tracking & Geofencing:    http://localhost:5175 (or http://localhost:8080/tracking/)" -ForegroundColor White
+        Write-Host "  Tracking and Geofencing:  http://localhost:5175 (or http://localhost:8080/tracking/)" -ForegroundColor White
         Write-Host "  Face Verification:        http://localhost:5174 (or http://localhost:8080/face/)" -ForegroundColor White
         Write-Host "  Auth Service:             http://localhost:5173 (or http://localhost:8080/auth/)" -ForegroundColor White
         Write-Host "  Anomaly Detection:        http://localhost:5176 (or http://localhost:8080/anomaly/)" -ForegroundColor White
@@ -196,27 +211,27 @@ try {
 finally {
     Write-Host ""
     Write-Host "[INFO] Shutting down all services cleanly..." -ForegroundColor Yellow
-    
+
     # Stop cloudflared
     if ($tunnelProcess -and -not $tunnelProcess.HasExited) {
         Stop-Process -Id $tunnelProcess.Id -Force -ErrorAction SilentlyContinue
     }
     Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    
+
     # Stop proxy
     if ($proxyProcess -and -not $proxyProcess.HasExited) {
         Stop-Process -Id $proxyProcess.Id -Force -ErrorAction SilentlyContinue
     }
-    
+
     # Stop all backends and frontends
     foreach ($p in $processes) {
         if ($p -and -not $p.HasExited) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
     }
-    
+
     # Clean up temp log
     if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
-    
+
     Write-Host "[SUCCESS] All services stopped cleanly. Have a nice day!" -ForegroundColor Green
 }
