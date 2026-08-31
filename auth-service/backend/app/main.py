@@ -2,6 +2,12 @@
 auth-service/backend/app/main.py
 FastAPI entry point for the Authentication Service.
 """
+import sys, os
+from pathlib import Path
+root_dir = Path(__file__).resolve().parents[3]
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

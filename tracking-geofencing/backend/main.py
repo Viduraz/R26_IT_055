@@ -1,4 +1,9 @@
 import sys, os
+from pathlib import Path
+
+# Add project root and local dir to sys.path
+root_dir = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root_dir))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, Request

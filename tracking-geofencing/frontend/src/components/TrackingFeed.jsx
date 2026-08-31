@@ -145,15 +145,15 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
     const trackerName = isByteTrack ? "ByteTrack" : "DeepSORT";
     const defaultColor = isByteTrack ? "#00FF9D" : "#8A4FFF";
 
-    // Identity-aware coloring
-    const idInfo = identityMap.get(person.person_id);
-    const isIdentified = idInfo && idInfo.name;
-    const isCaregiver = idInfo && idInfo.role === "caregiver";
+    // Identity-aware coloring & label from biometrics or tracker
+    const idInfo = identityMap.get(person.person_id) || (person.name && person.is_identified ? { name: person.name, role: person.role, confidence: person.confidence_id } : null);
+    const isCaregiver = Boolean(idInfo && (idInfo.role === "caregiver" || idInfo.role === "Caregiver" || idInfo.name));
+    const caregiverName = isCaregiver ? idInfo.name : null;
 
     let boxColor;
     if (isBreach) boxColor = "#FF3B5C";
     else if (isWarning) boxColor = "#FF8C00";
-    else if (isCaregiver) boxColor = "#00D4FF";
+    else if (isCaregiver) boxColor = "#00D4FF"; // Vibrant Cyan for Caregivers
     else boxColor = defaultColor;
 
     // Trajectory trail
@@ -175,9 +175,9 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
 
     // Bounding box
     ctx.strokeStyle = boxColor;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = isCaregiver ? 2.5 : 2;
     ctx.shadowColor = boxColor;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = isCaregiver ? 12 : 8;
     ctx.strokeRect(x, y, w, h);
     ctx.shadowBlur = 0;
 
@@ -190,24 +190,24 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
     ctx.beginPath(); ctx.moveTo(x, y + h - cl); ctx.lineTo(x, y + h); ctx.lineTo(x + cl, y + h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x + w - cl, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cl); ctx.stroke();
 
-    // Label
+    // Label: Caregiver shows real name [Caregiver], all other persons show P-001 (ByteTrack)
     let label, sublabel, roleBadge;
-    if (isIdentified) {
-      label = `${idInfo.name} (${trackerName})`;
-      roleBadge = `[${idInfo.role}]`;
-      sublabel = `${dur.toFixed(1)}s`;
+    if (isCaregiver && caregiverName) {
+      label = `👤 ${caregiverName}`;
+      roleBadge = "[Caregiver]";
+      sublabel = `${dur.toFixed(1)}s · ${trackerName}`;
     } else {
       label = person.person_id; // e.g. "P-001 (ByteTrack)"
       roleBadge = null;
-      sublabel = `${dur.toFixed(1)}s`;
+      sublabel = `${dur.toFixed(1)}s · ${trackerName}`;
     }
 
     ctx.font = 'bold 13px "JetBrains Mono", monospace';
     const labelTextW = ctx.measureText(label).width;
     const badgeW = roleBadge ? ctx.measureText(` ${roleBadge}`).width : 0;
-    const totalLabelW = labelTextW + badgeW + 16;
-    const labelH = (isBreach || isWarning) ? 50 : 36;
-    ctx.fillStyle = hexToRgba(boxColor, 0.85);
+    const totalLabelW = Math.max(labelTextW + badgeW + 18, 120);
+    const labelH = (isBreach || isWarning) ? 52 : 38;
+    ctx.fillStyle = hexToRgba(boxColor, 0.90);
     ctx.fillRect(x, y - labelH, totalLabelW, labelH);
 
     // Name
@@ -216,14 +216,14 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
 
     // Role badge
     if (roleBadge) {
-      ctx.fillStyle = isCaregiver ? "#006B99" : "#333";
+      ctx.fillStyle = "#004B7A";
       ctx.font = 'bold 11px "JetBrains Mono", monospace';
       ctx.fillText(roleBadge, x + 5 + labelTextW + 4, y - labelH + 16);
     }
 
-    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.font = '10px "JetBrains Mono", monospace';
     ctx.fillStyle = "#0A0F1E";
-    ctx.fillText(sublabel, x + 5, y - labelH + 30);
+    ctx.fillText(sublabel, x + 5, y - labelH + 31);
 
     // Breach/Warning badge
     if (isBreach) {
@@ -393,10 +393,40 @@ function drawPendingPolygon(ctx, points, scaleX, scaleY, zoneType) {
 
 /* ── Component ──────────────────────────────────────────────────── */
 
-export default function TrackingFeed({ backendOnline, zones = [], alerts = [], onZoneSaved, persons = [], setPersons, monitoring, setMonitoring, onNewAlert }) {
+export default function TrackingFeed({
+  backendOnline,
+  zones = [],
+  alerts = [],
+  onZoneSaved,
+  persons = [],
+  setPersons,
+  monitoring,
+  setMonitoring,
+  onNewAlert,
+  onCaregiverUpdate,
+}) {
   const [videoReady, setVideoReady] = useState(false);
   const [breachActive, setBreachActive] = useState(false);
   const [error, setError] = useState(null);
+
+  // Caregiver recognition & session tracking states (matching LiveStream.jsx)
+  const [caregiver, setCaregiver] = useState(null);
+  const [confidence, setConfidence] = useState(null);
+  const [trackingSessionId, setTrackingSessionId] = useState(null);
+  const [caregiverStatus, setCaregiverStatus] = useState("idle");
+  const [absenceSecs, setAbsenceSecs] = useState(0);
+  const [isRecognizing, setIsRecognizing] = useState(false);
+
+  const caregiverRef = useRef(null);
+  const confidenceRef = useRef(null);
+  const sessionIdRef = useRef(null);
+  const sessionCreatingRef = useRef(false);
+  const isRecognizingRef = useRef(false);
+  const isUpdatingRef = useRef(false);
+
+  useEffect(() => { caregiverRef.current = caregiver; }, [caregiver]);
+  useEffect(() => { confidenceRef.current = confidence; }, [confidence]);
+  useEffect(() => { sessionIdRef.current = trackingSessionId; }, [trackingSessionId]);
 
   // Tracker selection state
   const [trackerType, setTrackerType] = useState("bytetrack");
@@ -464,7 +494,15 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     setBreachActive(false);
     identityMapRef.current.clear();
     frameCountRef.current = 0;
-  }, []);
+    setCaregiver(null);
+    setConfidence(null);
+    setTrackingSessionId(null);
+    setCaregiverStatus("idle");
+    setAbsenceSecs(0);
+    sessionIdRef.current = null;
+    sessionCreatingRef.current = false;
+    onCaregiverUpdate?.(null);
+  }, [onCaregiverUpdate, setMonitoring, setPersons]);
 
   const startMonitoring = useCallback(async () => {
     if (!backendOnline) return;
@@ -474,24 +512,24 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     if (breachStartTimes.current) breachStartTimes.current.clear();
     if (breachedIdsRef.current) breachedIdsRef.current = new Set();
     identityMapRef.current.clear();
-
-    if (cameraSourceRef.current === "webcam") {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: "environment" },
-        });
-        streamRef.current = stream;
-        setMonitoring(true);
-        requestAnimationFrame(() => {
-          if (videoRef.current) videoRef.current.srcObject = stream;
-        });
-      } catch {
-        setError("Camera access denied. Please allow camera permissions.");
-      }
-    } else {
-      // IP Camera mode
+    setCaregiver(null);
+    setConfidence(null);
+    setTrackingSessionId(null);
+    setCaregiverStatus("idle");
+    setAbsenceSecs(0);
+    sessionIdRef.current = null;
+    sessionCreatingRef.current = false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: "environment" },
+      });
+      streamRef.current = stream;
       setMonitoring(true);
-      setVideoReady(true); // Wait for img to load
+      requestAnimationFrame(() => {
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      });
+    } catch {
+      setError("Camera access denied. Please allow camera permissions.");
     }
   }, [backendOnline]);
 
@@ -628,46 +666,107 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
         failCountRef.current++;
       }
 
-      // Identity check every 10 frames
+      // ── Caregiver Recognition & Presence Session Tracking (LiveStream.jsx pattern) ──
       frameCountRef.current++;
-      if (frameCountRef.current % 10 === 0) {
-        const currentPersons = personsRef.current || [];
-        if (currentPersons.length > 0) {
-          const now = Date.now();
-          currentPersons.forEach(async (p) => {
-            // Crop only the person out of the capture canvas
-            const px = Math.max(0, p.bbox.x);
-            const py = Math.max(0, p.bbox.y);
-            const pw = Math.min(captureCanvas.width - px, p.bbox.w);
-            const ph = Math.min(captureCanvas.height - py, p.bbox.h);
-            if (pw <= 0 || ph <= 0) return;
+      const currentPersons = personsRef.current || [];
+      const hasUnidentified = currentPersons.some((p) => !identityMapRef.current.has(p.person_id) && !p.name);
 
-            const cropCanvas = document.createElement("canvas");
-            cropCanvas.width = pw;
-            cropCanvas.height = ph;
-            cropCanvas.getContext("2d").drawImage(captureCanvas, px, py, pw, ph, 0, 0, pw, ph);
-            const cropB64 = cropCanvas.toDataURL("image/jpeg", 0.7).split(",")[1];
-            try {
-              const idRes = await trackingApi.identifyPerson(cropB64);
-              if (idRes.data && idRes.data.matched && isActive) {
-                if (idRes.data.role === "caregiver") {
-                  identityMapRef.current.set(p.person_id, {
-                    name: idRes.data.identity,
-                    role: idRes.data.role,
-                    confidence: idRes.data.confidence,
-                    cachedAt: now,
-                  });
-                }
+      if ((frameCountRef.current % 4 === 0 || hasUnidentified) && currentPersons.length > 0) {
+        if (!isRecognizingRef.current) {
+          isRecognizingRef.current = true;
+          setIsRecognizing(true);
+          try {
+            const faceRes = await trackingApi.verifyCaregiver(base64);
+            if (faceRes.data && faceRes.data.verified && faceRes.data.caregiver_details && isActive) {
+              const now = Date.now();
+              const caregiverDetails = faceRes.data.caregiver_details;
+              const matchedName = caregiverDetails.name || "Caregiver";
+              const matchedConf = faceRes.data.confidence || 90;
+
+              setCaregiver(caregiverDetails);
+              setConfidence(matchedConf);
+              setCaregiverStatus("verified_present");
+              setAbsenceSecs(0);
+
+              // Associate verified caregiver identity with detected person
+              currentPersons.forEach((p) => {
+                identityMapRef.current.set(p.person_id, {
+                  name: matchedName,
+                  role: "caregiver",
+                  confidence: matchedConf,
+                  cachedAt: now,
+                });
+              });
+
+              // Create tracking session if not already created
+              let sid = sessionIdRef.current;
+              if (!sid && !sessionCreatingRef.current) {
+                sessionCreatingRef.current = true;
+                try {
+                  const sessRes = await trackingApi.startCaregiverSession(caregiverDetails);
+                  if (sessRes.data && sessRes.data.session_id) {
+                    sid = sessRes.data.session_id;
+                    sessionIdRef.current = sid;
+                    setTrackingSessionId(sid);
+                  }
+                } catch { /* session backend optional */ }
+                sessionCreatingRef.current = false;
               }
-            } catch { /* face-verification may be down */ }
-          });
+
+              // Notify dashboard parent
+              onCaregiverUpdate?.({
+                caregiver: caregiverDetails,
+                confidence: matchedConf,
+                status: "verified_present",
+                absenceSecs: 0,
+                sessionId: sid,
+                lastSeen: new Date(),
+              });
+
+              // Also persist identity to tracking backend
+              try {
+                await trackingApi.identifyPerson(base64, currentPersons[0]?.person_id);
+              } catch { }
+            }
+          } catch { /* face-verification degraded */ }
+          finally {
+            isRecognizingRef.current = false;
+            setIsRecognizing(false);
+          }
         }
       }
 
-      // Expire cached identities older than 30 seconds
+      // Update caregiver continuity & absence visibility if active session exists
+      if (sessionIdRef.current && frameCountRef.current % 4 === 2) {
+        if (!isUpdatingRef.current) {
+          isUpdatingRef.current = true;
+          try {
+            const visRes = await trackingApi.updateCaregiverVisibility(sessionIdRef.current, base64);
+            if (visRes.data && isActive) {
+              const status = visRes.data.status || "verified_present";
+              const absSec = visRes.data.absence_seconds || 0;
+              setCaregiverStatus(status);
+              setAbsenceSecs(absSec);
+              onCaregiverUpdate?.({
+                caregiver: caregiverRef.current,
+                confidence: confidenceRef.current,
+                status: status,
+                absenceSecs: absSec,
+                sessionId: sessionIdRef.current,
+                lastSeen: new Date(),
+              });
+            }
+          } catch { /* ignore visibility ping network hiccups */ }
+          finally {
+            isUpdatingRef.current = false;
+          }
+        }
+      }
+
+      // Expire cached identities older than 60 seconds
       const now = Date.now();
       for (const [pid, info] of identityMapRef.current.entries()) {
-        if (now - info.cachedAt > 30000) {
+        if (now - info.cachedAt > 60000) {
           identityMapRef.current.delete(pid);
         }
       }
@@ -1021,6 +1120,72 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
           />
           <canvas ref={captureCanvasRef} style={{ display: "none" }} />
           {!drawingMode && <div className="scan-line" />}
+          {/* Floating Caregiver Identity Overlay (matching LiveStream.jsx) */}
+          {caregiver && (
+            <div style={{
+              position: "absolute",
+              bottom: "12px",
+              left: "12px",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "8px",
+              zIndex: 10,
+            }}>
+              <span style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "rgba(10, 15, 30, 0.88)",
+                backdropFilter: "blur(6px)",
+                border: "1px solid rgba(0, 212, 255, 0.6)",
+                color: "#00D4FF",
+                padding: "5px 12px",
+                borderRadius: "8px",
+                fontSize: "0.8rem",
+                fontWeight: 700,
+                fontFamily: "var(--font-mono)",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.6)"
+              }}>
+                <span>👤</span>
+                {caregiver.name}
+              </span>
+              {confidence !== null && (
+                <span style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  background: "rgba(10, 15, 30, 0.88)",
+                  backdropFilter: "blur(6px)",
+                  border: "1px solid rgba(138, 79, 255, 0.5)",
+                  color: "#B794F6",
+                  padding: "5px 10px",
+                  borderRadius: "8px",
+                  fontSize: "0.75rem",
+                  fontFamily: "var(--font-mono)",
+                  fontWeight: 600,
+                }}>
+                  {confidence}% match
+                </span>
+              )}
+              {trackingSessionId && (
+                <span style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  background: "rgba(10, 15, 30, 0.88)",
+                  backdropFilter: "blur(6px)",
+                  border: "1px solid rgba(0, 255, 157, 0.5)",
+                  color: "#00FF9D",
+                  padding: "5px 10px",
+                  borderRadius: "8px",
+                  fontSize: "0.75rem",
+                  fontFamily: "var(--font-mono)",
+                }}>
+                  SESSION: {trackingSessionId.slice(0, 8)}…
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Exit alert flash overlay */}
           {exitAlertActive && (

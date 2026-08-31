@@ -13,8 +13,8 @@ from app.models.face_log_model import face_log_collection
 from datetime import datetime, timezone
 
 # Cosine similarity threshold for InceptionResnetV1 on vggface2
-# Typically a high threshold prevents false positives. Range [-1.0, 1.0]
-SIMILARITY_THRESHOLD = 0.65 
+# Tuned threshold (0.58) provides reliable recognition across webcams
+SIMILARITY_THRESHOLD = 0.58 
 
 
 class FaceService:
@@ -84,78 +84,71 @@ class FaceService:
                 )
 
         db = get_db()
-        caregivers = list(db["users"].find({
-            "$or": [
-                {"face_verification_status": "enrolled"},
-                {"face_embeddings": {"$exists": True, "$ne": None}},
-                {"enrollment_status": "completed"}
-            ]
+        # Find all enrolled users with face embeddings
+        enrolled_users = list(db["users"].find({
+            "face_embeddings": {"$exists": True, "$ne": None}
         }))
 
-        verified_persons = []
-        assigned_caregiver_ids = set()
+        best_match = None
+        best_sim = -1.0
 
-        for live_emb in multi_embs:
-            best_match = None
-            best_sim = -1.0
+        for u in enrolled_users:
+            stored_emb = u.get("face_embeddings")
+            if stored_emb and isinstance(stored_emb, list) and len(stored_emb) > 0:
+                sim = calculate_similarity(live_emb, stored_emb)
+                if sim > best_sim:
+                    best_sim = float(sim)
+                    best_match = u
 
-            for c in caregivers:
-                c_id = str(c["_id"])
-                if c_id in assigned_caregiver_ids:
-                    continue
-                stored_emb = c.get("face_embeddings")
-                if stored_emb:
-                    sim = calculate_similarity(live_emb, stored_emb)
-                    if sim > best_sim:
-                        best_sim = float(sim)
-                        best_match = c
+        matched = False
+        confidence = 0.0
+        session_data = None
+        caregiver_details = None
 
-            if best_match and best_sim >= SIMILARITY_THRESHOLD:
-                c_id = str(best_match["_id"])
-                assigned_caregiver_ids.add(c_id)
-                confidence = max(0.0, min(100.0, ((best_sim + 1.0) / 2.0) * 100))
-                c_details = {
-                    "name": best_match.get("name", "Unknown"),
-                    "email": best_match.get("email"),
-                    "id_number": best_match.get("id_number", "N/A"),
-                    "phone": best_match.get("contact_number", "N/A")
-                }
-                session_data = SessionService.create_and_handoff_session(
-                    caregiver_id=c_id,
-                    caregiver_name=c_details["name"]
-                )
-                verified_persons.append({
-                    "verified": True,
-                    "similarity": round(best_sim, 4),
-                    "confidence": round(confidence, 2),
-                    "caregiver_details": c_details,
-                    "session": session_data
-                })
-
-        if verified_persons:
-            primary = verified_persons[0]
-            # Log primary match into system audit trail
-            log_entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "matched": True,
-                "similarity": primary["similarity"],
-                "confidence": float(primary["confidence"]),
-                "matched_caregiver_id": primary["session"]["caregiver_id"] if primary.get("session") else "",
-                "matched_caregiver_name": primary["caregiver_details"]["name"]
+        if best_match and best_sim >= SIMILARITY_THRESHOLD:
+            matched = True
+            confidence = max(0.0, min(100.0, ((best_sim + 1.0) / 2.0) * 100))
+            caregiver_details = {
+                "id": str(best_match["_id"]),
+                "name": best_match.get("name", "Unknown Caregiver"),
+                "email": best_match.get("email"),
+                "role": best_match.get("role", "caregiver"),
+                "id_number": best_match.get("id_number", best_match.get("caregiver_license_or_staff_id", "N/A")),
+                "phone": best_match.get("contact_number", "N/A")
             }
-            try:
-                face_log_collection().insert_one(log_entry)
-            except Exception:
-                pass
+            # Create tracking session handoff if role is caregiver
+            if best_match.get("role", "caregiver") == "caregiver":
+                try:
+                    session_data = SessionService.create_and_handoff_session(
+                        caregiver_id=str(best_match["_id"]),
+                        caregiver_name=caregiver_details["name"]
+                    )
+                except Exception as e:
+                    print(f"[WARN] Session handoff error: {e}")
+
+        # Log into system audit trail
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "matched": matched,
+            "similarity": best_sim,
+            "confidence": float(confidence)
+        }
+        if matched and best_match:
+            log_entry["matched_caregiver_id"] = str(best_match["_id"])
+            log_entry["matched_caregiver_name"] = caregiver_details["name"]
+
+        try:
+            face_log_collection().insert_one(log_entry)
+        except Exception as e:
+            print(f"[WARN] face_log insert error: {e}")
 
             return {
                 "verified": True,
-                "message": f"Verified {len(verified_persons)} caregiver(s)",
-                "similarity": primary["similarity"],
-                "confidence": primary["confidence"],
-                "caregiver_details": primary["caregiver_details"],
-                "session": primary["session"],
-                "all_verified": verified_persons
+                "message": "Caregiver biometric verified successfully",
+                "similarity": round(best_sim, 4),
+                "confidence": round(confidence, 2),
+                "caregiver_details": caregiver_details,
+                "session": session_data
             }
         else:
             return {
