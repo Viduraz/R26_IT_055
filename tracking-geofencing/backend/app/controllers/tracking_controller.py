@@ -21,7 +21,7 @@ FACE_VERIFICATION_URL = "http://localhost:8001"
 
 async def handle_process_frame(request: ProcessFrameRequest) -> dict:
     """Process a video frame and return detections."""
-    return await process_frame(request.frame, request.elder_id)
+    return await process_frame(request.frame, request.elder_id, request.tracker_type)
 
 
 async def handle_get_history(page: int = 1, page_size: int = 50) -> dict:

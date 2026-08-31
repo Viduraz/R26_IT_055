@@ -30,7 +30,7 @@ else:
 
 
 class TrackedPerson:
-    def __init__(self, person_id: str, bbox: dict, confidence: float):
+    def __init__(self, person_id: str, bbox: dict, confidence: float, tracker_name: str = "ByteTrack"):
         self.person_id = person_id
         self.bbox = bbox
         self.confidence = confidence
@@ -39,6 +39,7 @@ class TrackedPerson:
         self.frame_count = 1
         self.trajectory = [self._centroid(bbox)]
         self.zone_status = "unknown"
+        self.tracker_name = tracker_name
 
     def _centroid(self, bbox):
         return (bbox["x"] + bbox["w"] / 2, bbox["y"] + bbox["h"] / 2)
@@ -56,6 +57,10 @@ class TrackedPerson:
         return (time.time() - self.last_seen) > timeout_seconds
 
     def to_dict(self):
+        w = self.bbox.get("w", 0) if self.bbox else 0
+        h = self.bbox.get("h", 0) if self.bbox else 0
+        aspect_ratio = round(w / h, 2) if h > 0 else 0.0
+        is_sitting = aspect_ratio >= 0.55
         return {
             "person_id": self.person_id,
             "bbox": self.bbox,
@@ -66,34 +71,42 @@ class TrackedPerson:
             "trajectory": self.trajectory[-10:],
             "zone_status": self.zone_status,
             "duration_seconds": round(time.time() - self.first_seen, 1),
+            "tracker_name": self.tracker_name,
+            "aspect_ratio": aspect_ratio,
+            "is_sitting": is_sitting,
         }
 
 
 class PersonTrackerEngine:
     """
-    Singleton tracker that remembers persons across frames.
-    Uses IoU (Intersection over Union) matching to assign consistent IDs.
-    Strictly uses real YOLOv8 — no mock detections.
+    Singleton tracker that remembers persons across frames using dual concurrent trackers:
+    ByteTrack and DeepSORT (BoT-SORT).
     """
 
     ACTIVE_TIMEOUT = 1.5   # seconds — person must be seen within this window to be "active"
     STALE_TIMEOUT = 3.0    # seconds — remove from tracker entirely after this
 
     def __init__(self):
-        self.tracked: Dict[str, TrackedPerson] = {}
-        self.next_id = 1
+        # We maintain two separate dictionaries of tracked persons
+        self.bytetrack_tracked: Dict[str, TrackedPerson] = {}
+        self.deepsort_tracked: Dict[str, TrackedPerson] = {}
+
+        self.bytetrack_next_id = 1
+        self.deepsort_next_id = 1
+
         self.iou_threshold = 0.15
-        self._yolo_model = None
+        self._model_bytetrack = None
+        self._model_deepsort = None
         self._model_loaded = False
         self._frame_count = 0        # total frames processed (for logging)
         self._last_det_count = 0     # last detection count (for logging)
+        self.current_tracker_type = "bytetrack"
 
-    # ── ID management ───────────────────────────────────────────
-
-    def _get_next_id(self) -> str:
-        pid = f"P-{self.next_id:03d}"
-        self.next_id += 1
-        return pid
+    @property
+    def next_id(self) -> int:
+        if getattr(self, "current_tracker_type", "bytetrack") == "deepsort":
+            return self.deepsort_next_id
+        return self.bytetrack_next_id
 
     # ── Geometry helpers ────────────────────────────────────────
 
@@ -120,179 +133,188 @@ class PersonTrackerEngine:
         cy2 = bbox2_dict["y"] + bbox2_dict["h"] / 2
         return math.sqrt((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2)
 
-    # ── Detection matching ──────────────────────────────────────
+    # ── YOLO model management ───────────────────────────────────
 
-    def _match_detections(self, detections: List[dict]) -> List[tuple]:
-        """
-        Match new detections to existing tracked persons.
-        Returns list of (detection, matched_person_id or None).
-        """
-        matched = {}
-        active = {pid: p for pid, p in self.tracked.items() if not p.is_stale(2.0)}
-        used_pids = set()
-
-        for det_idx, det in enumerate(detections):
-            best_pid = None
-            best_score = -1
-
-            for pid, person in active.items():
-                if pid in used_pids:
-                    continue
-
-                iou = self._iou(
-                    self._bbox_to_xyxy(det),
-                    self._bbox_to_xyxy(person.bbox)
-                )
-                dist = self._centroid_distance(det, person.bbox)
-                dist_score = max(0, 1 - dist / 300)
-                score = iou * 0.7 + dist_score * 0.3
-
-                if score > best_score and iou >= self.iou_threshold:
-                    best_score = score
-                    best_pid = pid
-
-            if best_pid is not None:
-                used_pids.add(best_pid)
-            matched[det_idx] = best_pid
-
-        return [(detections[i], matched[i]) for i in range(len(detections))]
-
-    # ── YOLO inference ──────────────────────────────────────────
-
-    def _ensure_model(self):
-        """Load the YOLO model once on first use."""
-        if self._yolo_model is not None:
+    def _ensure_models(self):
+        """Load both YOLO models once on first use."""
+        if self._model_bytetrack is not None and self._model_deepsort is not None:
             return True
         try:
             from ultralytics import YOLO
             model_path = _MODEL_PATH or "yolov8n.pt"
-            print(f"[YOLO] Loading model from: {model_path}")
-            self._yolo_model = YOLO(model_path)
+            print(f"[YOLO] Loading model for ByteTrack from: {model_path}")
+            self._model_bytetrack = YOLO(model_path)
+            print(f"[YOLO] Loading model for DeepSORT from: {model_path}")
+            self._model_deepsort = YOLO(model_path)
             self._model_loaded = True
-            print("[YOLO] ✓ Model loaded successfully")
+            print("[YOLO] ✓ Both models loaded successfully")
             return True
         except Exception as e:
-            print(f"[YOLO] ✗ Failed to load model: {e}")
+            print(f"[YOLO] ✗ Failed to load models: {e}")
             traceback.print_exc()
             return False
 
-    def _run_yolo(self, frame_bytes: bytes) -> List[dict]:
-        """Run real YOLOv8 inference on raw JPEG bytes."""
+    def _run_yolo_for_tracker(self, img, model, tracker_file) -> List[dict]:
+        """Run YOLOv8 inference with tracking on the image for a specific tracker."""
         try:
-            if not self._ensure_model():
-                return []
-
-            import cv2
-            import numpy as np
-
-            # Decode JPEG bytes → OpenCV image
-            nparr = np.frombuffer(frame_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            if img is None:
-                print(f"[YOLO] ✗ cv2.imdecode returned None (bytes len={len(frame_bytes)})")
-                return []
-
-            h, w = img.shape[:2]
-            if self._frame_count % 20 == 0:
-                print(f"[YOLO] Frame #{self._frame_count}: {w}x{h}, {len(frame_bytes)} bytes")
-
-            # Run inference — class 0 = "person"
-            results = self._yolo_model(img, classes=[0], verbose=False)
-
+            results = model.track(img, persist=True, tracker=tracker_file, classes=[0], verbose=False)
             detections = []
-            all_confs = []   # for debug logging
-
             for r in results:
                 for box in r.boxes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     conf = float(box.conf[0])
-                    all_confs.append(conf)
-
-                    # Accept any person detection above 0.3 confidence
                     if conf > 0.3:
+                        track_id = int(box.id[0].item()) if (hasattr(box, 'id') and box.id is not None) else None
                         detections.append({
                             "x": int(x1), "y": int(y1),
                             "w": int(x2 - x1), "h": int(y2 - y1),
                             "confidence": round(conf, 2),
+                            "track_id": track_id,
                         })
-
-            # Log every 10th frame, or whenever detection count changes
-            if self._frame_count % 10 == 0 or len(detections) != self._last_det_count:
-                conf_str = ", ".join(f"{c:.2f}" for c in all_confs) if all_confs else "none"
-                print(f"[YOLO] Frame #{self._frame_count}: "
-                      f"{len(detections)} persons detected "
-                      f"(raw boxes: {len(all_confs)}, confs: [{conf_str}])")
-                self._last_det_count = len(detections)
-
             return detections
-
         except Exception as e:
-            print(f"[YOLO] ✗ Inference error: {e}")
-            traceback.print_exc()
+            print(f"[YOLO] ✗ Tracking error for {tracker_file}: {e}")
             return []
 
-    # ── Main entry point ────────────────────────────────────────
+    # ── Fallback IoU Matching ───────────────────────────────────
 
-    def process_frame(self, frame_bytes: Optional[bytes] = None) -> List[dict]:
-        """Main method: process a frame, match to existing persons, return stable IDs."""
+    def _fallback_match(self, det: dict, tracked_dict: dict, tracker_prefix: str, next_id_attr: str) -> str:
+        """Fallback to IoU matching if no track_id assigned by YOLO."""
+        best_pid = None
+        best_score = -1
+        active = {pid: p for pid, p in tracked_dict.items() if not p.is_stale(2.0)}
+        
+        for pid, person in active.items():
+            iou = self._iou(
+                self._bbox_to_xyxy(det),
+                self._bbox_to_xyxy(person.bbox)
+            )
+            dist = self._centroid_distance(det, person.bbox)
+            dist_score = max(0, 1 - dist / 300)
+            score = iou * 0.7 + dist_score * 0.3
+
+            if score > best_score and iou >= self.iou_threshold:
+                best_score = score
+                best_pid = pid
+                
+        if best_pid is not None:
+            return best_pid
+            
+        next_id = getattr(self, next_id_attr)
+        pid = f"P-{next_id:03d} ({tracker_prefix})"
+        setattr(self, next_id_attr, next_id + 1)
+        return pid
+
+    # ── Main Entry Point ────────────────────────────────────────
+
+    def process_frame(self, frame_bytes: Optional[bytes] = None, tracker_type: str = "bytetrack") -> List[dict]:
+        """Main method: process a frame using the selected tracker, return stable IDs."""
         self._frame_count += 1
+        self.current_tracker_type = tracker_type
 
-        # Remove stale persons (not seen for STALE_TIMEOUT)
-        stale = [pid for pid, p in self.tracked.items() if p.is_stale(self.STALE_TIMEOUT)]
-        for pid in stale:
-            del self.tracked[pid]
+        # Remove stale persons
+        stale_byte = [pid for pid, p in self.bytetrack_tracked.items() if p.is_stale(self.STALE_TIMEOUT)]
+        for pid in stale_byte:
+            del self.bytetrack_tracked[pid]
 
-        # Must have real frame data
+        stale_deep = [pid for pid, p in self.deepsort_tracked.items() if p.is_stale(self.STALE_TIMEOUT)]
+        for pid in stale_deep:
+            del self.deepsort_tracked[pid]
+
         if frame_bytes is None:
             return []
 
-        # Run real YOLO detection
-        raw_detections = self._run_yolo(frame_bytes)
+        if not self._ensure_models():
+            return []
 
-        if not raw_detections:
-            return self.get_all_tracked()   # return existing tracked persons even if current frame has no new detections
+        import cv2
+        import numpy as np
 
-        # Match detections to existing tracked persons
-        matched = self._match_detections(raw_detections)
+        # Decode JPEG bytes → OpenCV image once
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return []
 
-        results = []
-        for det, person_id in matched:
-            bbox = {"x": det["x"], "y": det["y"], "w": det["w"], "h": det["h"]}
-            conf = det["confidence"]
+        if tracker_type == "deepsort":
+            # 2. Process DeepSORT
+            deepsort_dets = self._run_yolo_for_tracker(img, self._model_deepsort, "botsort.yaml")
+            deepsort_results = []
+            for det in deepsort_dets:
+                bbox = {"x": det["x"], "y": det["y"], "w": det["w"], "h": det["h"]}
+                conf = det["confidence"]
+                track_id = det.get("track_id")
 
-            if person_id is not None:
-                self.tracked[person_id].update(bbox, conf)
-            else:
-                person_id = self._get_next_id()
-                self.tracked[person_id] = TrackedPerson(person_id, bbox, conf)
+                if track_id is not None:
+                    person_id = f"P-{track_id:03d} (DeepSORT)"
+                    if track_id >= self.deepsort_next_id:
+                        self.deepsort_next_id = track_id + 1
+                else:
+                    person_id = self._fallback_match(det, self.deepsort_tracked, "DeepSORT", "deepsort_next_id")
 
-            results.append(self.tracked[person_id].to_dict())
+                if person_id in self.deepsort_tracked:
+                    self.deepsort_tracked[person_id].update(bbox, conf)
+                else:
+                    self.deepsort_tracked[person_id] = TrackedPerson(person_id, bbox, conf, "DeepSORT")
 
-        return results
+                deepsort_results.append(self.deepsort_tracked[person_id].to_dict())
+            return deepsort_results
+
+        else:
+            # 1. Process ByteTrack
+            bytetrack_dets = self._run_yolo_for_tracker(img, self._model_bytetrack, "bytetrack.yaml")
+            bytetrack_results = []
+            for det in bytetrack_dets:
+                bbox = {"x": det["x"], "y": det["y"], "w": det["w"], "h": det["h"]}
+                conf = det["confidence"]
+                track_id = det.get("track_id")
+
+                if track_id is not None:
+                    person_id = f"P-{track_id:03d} (ByteTrack)"
+                    if track_id >= self.bytetrack_next_id:
+                        self.bytetrack_next_id = track_id + 1
+                else:
+                    person_id = self._fallback_match(det, self.bytetrack_tracked, "ByteTrack", "bytetrack_next_id")
+
+                if person_id in self.bytetrack_tracked:
+                    self.bytetrack_tracked[person_id].update(bbox, conf)
+                else:
+                    self.bytetrack_tracked[person_id] = TrackedPerson(person_id, bbox, conf, "ByteTrack")
+
+                bytetrack_results.append(self.bytetrack_tracked[person_id].to_dict())
+            return bytetrack_results
 
     # ── Query helpers ───────────────────────────────────────────
 
     def get_all_tracked(self) -> List[dict]:
-        return [p.to_dict() for p in self.tracked.values() if not p.is_stale(self.STALE_TIMEOUT)]
+        tracker_type = getattr(self, "current_tracker_type", "bytetrack")
+        tracked_dict = self.deepsort_tracked if tracker_type == "deepsort" else self.bytetrack_tracked
+        all_tracked = list(tracked_dict.values())
+        return [p.to_dict() for p in all_tracked if not p.is_stale(self.STALE_TIMEOUT)]
 
     def get_active_ids(self) -> List[str]:
         """IDs of persons seen within ACTIVE_TIMEOUT (strict)."""
         now = time.time()
-        return [pid for pid, p in self.tracked.items()
-                if (now - p.last_seen) < self.ACTIVE_TIMEOUT]
+        tracker_type = getattr(self, "current_tracker_type", "bytetrack")
+        tracked_dict = self.deepsort_tracked if tracker_type == "deepsort" else self.bytetrack_tracked
+        all_tracked = list(tracked_dict.values())
+        return [p.person_id for p in all_tracked if (now - p.last_seen) < self.ACTIVE_TIMEOUT]
 
     def get_confirmed_active_count(self) -> int:
         """Exact count of persons seen within the last ACTIVE_TIMEOUT seconds."""
         now = time.time()
-        return sum(1 for p in self.tracked.values()
-                   if (now - p.last_seen) < self.ACTIVE_TIMEOUT)
+        tracker_type = getattr(self, "current_tracker_type", "bytetrack")
+        tracked_dict = self.deepsort_tracked if tracker_type == "deepsort" else self.bytetrack_tracked
+        all_tracked = list(tracked_dict.values())
+        return sum(1 for p in all_tracked if (now - p.last_seen) < self.ACTIVE_TIMEOUT)
 
     def get_confirmed_active_persons(self) -> List[dict]:
         """Full person data for persons seen within ACTIVE_TIMEOUT."""
         now = time.time()
-        return [p.to_dict() for p in self.tracked.values()
-                if (now - p.last_seen) < self.ACTIVE_TIMEOUT]
+        tracker_type = getattr(self, "current_tracker_type", "bytetrack")
+        tracked_dict = self.deepsort_tracked if tracker_type == "deepsort" else self.bytetrack_tracked
+        all_tracked = list(tracked_dict.values())
+        return [p.to_dict() for p in all_tracked if (now - p.last_seen) < self.ACTIVE_TIMEOUT]
 
     def get_diagnostics(self) -> dict:
         """Return diagnostic info for debugging."""
@@ -300,10 +322,11 @@ class PersonTrackerEngine:
             "model_loaded": self._model_loaded,
             "model_path": _MODEL_PATH,
             "frames_processed": self._frame_count,
-            "tracked_persons": len(self.tracked),
+            "bytetrack_persons": len(self.bytetrack_tracked),
+            "deepsort_persons": len(self.deepsort_tracked),
             "active_persons": self.get_confirmed_active_count(),
-            "next_id": self.next_id,
-            "last_detection_count": self._last_det_count,
+            "next_bytetrack_id": self.bytetrack_next_id,
+            "next_deepsort_id": self.deepsort_next_id,
         }
 
 

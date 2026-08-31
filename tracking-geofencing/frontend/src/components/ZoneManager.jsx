@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { geofenceApi } from "../services/trackingApi";
 
-export default function ZoneManager({ backendOnline, refreshKey }) {
+export default function ZoneManager({ backendOnline, refreshKey, onZonesChanged }) {
   const [zones, setZones] = useState([]);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
 
@@ -25,6 +25,7 @@ export default function ZoneManager({ backendOnline, refreshKey }) {
           z.zone_id === zone.zone_id ? { ...z, is_active: !z.is_active } : z
         )
       );
+      if (onZonesChanged) onZonesChanged();
     } catch {}
   };
 
@@ -33,6 +34,7 @@ export default function ZoneManager({ backendOnline, refreshKey }) {
       await geofenceApi.deleteZone(zoneId);
       setZones((prev) => prev.filter((z) => z.zone_id !== zoneId));
       setDeleteConfirm(null);
+      if (onZonesChanged) onZonesChanged();
     } catch {}
   };
 
@@ -70,6 +72,9 @@ export default function ZoneManager({ backendOnline, refreshKey }) {
                 </span>
                 <div className="zone-meta">
                   {zone.polygon?.length || 0} points · {formatDate(zone.created_at)}
+                  {zone.zone_type === "restricted" && zone.camera_distance !== undefined && (
+                    <> · 📏 {zone.camera_distance.toFixed(1)}m depth</>
+                  )}
                 </div>
                 <div className="zone-actions">
                   <label className="toggle-switch">

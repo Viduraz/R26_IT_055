@@ -38,15 +38,27 @@ const ToastContainer = forwardRef((props, ref) => {
   );
 });
 
-/* ── Dashboard ──────────────────────────────────────────────────── */
 export default function TrackingDashboard() {
   const [backendOnline, setBackendOnline] = useState(false);
   const [checking, setChecking] = useState(true);
   const [zones, setZones] = useState([]);
   const [alerts, setAlerts] = useState([]);
+  const [persons, setPersons] = useState([]);
+  const [monitoring, setMonitoring] = useState(false);
+  const [sessionStartTime, setSessionStartTime] = useState(null);
   const [zoneRefreshKey, setZoneRefreshKey] = useState(0);
   const healthIntervalRef = useRef(null);
   const toastRef = useRef(null);
+
+  // Manage session start timestamp when monitoring state changes
+  const handleSetMonitoring = useCallback((val) => {
+    setMonitoring(val);
+    if (val) {
+      setSessionStartTime(new Date().toISOString());
+    } else {
+      setSessionStartTime(null);
+    }
+  }, []);
 
   const pollHealth = useCallback(async () => {
     const online = await checkBackendHealth();
@@ -73,24 +85,17 @@ export default function TrackingDashboard() {
 
   useEffect(() => { fetchZones(); }, [fetchZones, zoneRefreshKey]);
 
-  // Fetch alerts (for passing to feed)
-  const fetchAlerts = useCallback(async () => {
-    if (!backendOnline) return;
-    try {
-      const res = await geofenceApi.getAlerts();
-      if (res.data && Array.isArray(res.data)) setAlerts(res.data);
-    } catch {}
-  }, [backendOnline]);
-
-  useEffect(() => {
-    fetchAlerts();
-    const iv = setInterval(fetchAlerts, 3000);
-    return () => clearInterval(iv);
-  }, [fetchAlerts]);
-
   const handleZoneSaved = () => {
     setZoneRefreshKey((k) => k + 1);
   };
+
+  const alertPanelRef = useRef(null);
+
+  const handleNewAlert = useCallback((alert) => {
+    if (alertPanelRef.current && typeof alertPanelRef.current.pushAlert === "function") {
+      alertPanelRef.current.pushAlert(alert);
+    }
+  }, []);
 
   return (
     <>
@@ -128,15 +133,26 @@ export default function TrackingDashboard() {
             zones={zones}
             alerts={alerts}
             onZoneSaved={handleZoneSaved}
+            persons={persons}
+            setPersons={setPersons}
+            monitoring={monitoring}
+            setMonitoring={handleSetMonitoring}
+            onNewAlert={handleNewAlert}
           />
           <div className="alerts-column">
-            <AlertPanel backendOnline={backendOnline} toastRef={toastRef} />
-            <ExitAlertPanel backendOnline={backendOnline} />
+            <AlertPanel
+              ref={alertPanelRef}
+              backendOnline={backendOnline}
+              toastRef={toastRef}
+              monitoring={monitoring}
+              sessionStartTime={sessionStartTime}
+            />
+            <ExitAlertPanel backendOnline={backendOnline} persons={persons} toastRef={toastRef} monitoring={monitoring} />
           </div>
         </div>
 
         {/* Zone Manager */}
-        <ZoneManager backendOnline={backendOnline} refreshKey={zoneRefreshKey} />
+        <ZoneManager backendOnline={backendOnline} refreshKey={zoneRefreshKey} onZonesChanged={handleZoneSaved} />
       </div>
     </>
   );
