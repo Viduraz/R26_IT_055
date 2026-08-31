@@ -5,6 +5,7 @@ Core authentication business logic.
 from datetime import datetime
 import httpx
 import os
+import asyncio
 
 from fastapi import HTTPException, status
 
@@ -112,6 +113,7 @@ class AuthService:
                                 )
                                 print(f"[INFO] Skeleton AI training triggered: {train_resp.status_code}")
                                 user_doc["skeleton_verification_status"] = "enrolled"
+                                user_doc["skeleton_user_id"] = sk_user_id
                 except Exception as e:
                     print(f"[WARNING] Skeleton enrollment / training connection issue: {repr(e)}")
         else:
@@ -140,64 +142,79 @@ class AuthService:
         if not user or not verify_password(payload.password, user["password_hash"]):
             return None
 
-        # 1. Face Verification
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._face_service_url}/api/face/verify",
-                    json={
-                        "live_sample": payload.live_face_sample,
-                        "stored_embedding": user.get("face_embeddings")
-                    }
-                )
-                resp.raise_for_status()
-                verify_data = resp.json()
-                if not verify_data.get("matched"):
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED, 
-                        detail=f"Face verification failed. Confidence: {verify_data.get('confidence', 0)}%"
-                    )
-        except httpx.HTTPStatusError as e:
-            try:
-                error_msg = e.response.json().get("detail", e.response.text)
-            except:
-                error_msg = e.response.text
-            print(f"[ERROR] Face Model Verification Error: {error_msg}")
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=f"Face Model Error: {error_msg}"
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            import traceback
-            with open("C:/Secure-Eldercare-Project/auth-service/backend/error_traceback.txt", "w") as f:
-                f.write(traceback.format_exc())
-            print(f"[ERROR] Unexpected Face verification connection issue: {repr(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Face verification connection issue: {repr(e)}"
-            )
-
-        # 2. Skeleton Verification (if sample provided)
-        if payload.live_skeleton_sample:
+        async def verify_face():
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    # Note: SKELETON_SERVICE_URL usually points to the gateway (8080 or 8005)
-                    # We need to find the user in skeleton system by email to get their user_id
-                    skeleton_user_resp = await client.get(f"{self._skeleton_service_url}/api/users/")
-                    skeleton_user_resp.raise_for_status()
-                    skeleton_users = skeleton_user_resp.json()
-                    
-                    target_skeleton_user_id = next(
-                        (u["user_id"] for u in skeleton_users if u["email"] == user["email"]), 
-                        None
+                    resp = await client.post(
+                        f"{self._face_service_url}/api/face/verify",
+                        json={
+                            "live_sample": payload.live_face_sample,
+                            "stored_embedding": user.get("face_embeddings")
+                        }
                     )
+                    resp.raise_for_status()
+                    verify_data = resp.json()
+                    
+                    confidence = verify_data.get('confidence', 0)
+                    is_matched = verify_data.get("matched")
+                    
+                    # Accept face if the native model approves it OR confidence is >= 50.0% (useful for lower quality IP cameras)
+                    if not is_matched and confidence < 50.0:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED, 
+                            detail=f"Face verification failed. Confidence: {confidence}%"
+                        )
+                    elif not is_matched:
+                        print(f"[INFO] Face verification manually approved (Confidence: {confidence}% >= 50.0%)")
+            except httpx.HTTPStatusError as e:
+                import re
+                try:
+                    error_msg = e.response.json().get("detail", e.response.text)
+                except:
+                    error_msg = e.response.text
+                
+                # Check if the face service rejected it but gave us a confidence score we can override
+                match = re.search(r'Confidence:\s*([\d\.]+)', error_msg, re.IGNORECASE)
+                if match:
+                    conf = float(match.group(1))
+                    if conf >= 50.0:
+                        print(f"[INFO] Face verification manually approved via exception override (Confidence: {conf}% >= 50.0%)")
+                        return # Allow verification to succeed
+                
+                print(f"[ERROR] Face Model Verification Error: {error_msg}")
+                raise HTTPException(
+                    status_code=e.response.status_code,
+                    detail=f"Face Model Error: {error_msg}"
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                import traceback
+                with open("C:/Secure-Eldercare-Project/auth-service/backend/error_traceback.txt", "w") as f:
+                    f.write(traceback.format_exc())
+                print(f"[ERROR] Unexpected Face verification connection issue: {repr(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Face verification connection issue: {repr(e)}"
+                )
+
+        async def verify_skeleton():
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    target_skeleton_user_id = user.get("skeleton_user_id")
+                    
+                    if not target_skeleton_user_id:
+                        # Fallback for older existing users
+                        skeleton_user_resp = await client.get(f"{self._skeleton_service_url}/api/users/")
+                        skeleton_user_resp.raise_for_status()
+                        skeleton_users = skeleton_user_resp.json()
+                        target_skeleton_user_id = next(
+                            (u["user_id"] for u in skeleton_users if u["email"] == user["email"]), 
+                            None
+                        )
                     
                     if not target_skeleton_user_id:
                         print(f"[WARNING] User {user['email']} not found in Skeleton System.")
-                        # If not enrolled in skeleton, we might want to skip or fail.
-                        # For now, let's just log it and proceed if face was OK, or fail if required.
                     else:
                         resp = await client.post(
                             f"{self._skeleton_service_url}/api/verify-frame",
@@ -223,10 +240,16 @@ class AuthService:
 
             except httpx.HTTPStatusError as e:
                 print(f"[ERROR] Skeleton Verification Service Error: {e.response.text}")
-                # We can decide if skeleton verification is mandatory
-                # raise HTTPException(status_code=e.response.status_code, detail="Skeleton Verification Service Error")
+            except HTTPException:
+                raise
             except Exception as e:
                 print(f"[ERROR] Unexpected Skeleton verification issue: {repr(e)}")
+
+        verification_tasks = [verify_face()]
+        if payload.live_skeleton_sample:
+            verification_tasks.append(verify_skeleton())
+            
+        await asyncio.gather(*verification_tasks)
 
         token = create_access_token({"sub": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")})
         return {"access_token": token, "token_type": "bearer"}

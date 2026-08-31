@@ -496,6 +496,11 @@ class StreamPipeline:
                         if u_low == fn_low or uid_low == fn_low or fn_low in u_low or u_low in fn_low:
                             face_matched_uid = uid
                             break
+                    if not face_matched_uid:
+                        # Allow face-only caregivers who aren't yet mapped in the skeleton DB
+                        face_matched_uid = f"face_{fn_low}"
+                        self.user_name_map[face_matched_uid] = face_name
+                        self.user_role_map[face_matched_uid] = c_details.get("role", "caregiver")
 
             skel_uid = identification.get("predicted_user", "unknown")
             skel_conf = float(identification.get("confidence", 0.0))
@@ -970,6 +975,10 @@ class StreamPipeline:
                             if uname.lower() == f_name.lower():
                                 chosen_uid = uid
                                 break
+                        if not chosen_uid and f_name:
+                            chosen_uid = f"face_{f_name.lower().strip()}"
+                            self.user_name_map[chosen_uid] = f_name
+                            self.user_role_map[chosen_uid] = "caregiver"
 
                     if not chosen_uid and skel_known:
                         chosen_uid = skel_uid

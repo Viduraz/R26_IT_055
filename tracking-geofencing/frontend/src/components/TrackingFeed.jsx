@@ -423,6 +423,10 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   const identityMapRef = useRef(new Map()); // personId -> { name, role, confidence, cachedAt }
   const frameCountRef = useRef(0);
 
+  const [cameraSource, setCameraSource] = useState("webcam");
+  const cameraSourceRef = useRef(cameraSource);
+  useEffect(() => { cameraSourceRef.current = cameraSource; }, [cameraSource]);
+
   // Exit alert flash state
   const [exitAlertActive, setExitAlertActive] = useState(false);
   const [latestExitAlert, setLatestExitAlert] = useState(null);
@@ -470,17 +474,24 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     if (breachStartTimes.current) breachStartTimes.current.clear();
     if (breachedIdsRef.current) breachedIdsRef.current = new Set();
     identityMapRef.current.clear();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "environment" },
-      });
-      streamRef.current = stream;
+
+    if (cameraSourceRef.current === "webcam") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: "environment" },
+        });
+        streamRef.current = stream;
+        setMonitoring(true);
+        requestAnimationFrame(() => {
+          if (videoRef.current) videoRef.current.srcObject = stream;
+        });
+      } catch {
+        setError("Camera access denied. Please allow camera permissions.");
+      }
+    } else {
+      // IP Camera mode
       setMonitoring(true);
-      requestAnimationFrame(() => {
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      });
-    } catch {
-      setError("Camera access denied. Please allow camera permissions.");
+      setVideoReady(true); // Wait for img to load
     }
   }, [backendOnline]);
 
@@ -494,8 +505,14 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     if (!video || !canvas) return;
 
     const syncSize = () => {
-      const rect = video.getBoundingClientRect();
-      if (rect.width === 0) return;
+      let rect;
+      if (cameraSourceRef.current === "webcam") {
+        rect = video.getBoundingClientRect();
+      } else {
+        const img = document.getElementById("ip-camera-feed");
+        if (img) rect = img.getBoundingClientRect();
+      }
+      if (!rect || rect.width === 0) return;
       canvas.width = rect.width;
       canvas.height = rect.height;
       canvas.style.width = rect.width + "px";
@@ -503,8 +520,16 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     };
 
     const observer = new ResizeObserver(syncSize);
-    observer.observe(video);
-    video.addEventListener("loadedmetadata", syncSize);
+    if (cameraSourceRef.current === "webcam") {
+      observer.observe(video);
+      video.addEventListener("loadedmetadata", syncSize);
+    } else {
+      const img = document.getElementById("ip-camera-feed");
+      if (img) {
+        observer.observe(img);
+        img.addEventListener("load", syncSize);
+      }
+    }
     return () => {
       observer.disconnect();
       video.removeEventListener("loadedmetadata", syncSize);
@@ -521,9 +546,23 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
     const captureAndSend = async () => {
       if (!isActive || !monitoring) return;
 
-      const video = videoRef.current;
+      let sourceElement = video;
+      if (cameraSourceRef.current === "ip_camera") {
+        sourceElement = document.getElementById("ip-camera-feed");
+      }
+
+      if (!sourceElement) {
+        if (isActive && monitoring) {
+          intervalRef.current = setTimeout(captureAndSend, 100);
+        }
+        return;
+      }
+
       const captureCanvas = captureCanvasRef.current;
-      if (!video || !captureCanvas || !video.videoWidth || !video.videoHeight) {
+      const sWidth = cameraSourceRef.current === "webcam" ? sourceElement.videoWidth : sourceElement.naturalWidth;
+      const sHeight = cameraSourceRef.current === "webcam" ? sourceElement.videoHeight : sourceElement.naturalHeight;
+
+      if (!sWidth || !sHeight) {
         if (isActive && monitoring) {
           intervalRef.current = setTimeout(captureAndSend, 100);
         }
@@ -531,9 +570,9 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       }
 
       const ctx = captureCanvas.getContext("2d");
-      captureCanvas.width = video.videoWidth;
-      captureCanvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+      captureCanvas.width = sWidth;
+      captureCanvas.height = sHeight;
+      ctx.drawImage(sourceElement, 0, 0, captureCanvas.width, captureCanvas.height);
 
       const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.7);
       const base64 = dataUrl.split(",")[1];
@@ -592,24 +631,37 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       // Identity check every 10 frames
       frameCountRef.current++;
       if (frameCountRef.current % 10 === 0) {
-        try {
-          const idRes = await trackingApi.identifyPerson(base64);
-          if (idRes.data && idRes.data.matched && isActive) {
-            const now = Date.now();
-            // Cache identity for all visible persons (face match applies to current frame)
-            const currentPersons = personsRef.current || [];
-            if (currentPersons.length > 0) {
-              currentPersons.forEach((p) => {
-                identityMapRef.current.set(p.person_id, {
-                  name: idRes.data.identity,
-                  role: idRes.data.role,
-                  confidence: idRes.data.confidence,
-                  cachedAt: now,
-                });
-              });
-            }
-          }
-        } catch { /* face-verification may be down */ }
+        const currentPersons = personsRef.current || [];
+        if (currentPersons.length > 0) {
+          const now = Date.now();
+          currentPersons.forEach(async (p) => {
+            // Crop only the person out of the capture canvas
+            const px = Math.max(0, p.bbox.x);
+            const py = Math.max(0, p.bbox.y);
+            const pw = Math.min(captureCanvas.width - px, p.bbox.w);
+            const ph = Math.min(captureCanvas.height - py, p.bbox.h);
+            if (pw <= 0 || ph <= 0) return;
+
+            const cropCanvas = document.createElement("canvas");
+            cropCanvas.width = pw;
+            cropCanvas.height = ph;
+            cropCanvas.getContext("2d").drawImage(captureCanvas, px, py, pw, ph, 0, 0, pw, ph);
+            const cropB64 = cropCanvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+            try {
+              const idRes = await trackingApi.identifyPerson(cropB64);
+              if (idRes.data && idRes.data.matched && isActive) {
+                if (idRes.data.role === "caregiver") {
+                  identityMapRef.current.set(p.person_id, {
+                    name: idRes.data.identity,
+                    role: idRes.data.role,
+                    confidence: idRes.data.confidence,
+                    cachedAt: now,
+                  });
+                }
+              }
+            } catch { /* face-verification may be down */ }
+          });
+        }
       }
 
       // Expire cached identities older than 30 seconds
@@ -713,7 +765,7 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
               geofenceApi.checkBreach({ person_id: person.person_id, x: feetX, y: feetY })
                 .then((res) => {
                   playAlertSound();
-                  
+
                   const idInfo = identityMapRef.current.get(person.person_id);
                   const displayName = idInfo && idInfo.name
                     ? idInfo.name
@@ -760,14 +812,21 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
   useEffect(() => {
     const video = videoRef.current;
     const canvas = overlayCanvasRef.current;
-    if (!canvas || !video) return;
+    let sourceElement = video;
+    if (cameraSourceRef.current === "ip_camera") {
+      sourceElement = document.getElementById("ip-camera-feed");
+    }
+
+    if (!canvas || !sourceElement) return;
     if (canvas.width === 0) return;
 
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const videoW = video.videoWidth || 640;
-    const videoH = video.videoHeight || 480;
+    const videoW = cameraSourceRef.current === "webcam" ? sourceElement.videoWidth : sourceElement.naturalWidth;
+    const videoH = cameraSourceRef.current === "webcam" ? sourceElement.videoHeight : sourceElement.naturalHeight;
+    if (!videoW || !videoH) return;
+
     const scaleX = canvas.width / videoW;
     const scaleY = canvas.height / videoH;
 
@@ -778,22 +837,25 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
       drawPendingPolygon(ctx, drawingPoints, scaleX, scaleY, zoneType);
     }
   }, [persons, zones, drawingMode, drawingPoints, zoneType, warningIds, warningRemaining]);
-
   /* ── Canvas click handler (drawing mode) ──────────────────────── */
 
   const handleCanvasClick = useCallback((e) => {
     if (!drawingMode) return;
     const canvas = overlayCanvasRef.current;
     const video = videoRef.current;
-    if (!canvas || !video) return;
+    let sourceElement = video;
+    if (cameraSourceRef.current === "ip_camera") {
+      sourceElement = document.getElementById("ip-camera-feed");
+    }
+    if (!canvas || !sourceElement) return;
 
     const rect = canvas.getBoundingClientRect();
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
-    const videoW = video.videoWidth || 640;
-    const videoH = video.videoHeight || 480;
-    const videoX = Math.round((displayX / canvas.width) * videoW);
-    const videoY = Math.round((displayY / canvas.height) * videoH);
+    const videoW = cameraSourceRef.current === "webcam" ? sourceElement.videoWidth : sourceElement.naturalWidth;
+    const videoH = cameraSourceRef.current === "webcam" ? sourceElement.videoHeight : sourceElement.naturalHeight;
+    const videoX = Math.round((displayX / canvas.width) * (videoW || 640));
+    const videoY = Math.round((displayY / canvas.height) * (videoH || 480));
 
     setDrawingPoints((prev) => [...prev, [videoX, videoY]]);
   }, [drawingMode]);
@@ -873,6 +935,30 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
             <option value="bytetrack" style={{ background: "#0A0F1E", color: "#00D4FF" }}>⚡ Tracker: ByteTrack</option>
             <option value="deepsort" style={{ background: "#0A0F1E", color: "#00D4FF" }}>⚡ Tracker: DeepSORT</option>
           </select>
+          {!monitoring && (
+            <select
+              value={cameraSource}
+              onChange={(e) => setCameraSource(e.target.value)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                background: "rgba(66, 153, 225, 0.1)",
+                border: "1px solid rgba(66, 153, 225, 0.25)",
+                padding: "4px 10px",
+                borderRadius: "4px",
+                fontSize: "0.75rem",
+                fontWeight: "bold",
+                color: "#63b3ed",
+                fontFamily: "var(--font-mono)",
+                marginRight: "10px",
+                cursor: "pointer",
+                outline: "none"
+              }}
+            >
+              <option value="webcam" style={{ background: "#0A0F1E", color: "#63b3ed" }}>🖥️ Source: Webcam</option>
+              <option value="ip_camera" style={{ background: "#0A0F1E", color: "#63b3ed" }}>📡 Source: IP Camera</option>
+            </select>
+          )}
           {monitoring && !drawingMode && (
             <button className="btn btn-ghost btn-sm" onClick={() => { setDrawingMode(true); setDrawingPoints([]); }}>
               📐 Draw Zone
@@ -911,8 +997,18 @@ export default function TrackingFeed({ backendOnline, zones = [], alerts = [], o
             muted
             onLoadedMetadata={handleVideoReady}
             onPlaying={handleVideoReady}
-            style={{ width: "100%", display: "block" }}
+            style={{ width: "100%", display: cameraSource === "webcam" ? "block" : "none" }}
           />
+          {cameraSource === "ip_camera" && (
+            <img
+              id="ip-camera-feed"
+              src="/api/tracking/camera-stream"
+              crossOrigin="anonymous"
+              alt="IP Camera Feed"
+              style={{ width: "100%", display: "block" }}
+              onLoad={handleVideoReady}
+            />
+          )}
           <canvas
             ref={overlayCanvasRef}
             onClick={handleCanvasClick}

@@ -99,8 +99,12 @@ const server = http.createServer((req, res) => {
 
   proxyReq.on('error', (err) => {
     console.error(`[HTTP Proxy Error] ${req.url}: ${err.message}`);
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end(`Bad Gateway: Proxy connection failed to ${target.host}:${target.port}\nError: ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end(`Bad Gateway: Proxy connection failed to ${target.host}:${target.port}\nError: ${err.message}`);
+    } else {
+      res.end();
+    }
   });
 
   req.pipe(proxyReq);
