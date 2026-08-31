@@ -38,9 +38,9 @@ log = structlog.get_logger()
 # ── Shared instances ──────────────────────────────────────────────────────────
 predictor = Predictor(
     model_dir=settings.model_dir,
-    svm_weight=settings.svm_weight,
-    lstm_weight=settings.lstm_weight,
-    confidence_threshold=settings.confidence_threshold,
+    acceptance_threshold=getattr(settings, "confidence_threshold", 0.70),
+    static_weight=getattr(settings, "svm_weight", 0.65),
+    temporal_weight=getattr(settings, "lstm_weight", 0.35),
 )
 trainer = ModelTrainer(model_dir=settings.model_dir)
 
@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
     # Load trained models (if available)
     predictor.load_models()
 
+    # Load KNN templates from enrolled feature profiles
+    from database.crud import FeatureProfileCRUD
+    try:
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        knn_count = predictor.load_knn_templates(profiles)
+        log.info("knn_templates_loaded", num_users=knn_count)
+    except Exception as exc:
+        log.warning("knn_template_load_failed", error=str(exc))
+
     # Share predictor with route modules
     identification.init_predictor(predictor, trainer)
     stream.set_predictor(predictor)
@@ -69,6 +78,7 @@ async def lifespan(app: FastAPI):
         "gateway_ready",
         svm=predictor.ensemble.svm_ready,
         lstm=predictor.ensemble.lstm_ready,
+        knn=predictor.knn_ready,
     )
     yield
 
@@ -149,6 +159,7 @@ async def health():
         "models": {
             "svm": predictor.ensemble.svm_ready,
             "lstm": predictor.ensemble.lstm_ready,
+            "knn": predictor.knn_ready,
         },
     }
 

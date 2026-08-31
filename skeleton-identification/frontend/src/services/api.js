@@ -56,9 +56,13 @@ export async function trainModel(modelType, epochs, batchSize = 32) {
 // ─── Health / Stats ──────────────────────────────────────────────────────────
 
 export async function fetchHealth() {
-  const res = await fetch(`${API_BASE}/health`);
-  if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    if (!res.ok) return { status: 'offline' };
+    return await res.json();
+  } catch {
+    return { status: 'offline' };
+  }
 }
 
 export async function fetchStats() {

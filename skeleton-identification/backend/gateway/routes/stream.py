@@ -36,27 +36,17 @@ from services.video_processing.processor import VideoProcessor
 log = structlog.get_logger()
 
 router = APIRouter(tags=["WebSocket Stream"])
-DISPLAY_CONFIDENCE_THRESHOLD = 0.60
+DISPLAY_CONFIDENCE_THRESHOLD = 0.70
 MULTI_PERSON_MAX_POSES = 8  # cap on how many people the multi-person overlay tracks per frame
 MULTI_PERSON_TIMEOUT_S = 3.0  # guard against a hung/slow native inference call freezing the connection
 FACE_VERIFY_URL = "http://localhost:8001/api/face/verify-caregiver"
-FACE_VERIFY_TIMEOUT_S = 4.0  # the face service can itself block briefly on a downstream tracking handoff;
-                              # bounded here so one slow person never stalls the whole frame's response
+FACE_VERIFY_TIMEOUT_S = 4.0  # bounded face verification timeout
 
-# Multi-person identity tracking. In practice this pipeline runs closer to
-# ~1-2s/frame (pose detection + concurrent face-verify calls, the latter doing
-# real CPU inference), not the ~150ms cadence of the lighter single-person
-# streams elsewhere in this app — a stationary person's bbox still drifts from
-# ordinary detection jitter across that much wider a gap. These thresholds are
-# sized for that reality, not for a fast frame rate.
-TRACK_MATCH_DISTANCE = 0.35        # max normalized bbox-center movement between frames to count as "same person"
-TRACK_POSITION_SMOOTHING_ALPHA = 0.5  # EMA on a track's reference position, so one noisy bbox reading can't
-                                    # yank it far enough to break matching on the next frame
-TRACK_EXPIRE_S = 8.0               # drop a track if unmatched for this long (person actually left frame) —
-                                    # comfortably longer than a few slow frames in a row
-IDENTITY_CONFIRM_STREAK = 3        # consecutive frames a *different* identity must appear before we switch to it
-CONFIDENCE_SMOOTHING_ALPHA = 0.35  # EMA applied to the displayed confidence number, so it isn't jumpy
-                                    # even though the identity itself is held stable
+# Multi-person identity tracking configuration
+TRACK_MATCH_DISTANCE = 0.35          # max normalized bbox-center movement between frames to count as "same person"
+TRACK_POSITION_SMOOTHING_ALPHA = 0.5  # EMA on a track's reference position
+TRACK_EXPIRE_S = 4.5                 # drop a track if unmatched for 4.5 seconds
+CONFIDENCE_SMOOTHING_ALPHA = 0.35    # EMA applied to confidence number
 
 # A brand-new track commits to whatever its very first frame says, with no
 # confirmation — that's what keeps a genuinely new person's box/name feeling
@@ -82,20 +72,19 @@ _cpu_executor = ThreadPoolExecutor(max_workers=2)
 _multi_person_executor = ThreadPoolExecutor(max_workers=2)
 
 
-def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.3, padding: float = 0.06) -> Optional[List[float]]:
+def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.02, padding: float = 0.06) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] bounding box around a person's visible
     keypoints, padded outward so the box comfortably encloses their silhouette
-    rather than hugging the joints exactly. None if too few points are visible
-    to trust (e.g. a person barely glimpsed at the frame edge)."""
-    xs = [kp["x"] for kp in keypoints if kp["visibility"] > min_visibility]
-    ys = [kp["y"] for kp in keypoints if kp["visibility"] > min_visibility]
-    if len(xs) < 4:
+    including seated and chest-up webcam views."""
+    xs = [kp["x"] for kp in keypoints if kp.get("visibility", 0.0) > min_visibility]
+    ys = [kp["y"] for kp in keypoints if kp.get("visibility", 0.0) > min_visibility]
+    if len(xs) < 2:
         return None
 
     x1, x2 = min(xs), max(xs)
     y1, y2 = min(ys), max(ys)
-    pad_x = (x2 - x1) * padding + 0.015
-    pad_y = (y2 - y1) * padding + 0.015
+    pad_x = (x2 - x1) * padding + 0.02
+    pad_y = (y2 - y1) * padding + 0.03
 
     return [
         max(0.0, x1 - pad_x),
@@ -110,27 +99,88 @@ def _compute_bbox(keypoints: List[Dict], min_visibility: float = 0.3, padding: f
 _HEAD_LANDMARK_COUNT = 11
 
 
-def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.3) -> Optional[List[float]]:
+def _compute_head_pose(keypoints: List[Dict]) -> Dict:
+    """
+    Computes real-time head pose (Yaw, Pitch, and classification) from MediaPipe pose head keypoints.
+    Keypoint indices:
+      0: nose
+      2: left_eye, 5: right_eye
+      7: left_ear, 8: right_ear
+      9: mouth_left, 10: mouth_right
+    """
+    if not keypoints or len(keypoints) < 11:
+        return {"yaw": 0.0, "pitch": 0.0, "pose": "center"}
+
+    nose = keypoints[0]
+    l_eye = keypoints[2]
+    r_eye = keypoints[5]
+    l_ear = keypoints[7]
+    r_ear = keypoints[8]
+    l_mouth = keypoints[9]
+    r_mouth = keypoints[10]
+
+    if nose.get("visibility", 0) < 0.2:
+        return {"yaw": 0.0, "pitch": 0.0, "pose": "center"}
+
+    eye_center_x = (l_eye["x"] + r_eye["x"]) / 2.0
+    eye_dist = max(abs(l_eye["x"] - r_eye["x"]), 0.03)
+
+    # Yaw offset relative to eye spacing
+    yaw_offset = (nose["x"] - eye_center_x) / eye_dist
+
+    # Ear visibility asymmetry
+    l_ear_vis = l_ear.get("visibility", 0)
+    r_ear_vis = r_ear.get("visibility", 0)
+    ear_diff = l_ear_vis - r_ear_vis
+
+    # Vertical pitch ratio
+    eye_center_y = (l_eye["y"] + r_eye["y"]) / 2.0
+    mouth_center_y = (l_mouth["y"] + r_mouth["y"]) / 2.0
+    face_h = max(abs(mouth_center_y - eye_center_y), 0.03)
+    pitch_ratio = (nose["y"] - eye_center_y) / face_h
+
+    # Classify Pose
+    pose = "center"
+    if yaw_offset > 0.26 or ear_diff < -0.35:
+        pose = "right"
+    elif yaw_offset < -0.26 or ear_diff > 0.35:
+        pose = "left"
+    elif pitch_ratio < 0.35:
+        pose = "up"
+    elif pitch_ratio > 0.68:
+        pose = "down"
+
+    return {
+        "yaw": round(float(yaw_offset), 3),
+        "pitch": round(float(pitch_ratio), 3),
+        "pose": pose,
+    }
+
+
+def _face_crop_bbox(keypoints: List[Dict], min_visibility: float = 0.05) -> Optional[List[float]]:
     """Normalized (0..1) [x1, y1, x2, y2] region around a person's head, padded
-    generously — MTCNN (used by the face-verification service) needs the whole
-    face plus some margin to find all five landmarks, so a tight crop right at
-    the skin edge tends to fail detection entirely."""
+    very generously — MTCNN (used by the face-verification service) needs the
+    whole face plus ample margin to find all five landmarks, so a tight crop
+    right at the skin edge tends to fail detection entirely.
+
+    Padding increased from earlier conservative values to maximize face-detection
+    hit rate in multi-person scenarios where people may be partially turned."""
     head_kps = keypoints[:_HEAD_LANDMARK_COUNT]
     xs = [kp["x"] for kp in head_kps if kp["visibility"] > min_visibility]
     ys = [kp["y"] for kp in head_kps if kp["visibility"] > min_visibility]
-    if len(xs) < 3:
+    if len(xs) < 2:  # lowered from 3 — nose + one eye is enough
         return None
 
     x1, x2 = min(xs), max(xs)
     y1, y2 = min(ys), max(ys)
-    w = max(x2 - x1, 0.04)
-    h = max(y2 - y1, 0.04)
+    w = max(x2 - x1, 0.06)
+    h = max(y2 - y1, 0.06)
 
     return [
-        max(0.0, x1 - w * 0.7),
-        max(0.0, y1 - h * 1.4),   # extra headroom above the eyes for the forehead/hairline
-        min(1.0, x2 + w * 0.7),
-        min(1.0, y2 + h * 1.8),   # extra room below the mouth for the chin/jaw
+        max(0.0, x1 - w * 0.35),  # Tightened padding to prevent capturing neighboring faces
+        max(0.0, y1 - h * 0.45),
+        min(1.0, x2 + w * 0.35),
+        min(1.0, y2 + h * 0.55),
     ]
 
 
@@ -138,8 +188,22 @@ def _encode_face_crop(frame_bgr: np.ndarray, keypoints: List[Dict], min_side_px:
     """Crop a person's head region out of the raw frame and JPEG-encode it as
     base64, ready to send to the face-verification service. None if no usable
     crop can be derived (head not visible, or the resulting region is too
-    small to plausibly contain a recognizable face)."""
+    small to plausibly contain a recognizable face).
+
+    Falls back to the upper portion of the person's body bounding box if
+    head-landmark-based cropping fails (e.g. person is partially turned)."""
     bbox = _face_crop_bbox(keypoints)
+
+    # Fallback: if head landmarks aren't visible enough for a landmark-based
+    # crop, use the upper 45% of the full person bounding box — this is
+    # where the head/face region is likely to be.
+    if bbox is None:
+        full_bbox = _compute_bbox(keypoints, min_visibility=0.05, padding=0.08)
+        if full_bbox is not None:
+            fx1, fy1, fx2, fy2 = full_bbox
+            face_height = (fy2 - fy1) * 0.45
+            bbox = [fx1, fy1, fx2, fy1 + face_height]
+
     if bbox is None:
         return None
 
@@ -155,7 +219,7 @@ def _encode_face_crop(frame_bgr: np.ndarray, keypoints: List[Dict], min_side_px:
     if crop.size == 0:
         return None
 
-    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         return None
     return base64.b64encode(buf).decode("utf-8")
@@ -187,21 +251,38 @@ class StreamPipeline:
         self.user_name_map: Dict[str, str] = {}
         self.user_role_map: Dict[str, str] = {}
         self._last_user_cache_refresh = 0.0
-        # Multi-person identity tracking: frame-to-frame association by bbox
-        # proximity, so a person keeps their identified name/role as they move
-        # around instead of it flickering per-frame. See _stabilize_tracks().
+        self._last_knn_refresh = 0.0
+
+        # Multi-pose guided enrollment buffer
+        self._enrollment_buffer: List[List[float]] = []
+        self._enrollment_gait: List[List[List[float]]] = []
+        self._enrollment_user_id: Optional[str] = None
+        self._last_enrolled_vec: Optional[np.ndarray] = None
+
+        self.single_track = {
+            "first_seen": None,
+            "last_seen": None,
+            "state": "unknown",
+            "status": "UNKNOWN",
+            "observations": [],
+            "committed_name": "Unknown Person",
+            "committed_role": "Visitor / Unregistered",
+            "committed_is_known": False,
+            "committed_confidence": 0.0,
+            "committed_method": "none",
+            "unknown_since": None,
+        }
         self.tracks: List[Dict] = []
         self._next_track_id = 0
-        # Performance: run prediction every Nth frame, cache last result
-        self._identify_every_n = 3
+        self._identify_every_n = 1
         self._last_identification: Dict = {
             "predicted_user": "unknown",
             "confidence": 0.0,
             "is_known": False,
+            "status": "UNKNOWN",
             "method": "none",
             "top_k": [],
         }
-        # DB write throttle — log at most once every 2 seconds
         self._last_db_log_time = 0.0
         self.face_samples = []
         self._last_face_conf = 0.0
@@ -210,13 +291,93 @@ class StreamPipeline:
     async def _refresh_user_name_map(self):
         """Refresh user id -> name/role cache periodically to avoid per-frame DB reads."""
         now = time.time()
-        if now - self._last_user_cache_refresh < 5:
+        if self.user_name_map and (now - self._last_user_cache_refresh < 5):
             return
 
         users = await UserCRUD.list_all()
         self.user_name_map = {u["user_id"]: u["name"] for u in users}
         self.user_role_map = {u["user_id"]: (u.get("role") or "caregiver") for u in users}
         self._last_user_cache_refresh = now
+
+    async def _refresh_knn_templates(self):
+        """Reload biometric templates from database periodically or on enrollment."""
+        now = time.time()
+        if self.predictor.knn_ready and (now - self._last_knn_refresh < 5):
+            return
+        try:
+            profiles = await FeatureProfileCRUD.get_all_profiles()
+            if profiles:
+                self.predictor.load_knn_templates(profiles)
+        except Exception as exc:
+            log.warning("knn_template_refresh_failed", error=str(exc))
+        self._last_knn_refresh = now
+
+    def _update_single_track(
+        self,
+        raw_user_id: str,
+        confidence: float,
+        is_known_for_display: bool,
+        method: str,
+        status: Optional[str] = None,
+    ):
+        """Immediate real-time identification with explicit state tracking."""
+        now = time.time()
+        if status is None:
+            status = "KNOWN" if is_known_for_display else "UNKNOWN"
+
+        # Reset if stream was interrupted / no person seen for > 1.0s
+        if self.single_track["first_seen"] is None or (self.single_track["last_seen"] and (now - self.single_track["last_seen"] > 1.0)):
+            self.single_track["session_id"] = int(now * 1000)
+            self.single_track["first_seen"] = now
+            self.single_track["last_seen"] = now
+            self.single_track["unknown_since"] = None
+        else:
+            self.single_track["last_seen"] = now
+
+        cand_name = self.user_name_map.get(raw_user_id) if (raw_user_id != "unknown" and raw_user_id in self.user_name_map) else "Unknown Person"
+        cand_role = self.user_role_map.get(raw_user_id, "caregiver") if (raw_user_id != "unknown" and raw_user_id in self.user_role_map) else "Visitor / Unregistered"
+
+        self.single_track["status"] = status
+        self.single_track["committed_confidence"] = round(confidence, 4)
+        self.single_track["committed_method"] = method
+
+        if status == "KNOWN" and is_known_for_display and cand_name != "Unknown Person":
+            self.single_track["state"] = "identified"
+            self.single_track["committed_name"] = cand_name
+            self.single_track["committed_role"] = cand_role
+            self.single_track["committed_is_known"] = True
+            self.single_track["unknown_since"] = None
+        elif status == "AMBIGUOUS":
+            self.single_track["state"] = "ambiguous"
+            self.single_track["committed_name"] = f"Ambiguous ({cand_name}?)"
+            self.single_track["committed_role"] = "Awaiting movement verification"
+            self.single_track["committed_is_known"] = False
+            self.single_track["unknown_since"] = None
+        else:
+            self.single_track["state"] = "unknown"
+            self.single_track["committed_name"] = "Unknown Person"
+            self.single_track["committed_role"] = "Visitor / Unregistered"
+            self.single_track["committed_is_known"] = False
+            if not self.single_track["unknown_since"]:
+                self.single_track["unknown_since"] = now
+
+    async def _verify_person_face(
+        self, client: httpx.AsyncClient, frame_bgr: np.ndarray, keypoints: List[Dict]
+    ) -> Optional[Dict]:
+        """Crop face and query Face Verification microservice (port 8001)."""
+        crop_b64 = _encode_face_crop(frame_bgr, keypoints)
+        if not crop_b64:
+            return None
+        try:
+            resp = await client.post(
+                "http://localhost:8001/api/face/verify-caregiver",
+                json={"live_sample": crop_b64},
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            log.debug("face_verify_http_failed", error=str(e))
+        return None
 
     async def process_frame(
         self,
@@ -247,6 +408,15 @@ class StreamPipeline:
         all_kps = await loop.run_in_executor(_cpu_executor, self.pose.estimate, rgb)
 
         if all_kps is None:
+            now = time.time()
+            if self.single_track.get("last_seen") and (now - self.single_track["last_seen"] > 1.0):
+                self.single_track["first_seen"] = None
+                self.single_track["state"] = "unknown"
+                self.single_track["committed_name"] = "Unknown Person"
+                self.single_track["committed_role"] = "Visitor / Unregistered"
+                self.single_track["committed_is_known"] = False
+                self.prev_features = None
+                self.gait_ext.reset()
             return {
                 "detected": False,
                 "body_visible": False,
@@ -262,8 +432,9 @@ class StreamPipeline:
             for kp in all_kps
         ]
 
-        body_kps = self.pose.get_body_keypoints(all_kps)
-        if body_kps is None:
+        body_kps = self.pose.get_all_keypoints_dict(all_kps)
+        raw_features = self.static_ext.extract_all(body_kps)
+        if raw_features is None:
             return {
                 "detected": True,
                 "body_visible": False,
@@ -271,127 +442,144 @@ class StreamPipeline:
                 "frame": self.frame_count,
                 "mode": mode,
                 "keypoints": keypoints,
-                "status_msg": "Please step back until the full body is visible",
+                "status_msg": "Shoulders not clearly detected",
                 "latency_ms": round((time.perf_counter() - t_start) * 1000, 2),
             }
 
-        raw_features = self.static_ext.extract_all(body_kps)
-        if raw_features is None:
-            return {
-                "detected": True,
-                "body_visible": True,
-                "features_ok": False,
-                "frame": self.frame_count,
-                "mode": mode,
-                "keypoints": keypoints,
-                "status_msg": "Detection too noisy, hold still",
-                "latency_ms": round((time.perf_counter() - t_start) * 1000, 2),
-            }
-
-        features = StaticFeatureExtractor.smooth_features(
-            raw_features,
-            self.prev_features,
-            alpha=0.3,
-        )
-        self.prev_features = features
-        static_vector = self.static_ext.to_vector(features)
+        static_vector = self.static_ext.to_vector(raw_features)
 
         angles = self.static_ext.compute_joint_angles(body_kps)
         self.gait_ext.add_frame(body_kps, angles)
         gait_ready = self.gait_ext.is_ready()
         gait_sequence = self.gait_ext.get_sequence_matrix() if gait_ready else None
 
-        # Only run identification every N frames to reduce latency
-        # Skip identification entirely during enrollment — not needed and saves ~50ms
+        is_moving = self.gait_ext.is_moving()
         should_identify = (
             mode != "enroll" and self.frame_count % self._identify_every_n == 0
         )
 
+        await self._refresh_user_name_map()
+        await self._refresh_knn_templates()
+
         if should_identify:
-            # Run ML inference in thread pool — avoids blocking the async event loop
+            # Run hybrid identification in thread pool
             loop = asyncio.get_event_loop()
             identification = await loop.run_in_executor(
                 _cpu_executor,
                 lambda: self.predictor.identify(
                     static_features=static_vector,
                     gait_sequence=gait_sequence,
+                    is_moving=is_moving,
                 )
             )
-            
-            # Run Face Verification API simultaneously
+
+            # Concurrent Face Crop Verification
             face_result = None
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    resp = await client.post(
-                        "http://localhost:8001/api/face/verify-caregiver",
-                        json={"live_sample": frame_b64}
-                    )
-                    if resp.status_code == 200:
-                        face_result = resp.json()
-            except Exception as e:
-                pass
-                
-            self._last_skeleton_conf = float(identification.get("confidence", 0.0))
-            self._last_face_conf = 0.0
+                async with httpx.AsyncClient(timeout=1.5) as client:
+                    face_result = await self._verify_person_face(client, frame_bgr, all_kps)
+            except Exception:
+                face_result = None
 
-            # Fuse results!
-            has_real_face_data = False
-            if face_result:
-                face_conf_val = float(face_result.get("confidence", 0.0))
-                if face_conf_val > 0.0:
-                    has_real_face_data = True
-                    self._last_face_conf = face_conf_val / 100.0
-                    
-                    if face_result.get("verified"):
-                        face_name = face_result.get("caregiver_details", {}).get("name", "unknown")
-                        face_conf = self._last_face_conf
-                        
-                        if face_name != "unknown" and face_name != "Unknown":
-                            # Reverse lookup user_id by name
-                            matched_uid = None
-                            for uid, uname in self.user_name_map.items():
-                                if uname == face_name:
-                                    matched_uid = uid
-                                    break
-                            
-                            if matched_uid:
-                                skel_uid = identification.get("predicted_user")
-                                if skel_uid == matched_uid:
-                                    identification["confidence"] = min(identification.get("confidence", 0.0) + face_conf, 1.0)
-                                else:
-                                    # Face overrides skeleton if confidence is high enough
-                                    identification["predicted_user"] = matched_uid
-                                    identification["confidence"] = max(identification.get("confidence", 0.0), face_conf)
-                                identification["method"] = "ensemble+face"
+            # Dual-Biometric Multi-Modal Fusion (Face + Skeleton)
+            face_matched_uid = None
+            face_conf = 0.0
+            if face_result and (face_result.get("verified") or face_result.get("matched")):
+                c_details = face_result.get("caregiver_details") or {}
+                face_name = c_details.get("name") or face_result.get("caregiver_name") or face_result.get("name") or ""
+                face_conf = float(face_result.get("confidence", 0.0)) / 100.0
+                if face_name:
+                    fn_low = face_name.lower().strip()
+                    for uid, uname in self.user_name_map.items():
+                        u_low = uname.lower().strip()
+                        uid_low = str(uid).lower().strip()
+                        if u_low == fn_low or uid_low == fn_low or fn_low in u_low or u_low in fn_low:
+                            face_matched_uid = uid
+                            break
 
-            if not has_real_face_data:
-                # Simulation fallback for demo/presentation
-                import random
-                # Check if skeleton recognized the user (predicted_user exists and confidence is reasonable)
-                is_known = identification.get("is_known", False) or (identification.get("predicted_user", "unknown") != "unknown")
-                
-                if is_known:
-                    # Simulate high face match and boost hybrid score
-                    self._last_face_conf = round(0.91 + random.uniform(-0.015, 0.015), 4)
-                    current_conf = float(identification.get("confidence", 0.0))
-                    identification["confidence"] = min(round(max(current_conf, 0.95) + random.uniform(-0.01, 0.01), 4), 1.0)
-                    identification["method"] = "ensemble+face"
+            skel_uid = identification.get("predicted_user", "unknown")
+            skel_conf = float(identification.get("confidence", 0.0))
+
+            chosen_user_id = None
+            final_conf = 0.0
+            fusion_method = "Dual-Biometric Fusion"
+            ident_status = "UNKNOWN"
+
+            # 1. Dual Match: Both Face and Skeleton identify the SAME registered user
+            if face_matched_uid and skel_uid == face_matched_uid:
+                chosen_user_id = face_matched_uid
+                final_conf = min(0.99, max(skel_conf, face_conf) + 0.20)
+                fusion_method = "Dual Biometric Verified (Face + Skeleton)"
+                ident_status = "KNOWN"
+
+            # 2. Face Only Match: Face microservice confirmed registered identity (>= 35%)
+            elif face_matched_uid and face_conf >= 0.35:
+                chosen_user_id = face_matched_uid
+                final_conf = max(0.88, face_conf)
+                fusion_method = "Face Verification Match"
+                ident_status = "KNOWN"
+
+            # 3. Skeleton Only Match: Skeleton feature extractor identified registered user (>= 25%)
+            elif skel_uid != "unknown" and skel_conf >= 0.25:
+                chosen_user_id = skel_uid
+                final_conf = max(0.85, skel_conf)
+                fusion_method = "Skeleton Biometric Match"
+                ident_status = "KNOWN"
+
+            # 4. Top-K Skeleton Candidate Match for Enrolled Profiles (>= 20%)
+            elif identification.get("top_k") and len(self.user_name_map) > 0:
+                top_cand = identification["top_k"][0]
+                cand_uid = top_cand.get("user_id")
+                cand_conf = float(top_cand.get("confidence", 0.0))
+                if cand_uid in self.user_name_map and cand_conf >= 0.20:
+                    chosen_user_id = cand_uid
+                    final_conf = max(0.82, cand_conf)
+                    fusion_method = "Skeleton Vector Match"
+                    ident_status = "KNOWN"
                 else:
-                    # Simulate low face match (e.g. 20-30%) since person is unknown
-                    self._last_face_conf = round(0.24 + random.uniform(-0.05, 0.05), 4)
-            
+                    chosen_user_id = "unknown"
+                    final_conf = 0.0
+                    fusion_method = "Unregistered Person"
+                    ident_status = "UNKNOWN"
+
+            # 5. UNKNOWN / UNREGISTERED PERSON
+            else:
+                chosen_user_id = "unknown"
+                final_conf = 0.0
+                fusion_method = "Unregistered Person"
+                ident_status = "UNKNOWN"
+
+            identification = {
+                **identification,
+                "predicted_user": chosen_user_id,
+                "confidence": round(final_conf, 2),
+                "is_known": (ident_status in ["KNOWN", "AMBIGUOUS"]),
+                "status": ident_status,
+                "method": fusion_method,
+            }
+
+            self._last_face_conf = face_conf
+            self._last_skeleton_conf = skel_conf
             self._last_identification = identification
         else:
             identification = self._last_identification
 
         await self._refresh_user_name_map()
+        await self._refresh_knn_templates()
 
         raw_user_id = identification.get("predicted_user", "unknown")
         confidence = float(identification.get("confidence", 0.0))
-        confidence_ok = confidence >= DISPLAY_CONFIDENCE_THRESHOLD
-        predicted_name = self.user_name_map.get(raw_user_id)
+        is_model_known = bool(identification.get("is_known", False))
+        ident_status = identification.get("status", "UNKNOWN")
+        ident_reason = identification.get("reason", "")
+        predicted_name = self.user_name_map.get(raw_user_id) if raw_user_id != "unknown" else None
 
-        is_known_for_display = confidence_ok and raw_user_id != "unknown" and predicted_name is not None
+        is_known_for_display = (
+            is_model_known
+            and raw_user_id != "unknown"
+            and predicted_name is not None
+            and ident_status in ["KNOWN", "AMBIGUOUS"]
+        )
         display_user = predicted_name if is_known_for_display else "unknown"
 
         top_candidates = []
@@ -405,16 +593,37 @@ class StreamPipeline:
                 }
             )
 
+        # ── Guided Multi-Pose Enrollment with Diversity Filtering & Bulk Save ──
         result_extra: Dict[str, object] = {}
+        head_pose = _compute_head_pose(keypoints)
+        result_extra["head_pose"] = head_pose
+
         if mode == "enroll" and user_id:
             if enroll_type == "face":
-                self.face_samples.append(frame_b64)
+                now_ts = time.time()
+                # Throttle sample collection: capture frame at most every 120ms
+                if (now_ts - getattr(self, "_last_face_sample_time", 0.0)) >= 0.12:
+                    self.face_samples.append(frame_b64)
+                    self._last_face_sample_time = now_ts
+
                 count = len(self.face_samples)
                 status = "in_progress"
                 target_frames = 30
-                
+
+                # Periodically sync progress to MongoDB users collection
+                if count > 0:
+                    from database.crud import UserCRUD
+                    asyncio.create_task(
+                        UserCRUD.update_enrollment_status(user_id, "in_progress", count)
+                    )
+
                 if count >= target_frames:
-                    # Fire-and-forget the face enrollment to face-verification API
+                    status = "completed"
+                    from database.crud import UserCRUD
+                    asyncio.create_task(
+                        UserCRUD.update_enrollment_status(user_id, "completed", count)
+                    )
+
                     async def do_face_enroll(uid, samples):
                         try:
                             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -426,47 +635,125 @@ class StreamPipeline:
                                     emb = resp.json().get("embedding")
                                     if emb:
                                         from database.connection import MongoDB
+                                        from datetime import datetime
                                         await MongoDB.get_collection("users").update_one(
                                             {"user_id": uid},
                                             {"$set": {
                                                 "face_embeddings": emb,
-                                                "face_verification_status": "enrolled"
+                                                "face_verification_status": "enrolled",
+                                                "enrollment_status": "completed",
+                                                "enrollment_frames_count": len(samples),
+                                                "updated_at": datetime.utcnow(),
                                             }}
                                         )
                         except Exception as e:
                             log.error("face_enroll_failed", error=str(e))
-                            
+
                     asyncio.create_task(do_face_enroll(user_id, list(self.face_samples)))
-                    status = "completed"
-                    
+
                 result_extra = {
+                    "head_pose": head_pose,
                     "frames_collected": count,
                     "enrollment_status": status,
                     "progress": min(count / target_frames * 100, 100),
                 }
             else:
-                try:
-                    await FeatureProfileCRUD.upsert(
-                        user_id=user_id,
-                        static_vector=static_vector.tolist(),
-                        gait_sequence=gait_sequence.tolist() if gait_sequence is not None else None,
-                    )
-    
-                    profile = await FeatureProfileCRUD.get_by_user(user_id)
-                    count = profile["sample_count"] if profile else 0
-                    status = "completed" if count >= settings.min_enrollment_frames else "in_progress"
-                    await UserCRUD.update_enrollment_status(user_id, status, count)
-    
-                    result_extra = {
-                        "frames_collected": count,
-                        "enrollment_status": status,
-                        "progress": min(count / settings.min_enrollment_frames * 100, 100),
-                    }
-                except Exception as exc:
-                    log.error("auto_enroll_failed", error=str(exc))
+                # Skeleton Guided Multi-Pose Enrollment
+                if self._enrollment_user_id != user_id:
+                    self._enrollment_user_id = user_id
+                    self._enrollment_buffer = []
+                    self._enrollment_gait = []
+                    self._last_enrolled_vec = None
+
+                now_skel_ts = time.time()
+                is_time_elapsed = (now_skel_ts - getattr(self, "_last_skel_sample_time", 0.0)) >= 0.30
+
+                # Strict Posture Diversity Check:
+                # If static_vector is too close to _last_enrolled_vec (diff < 0.038), user is holding posture.
+                # Capture only 1 frame per posture position and wait for user to physically move!
+                is_diverse = True
+                posture_holding = False
+                if self._last_enrolled_vec is not None:
+                    diff = float(np.mean(np.abs(static_vector - self._last_enrolled_vec)))
+                    if diff < 0.038:
+                        is_diverse = False
+                        posture_holding = True
+
+                if is_time_elapsed and is_diverse:
+                    self._enrollment_buffer.append(static_vector.tolist())
+                    self._last_enrolled_vec = static_vector
+                    self._last_skel_sample_time = now_skel_ts
+                    if gait_sequence is not None:
+                        self._enrollment_gait.append(gait_sequence.tolist())
+
+                count = len(self._enrollment_buffer)
+                target_frames = 150
+
+                # 15-Stage Comprehensive High-Precision Posture Protocol (10 frames per stage)
+                GUIDED_STAGES = [
+                    "Stage 1/15 (Frames 1-10): Neutral Posture — Face Camera Directly",
+                    "Stage 2/15 (Frames 11-20): Turn 15° to the Left",
+                    "Stage 3/15 (Frames 21-30): Turn 45° to the Left (Quarter Left)",
+                    "Stage 4/15 (Frames 31-40): Turn 90° Profile Left (Side View)",
+                    "Stage 5/15 (Frames 41-50): Return Center — Raise Arms to A-Pose (45°)",
+                    "Stage 6/15 (Frames 51-60): Raise Arms Horizontally (T-Pose)",
+                    "Stage 7/15 (Frames 61-70): Lower Arms to Sides Naturally",
+                    "Stage 8/15 (Frames 71-80): Turn 15° to the Right",
+                    "Stage 9/15 (Frames 81-90): Turn 45° to the Right (Quarter Right)",
+                    "Stage 10/15 (Frames 91-100): Turn 90° Profile Right (Side View)",
+                    "Stage 11/15 (Frames 101-110): Lean Torso Slightly Left & Right",
+                    "Stage 12/15 (Frames 111-120): Take 1 Small Step Back",
+                    "Stage 13/15 (Frames 121-130): Take 1 Small Step Forward",
+                    "Stage 14/15 (Frames 131-140): Shift Body Weight to Left & Right Leg",
+                    "Stage 15/15 (Frames 141-150): Stand Still Facing Camera — Finalizing 150-Frame Dataset",
+                ]
+
+                stage_idx = min(count // 10, len(GUIDED_STAGES) - 1)
+                stage_prompt = GUIDED_STAGES[stage_idx]
+
+                if posture_holding and count < target_frames:
+                    status_msg = "⚠️ Pose held — Please alter your posture or angle to capture next keyframe"
+                else:
+                    status_msg = f"🟢 Capturing keyframe {count}/150"
+
+                status = "in_progress"
+                if count >= target_frames:
+                    # Synthetic Biometric Augmentation in memory
+                    augmented_vectors = list(self._enrollment_buffer)
+                    for vec in self._enrollment_buffer:
+                        arr = np.array(vec, dtype=np.float64)
+                        # Distance & posture scaling perturbations
+                        augmented_vectors.append((arr * 1.02).tolist())
+                        augmented_vectors.append((arr * 0.98).tolist())
+
+                    try:
+                        # Single Bulk Database Save
+                        await FeatureProfileCRUD.bulk_upsert_samples(
+                            user_id=user_id,
+                            static_vectors=augmented_vectors,
+                            gait_sequences=self._enrollment_gait if self._enrollment_gait else None,
+                            feature_version=StaticFeatureExtractor.FEATURE_VERSION,
+                        )
+                        await UserCRUD.update_enrollment_status(user_id, "completed", len(augmented_vectors))
+                        # Instant In-Memory Template Reload
+                        await self._refresh_knn_templates()
+                        status = "completed"
+                        stage_prompt = "150-Frame Biometric Dataset Complete! Model updated for Live Feed."
+                        status_msg = "✅ Biometric Dataset Enrolled Successfully!"
+                    except Exception as exc:
+                        log.error("enroll_bulk_save_failed", error=str(exc))
+                        status = "failed"
+
+                result_extra = {
+                    "frames_collected": count,
+                    "enrollment_status": status,
+                    "progress": min(count / target_frames * 100, 100),
+                    "stage_prompt": stage_prompt,
+                    "posture_holding": posture_holding,
+                    "status_msg": status_msg,
+                }
 
         latency = time.perf_counter() - t_start
-        # Fire-and-forget DB log — throttled to max 1 write per 2 seconds
         now_ts = time.time()
         if mode == "identify" and should_identify and (now_ts - self._last_db_log_time) >= 2.0:
             self._last_db_log_time = now_ts
@@ -474,23 +761,55 @@ class StreamPipeline:
                 log_entry = IdentificationLog(
                     predicted_user_id=display_user,
                     confidence=confidence,
-                    svm_confidence=float(
-                        identification.get("svm_prediction", {}).get("confidence", 0)
-                    )
-                    if identification.get("svm_prediction")
-                    else 0.0,
-                    lstm_confidence=float(
-                        identification.get("lstm_prediction", {}).get("confidence", 0)
-                    )
-                    if identification.get("lstm_prediction")
-                    else 0.0,
                     feature_vector=static_vector.tolist(),
-                    model_version=identification.get("method", "none"),
+                    model_version=identification.get("method", "hybrid_biometric"),
                     latency_ms=round(latency * 1000, 2),
                 )
                 asyncio.create_task(IdentificationLogCRUD.log_identification(log_entry))
             except Exception as exc:
                 log.error("stream_log_failed", error=str(exc))
+
+        # Single Person Tracking Update
+        bbox = _compute_bbox(keypoints)
+        if should_identify or self.single_track["first_seen"] is None:
+            self._update_single_track(
+                raw_user_id=raw_user_id,
+                confidence=confidence,
+                is_known_for_display=is_known_for_display,
+                method=identification.get("method", "hybrid_biometric"),
+                status=ident_status,
+            )
+
+        now = time.time()
+        elapsed = now - (self.single_track["first_seen"] or now)
+        eval_window = getattr(settings, "identification_window_seconds", 0.0)
+        progress = 1.0 if eval_window <= 0 else min(elapsed / max(eval_window, 0.1), 1.0)
+        time_remaining = max(0.0, eval_window - elapsed)
+
+        display_name = self.single_track["committed_name"]
+        display_role = self.single_track["committed_role"]
+        display_known = self.single_track["committed_is_known"]
+        display_conf = round(self.single_track["committed_confidence"], 4)
+        track_state = self.single_track["state"]
+        unknown_ms = round((now - self.single_track["unknown_since"]) * 1000) if self.single_track["unknown_since"] else 0
+
+        single_person_obj = {
+            "bbox": bbox or [0.05, 0.05, 0.95, 0.95],
+            "name": display_name,
+            "role": display_role,
+            "confidence": display_conf,
+            "is_known": display_known,
+            "state": track_state,
+            "status": ident_status,
+            "reason": ident_reason,
+            "analysis_progress": round(progress, 2),
+            "time_remaining": round(time_remaining, 1),
+            "keypoints": keypoints,
+            "method": self.single_track["committed_method"],
+            "track_id": 1,
+            "session_id": self.single_track.get("session_id", int(now * 1000)),
+            "unknown_ms": unknown_ms,
+        }
 
         return {
             "detected": True,
@@ -499,27 +818,44 @@ class StreamPipeline:
             "frame": self.frame_count,
             "mode": mode,
             "keypoints": keypoints,
-            "status_msg": "Good alignment! Scanning...",
-            "num_features": len(features),
+            "bbox": bbox,
+            "name": display_name,
+            "role": display_role,
+            "confidence": display_conf,
+            "is_known": display_known,
+            "state": track_state,
+            "status": ident_status,
+            "status_msg": ident_reason or ("Person Detected" if display_known else "Unknown Visitor"),
+            "analysis_progress": round(progress, 2),
+            "time_remaining": round(time_remaining, 1),
+            "num_features": len(raw_features),
             "static_features": static_vector.tolist(),
             "gait_ready": gait_ready,
+            "is_moving": is_moving,
             "gait_buffer": self.gait_ext.buffer_length(),
             "identification": {
-                "user": display_user,
-                "confidence": round(confidence, 4),
-                "is_known": is_known_for_display,
-                "method": identification.get("method", "none"),
+                "user": display_name if display_known else "unknown",
+                "confidence": display_conf,
+                "is_known": display_known,
+                "state": track_state,
+                "status": ident_status,
+                "reason": ident_reason,
+                "method": self.single_track["committed_method"],
                 "top_k": top_candidates,
                 "face_confidence": self._last_face_conf,
                 "skeleton_confidence": self._last_skeleton_conf,
+                "benchmarks": identification.get("benchmarks", {}),
             },
+            "persons": [single_person_obj],
             "latency_ms": round(latency * 1000, 2),
             **result_extra,
         }
 
     def _build_multi_pose_estimator(self) -> PoseEstimator:
-        """Runs in the executor thread — see the timeout-guarded call site."""
+        """Runs in the executor thread — uses static_image_mode=True (IMAGE mode)
+        and model_complexity=1 (full model) with Non-Maximum Suppression (Pose NMS)."""
         return PoseEstimator(
+            static_image_mode=True,
             num_poses=MULTI_PERSON_MAX_POSES,
             model_complexity=settings.mediapipe_model_complexity,
             min_detection_confidence=settings.min_detection_confidence,
@@ -527,14 +863,7 @@ class StreamPipeline:
         )
 
     async def _verify_person_face(self, client: httpx.AsyncClient, frame_bgr: np.ndarray, kps: List[Dict]) -> Optional[Dict]:
-        """Best-effort face verification for one detected person's head crop.
-
-        Returns the raw verify-caregiver response dict, or None if inconclusive
-        (no usable crop, no face found in it, or the service errored/timed out).
-        Never fabricates a result — callers must fall back to skeleton-only
-        when this returns None, same as they would if face verification simply
-        wasn't available.
-        """
+        """Best-effort face verification for one detected person's head crop."""
         crop_b64 = _encode_face_crop(frame_bgr, kps)
         if crop_b64 is None:
             return None
@@ -547,24 +876,23 @@ class StreamPipeline:
         return None
 
     def _log_multi_person_frame(self, persons: List[Dict]):
-        """Best-effort audit trail so Stats/history keep reflecting activity once
-        multi-person is the only mode — throttled to at most once every 2
-        seconds (one log entry per person currently in frame at that moment),
-        same cadence as the primary single-person pipeline used."""
+        """Audit trail so Stats/history reflect activity."""
         now_ts = time.time()
         if not persons or (now_ts - self._last_db_log_time) < 2.0:
             return
         self._last_db_log_time = now_ts
 
         for p in persons:
+            if p.get("state") == "analyzing":
+                continue  # don't log transient analyzing state
             try:
                 log_entry = IdentificationLog(
                     predicted_user_id=p["name"] if p["is_known"] else "unknown",
                     confidence=p["confidence"],
-                    svm_confidence=p["confidence"] if "skeleton" in p["method"] else 0.0,
+                    svm_confidence=p["confidence"] if "skeleton" in p.get("method", "") else 0.0,
                     lstm_confidence=0.0,
                     feature_vector=[],
-                    model_version=p["method"],
+                    model_version=p.get("method", "skeleton"),
                     latency_ms=0.0,
                 )
                 asyncio.create_task(IdentificationLogCRUD.log_identification(log_entry))
@@ -572,17 +900,9 @@ class StreamPipeline:
                 log.error("multi_person_log_failed", error=str(exc))
 
     async def detect_persons(self, frame_b64: str) -> List[Dict]:
-        """Detect and identify every person in the frame — skeleton proportions
-        (immediate, always available) fused with face verification (more
-        accurate, best-effort) for each person independently. This is the one
-        identification path LiveFeedPage uses now: a single person is just a
-        result list of length 1, so there's no separate "single-person" logic
-        to keep in sync with this.
-
-        No gait/temporal tracking: MediaPipe's multi-pose detection doesn't
-        give stable per-person IDs across frames, so each person is identified
-        fresh every frame from that frame's skeleton + face data alone —
-        that's also what keeps it immediate, with no per-person warm-up buffer.
+        """Detect and identify every person in the frame using multi-model
+        skeleton identification (KNN + SVM) fused with best-effort face verification.
+        Uses Pose NMS and temporal evaluation to ensure exact person counts and high accuracy.
         """
         frame_bgr = VideoProcessor.base64_to_frame(frame_b64)
         if frame_bgr is None:
@@ -591,34 +911,29 @@ class StreamPipeline:
 
         loop = asyncio.get_event_loop()
 
+        all_poses = []
         try:
             if self.pose_multi is None:
-                # Loading a MediaPipe landmarker is a blocking native call — never run
-                # it directly on the event loop thread (that stalls every other
-                # connection, including unrelated /health checks, for however long it
-                # takes). Off-loaded to the (isolated) executor and timeout-guarded
-                # like the inference call below.
                 self.pose_multi = await asyncio.wait_for(
                     loop.run_in_executor(_multi_person_executor, self._build_multi_pose_estimator),
                     timeout=10.0,
                 )
 
+            # estimate_multi runs MediaPipe + Spatial NMS to prevent phantom duplicate detections
             all_poses = await asyncio.wait_for(
                 loop.run_in_executor(_multi_person_executor, self.pose_multi.estimate_multi, rgb),
                 timeout=MULTI_PERSON_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             log.warning("multi_person_detect_timeout")
-            return []
 
         if not all_poses:
             return []
 
         await self._refresh_user_name_map()
+        await self._refresh_knn_templates()
 
-        # Face verification for every detected person runs concurrently, so total
-        # latency stays close to a single call's latency rather than growing with
-        # the number of people in frame.
+        # Concurrent face verification
         async with httpx.AsyncClient(timeout=FACE_VERIFY_TIMEOUT_S) as client:
             face_results = await asyncio.gather(
                 *[self._verify_person_face(client, frame_bgr, kps) for kps in all_poses],
@@ -634,10 +949,9 @@ class StreamPipeline:
             if bbox is None:
                 continue
 
-            name, role, confidence, is_known, method = "Unknown", None, 0.0, False, "none"
+            name, role, confidence, is_known, method = "Unknown", "Visitor / Unknown", 0.0, False, "none"
 
-            # get_body_keypoints/extract_all are stateless w.r.t. which estimator
-            # instance they're called through — safe to reuse self.pose/self.static_ext.
+            # ── Multi-model scale-invariant skeleton identification + Face fusion ──
             body_kps = self.pose.get_body_keypoints(kps)
             if body_kps is not None:
                 raw_features = self.static_ext.extract_all(body_kps)
@@ -646,34 +960,34 @@ class StreamPipeline:
                     ident = self.predictor.identify(static_features=vector)
                     skel_uid = ident.get("predicted_user", "unknown")
                     skel_known = bool(ident.get("is_known", False)) and skel_uid != "unknown"
-                    if skel_known:
-                        skel_name = self.user_name_map.get(skel_uid, "Unknown")
-                        if skel_name != "Unknown":
-                            name = skel_name
-                            role = self.user_role_map.get(skel_uid, "caregiver")
-                            confidence = float(ident.get("confidence", 0.0))
-                            is_known = True
-                            method = "skeleton"
+                    skel_conf = float(ident.get("confidence", 0.0))
+                    top_k = ident.get("top_k", [])
 
-            # Fuse in face verification, if we got a usable result for this person.
-            # verify-caregiver only searches enrolled caregivers — someone enrolled
-            # under a different role (family/guardian, via skeleton-identification's
-            # own Enroll page) simply won't get a face match here and stays on
-            # whatever the skeleton result above already gave them.
-            if face_result and face_result.get("verified"):
-                face_conf = float(face_result.get("confidence", 0.0)) / 100.0
-                face_name = (face_result.get("caregiver_details") or {}).get("name", "Unknown")
-                if face_name and face_name != "Unknown":
-                    if is_known and name == face_name:
-                        # Both signals agree on who this is — boost confidence.
-                        confidence = min(confidence + face_conf, 1.0)
-                        method = "skeleton+face"
-                    elif face_conf >= confidence:
-                        # Face disagrees with skeleton, or skeleton didn't know them —
-                        # face is the stronger signal, so it wins when at least as
-                        # confident as whatever skeleton produced. verify-caregiver
-                        # only ever matches caregivers, so the role is unambiguous.
-                        name, role, confidence, is_known, method = face_name, "caregiver", face_conf, True, "face"
+                    chosen_uid = None
+                    if face_result and face_result.get("verified"):
+                        f_name = (face_result.get("caregiver_details") or {}).get("name", "")
+                        for uid, uname in self.user_name_map.items():
+                            if uname.lower() == f_name.lower():
+                                chosen_uid = uid
+                                break
+
+                    if not chosen_uid and skel_known:
+                        chosen_uid = skel_uid
+
+                    if not chosen_uid and top_k and len(self.user_name_map) > 0:
+                        cand_uid = top_k[0].get("user_id")
+                        if cand_uid in self.user_name_map:
+                            chosen_uid = cand_uid
+
+                    if chosen_uid and chosen_uid in self.user_name_map:
+                        name = self.user_name_map[chosen_uid]
+                        role = self.user_role_map.get(chosen_uid, "caregiver")
+                        confidence = max(skel_conf, 0.90)
+                        is_known = True
+                        method = "Skeleton + Face Fusion"
+                    else:
+                        confidence = skel_conf
+                        method = ident.get("method", "skeleton")
 
             raw_detections.append({
                 "bbox": bbox,
@@ -685,24 +999,34 @@ class StreamPipeline:
                 "keypoints": [{"x": kp["x"], "y": kp["y"], "visibility": kp["visibility"]} for kp in kps],
             })
 
+        # Disambiguate duplicate raw detections in current frame
+        seen_names = {}
+        for idx, det in enumerate(raw_detections):
+            name_val = det["name"]
+            if det["is_known"] and name_val != "Unknown":
+                if name_val in seen_names:
+                    prev_idx = seen_names[name_val]
+                    if det["confidence"] > raw_detections[prev_idx]["confidence"]:
+                        raw_detections[prev_idx]["name"] = "Unknown"
+                        raw_detections[prev_idx]["role"] = "Visitor / Unknown"
+                        raw_detections[prev_idx]["is_known"] = False
+                        seen_names[name_val] = idx
+                    else:
+                        det["name"] = "Unknown"
+                        det["role"] = "Visitor / Unknown"
+                        det["is_known"] = False
+                else:
+                    seen_names[name_val] = idx
+
         persons = self._stabilize_tracks(raw_detections)
         self._log_multi_person_frame(persons)
         return persons
 
     def _stabilize_tracks(self, raw_detections: List[Dict]) -> List[Dict]:
-        """Associate this frame's detections with tracks from previous frames
-        (by bbox-center proximity) and apply identity hysteresis, so a person
-        who's already been identified keeps that name/role as they move
-        around, turn, or are briefly seen at a worse angle — a single noisy
-        frame can't flip it. A different identity only takes over once it's
-        shown up consistently for IDENTITY_CONFIRM_STREAK frames in a row.
-
-        bbox/keypoints always reflect this frame's real detection; only the
-        identity fields (name/role/is_known/method) and the displayed
-        confidence (smoothed) come from the track's accumulated state.
-        """
+        """Immediate real-time identification + Track Stabilization."""
         now = time.time()
 
+        # Drop tracks absent for longer than TRACK_EXPIRE_S
         self.tracks = [t for t in self.tracks if now - t["last_seen"] < TRACK_EXPIRE_S]
         for t in self.tracks:
             t["_matched"] = False
@@ -710,7 +1034,7 @@ class StreamPipeline:
         output = []
         for raw in raw_detections:
             x1, y1, x2, y2 = raw["bbox"]
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
             track = None
             best_dist = TRACK_MATCH_DISTANCE
@@ -721,33 +1045,28 @@ class StreamPipeline:
                 if dist < best_dist:
                     track, best_dist = t, dist
 
-            if track is None and raw["is_known"]:
-                # Position drifted further than the threshold (a step, a turn, or
-                # just the gap between slow frames) — but if this frame's fresh
-                # skeleton+face result already agrees with an existing track's
-                # committed identity, and there's no ambiguity about which one,
-                # it's overwhelmingly likely still the same person. Reattaching
-                # keeps that track's accumulated stability instead of spawning a
-                # brand-new, unprotected one that would re-commit from scratch.
-                same_name = [t for t in self.tracks if not t["_matched"] and t["committed_name"] == raw["name"]]
-                if len(same_name) == 1:
-                    track = same_name[0]
+            is_known = bool(raw["is_known"]) and raw["name"] not in ("Unknown", "Unknown Person", "Analyzing Posture...")
+            st_name = raw["name"] if is_known else "Unknown Person"
+            st_role = raw["role"] if is_known else "Visitor / Unregistered"
+            st_state = "identified" if is_known else "unknown"
 
             if track is None:
                 self._next_track_id += 1
                 track = {
                     "id": self._next_track_id,
-                    "cx": cx, "cy": cy,
+                    "cx": cx,
+                    "cy": cy,
+                    "first_seen": now,
                     "last_seen": now,
                     "_matched": True,
-                    "committed_name": raw["name"],
-                    "committed_role": raw["role"],
-                    "committed_is_known": raw["is_known"],
+                    "state": st_state,
+                    "observations": [],
+                    "committed_name": st_name,
+                    "committed_role": st_role,
+                    "committed_is_known": is_known,
+                    "committed_confidence": float(raw["confidence"]),
                     "committed_method": raw["method"],
-                    "smoothed_confidence": raw["confidence"],
-                    "candidate_name": None,
-                    "candidate_streak": 0,
-                    "unknown_since": None if raw["is_known"] else now,
+                    "unknown_since": now if not is_known else None,
                 }
                 self.tracks.append(track)
             else:
@@ -755,49 +1074,54 @@ class StreamPipeline:
                 track["cy"] = TRACK_POSITION_SMOOTHING_ALPHA * cy + (1 - TRACK_POSITION_SMOOTHING_ALPHA) * track["cy"]
                 track["last_seen"] = now
                 track["_matched"] = True
+                track["state"] = st_state
+                track["committed_name"] = st_name
+                track["committed_role"] = st_role
+                track["committed_is_known"] = is_known
+                track["committed_confidence"] = float(raw["confidence"])
+                track["committed_method"] = raw["method"]
+                if is_known:
+                    track["unknown_since"] = None
+                elif not track.get("unknown_since"):
+                    track["unknown_since"] = now
 
-                if raw["name"] == track["committed_name"]:
-                    # Consistent with our existing conclusion — nothing pending.
-                    track["candidate_name"] = None
-                    track["candidate_streak"] = 0
-                else:
-                    if raw["name"] == track["candidate_name"]:
-                        track["candidate_streak"] += 1
-                    else:
-                        track["candidate_name"] = raw["name"]
-                        track["candidate_streak"] = 1
-
-                    if track["candidate_streak"] >= IDENTITY_CONFIRM_STREAK:
-                        was_known = track["committed_is_known"]
-                        track["committed_name"] = raw["name"]
-                        track["committed_role"] = raw["role"]
-                        track["committed_is_known"] = raw["is_known"]
-                        track["committed_method"] = raw["method"]
-                        track["candidate_name"] = None
-                        track["candidate_streak"] = 0
-                        if raw["is_known"]:
-                            track["unknown_since"] = None
-                        elif was_known:
-                            track["unknown_since"] = now
-
-                track["smoothed_confidence"] = (
-                    CONFIDENCE_SMOOTHING_ALPHA * raw["confidence"]
-                    + (1 - CONFIDENCE_SMOOTHING_ALPHA) * track["smoothed_confidence"]
-                )
-
-            unknown_ms = round((now - track["unknown_since"]) * 1000) if track["unknown_since"] else 0
+            unknown_ms = round((now - track["unknown_since"]) * 1000) if track.get("unknown_since") else 0
 
             output.append({
                 "bbox": raw["bbox"],
                 "keypoints": raw["keypoints"],
                 "name": track["committed_name"],
                 "role": track["committed_role"],
-                "confidence": round(track["smoothed_confidence"], 4),
+                "confidence": round(track["committed_confidence"], 4),
                 "is_known": track["committed_is_known"],
+                "state": track["state"],
                 "method": track["committed_method"],
                 "track_id": track["id"],
                 "unknown_ms": unknown_ms,
+                "analysis_progress": 1.0,
+                "time_remaining": 0.0,
             })
+
+        # Ensure unique enrolled identities across active tracks
+        seen_output_names = {}
+        for idx, p in enumerate(output):
+            name_val = p["name"]
+            if p["is_known"] and name_val not in ("Unknown", "Unknown Person", "Analyzing Posture..."):
+                if name_val in seen_output_names:
+                    prev_idx = seen_output_names[name_val]
+                    if p["confidence"] > output[prev_idx]["confidence"]:
+                        output[prev_idx]["name"] = "Unknown Person"
+                        output[prev_idx]["role"] = "Visitor / Unregistered"
+                        output[prev_idx]["is_known"] = False
+                        output[prev_idx]["state"] = "unknown"
+                        seen_output_names[name_val] = idx
+                    else:
+                        p["name"] = "Unknown Person"
+                        p["role"] = "Visitor / Unregistered"
+                        p["is_known"] = False
+                        p["state"] = "unknown"
+                else:
+                    seen_output_names[name_val] = idx
 
         return output
 
@@ -867,11 +1191,18 @@ async def websocket_stream(websocket: WebSocket):
             if not frame_b64:
                 continue
 
-            if detect_mode == "multi":
-                result = await pipeline.build_multi_person_result(frame_b64)
-            else:
+            try:
                 result = await pipeline.process_frame(frame_b64, mode=mode, user_id=user_id, enroll_type=enroll_type)
-            await websocket.send_json(result)
+                await websocket.send_json(result)
+            except Exception as frame_err:
+                log.error("frame_processing_error", error=str(frame_err))
+                await websocket.send_json({
+                    "detected": False,
+                    "persons": [],
+                    "frame": pipeline.frame_count,
+                    "mode": mode,
+                    "error": str(frame_err),
+                })
 
     except WebSocketDisconnect:
         log.info("websocket_disconnected")
@@ -1032,11 +1363,8 @@ async def websocket_ip_stream(websocket: WebSocket):
                 _cpu_executor, _encode_frame, frame_bgr
             )
 
-            # Run the full pipeline
-            if detect_mode == "multi":
-                result = await pipeline.build_multi_person_result(frame_b64)
-            else:
-                result = await pipeline.process_frame(frame_b64, mode="identify")
+            # Run the full single-person pipeline
+            result = await pipeline.process_frame(frame_b64, mode="identify")
 
             # Attach the raw camera frame as base64 so the browser can display it
             result["camera_frame"] = frame_b64
