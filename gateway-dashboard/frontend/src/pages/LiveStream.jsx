@@ -18,7 +18,7 @@ const FACE_API   = import.meta.env.VITE_FACE_BACKEND_URL   || 'http://localhost:
 const TRACK_API  = import.meta.env.VITE_TRACKING_BACKEND_URL || 'http://localhost:8002/api/tracking';
 
 // ─── Polling interval ─────────────────────────────────────────────────────────
-const POLL_MS = 5000;
+const POLL_MS = 2500;
 
 // ─── Map backend status → UI config ──────────────────────────────────────────
 function mapStatusToUI(status) {

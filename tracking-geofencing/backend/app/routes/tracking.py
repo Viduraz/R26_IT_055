@@ -12,6 +12,8 @@ from app.controllers.tracking_controller import (
     handle_get_stats,
     handle_identify_person,
     handle_get_exit_alerts,
+    handle_start_caregiver_session,
+    handle_update_caregiver_visibility,
 )
 from app.models.tracking_models import ProcessFrameRequest
 
@@ -34,12 +36,25 @@ async def process_frame(
 
 class IdentifyPersonRequest(BaseModel):
     frame_data: str
+    person_id: str | None = None
 
 
 @router.post("/identify-person")
 async def identify_person(request: IdentifyPersonRequest):
     """Send a frame to face-verification and return identity if matched."""
-    return await handle_identify_person(request.frame_data)
+    return await handle_identify_person(request.frame_data, request.person_id)
+
+
+@router.post("/start-caregiver-session")
+async def start_caregiver_session(payload: dict):
+    """Register or handoff an active caregiver session for presence monitoring."""
+    return await handle_start_caregiver_session(payload)
+
+
+@router.post("/update-caregiver-visibility")
+async def update_caregiver_visibility(payload: dict):
+    """Process a webcam frame to evaluate presence & skeleton visibility."""
+    return await handle_update_caregiver_visibility(payload)
 
 
 @router.get("/history")

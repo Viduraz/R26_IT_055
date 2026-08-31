@@ -50,8 +50,20 @@ export const trackingApi = {
     API.get("/api/tracking/history", { params: { page, page_size: pageSize } }),
   getActive: () => API.get("/api/tracking/active"),
   getStats: () => API.get("/api/tracking/stats"),
-  identifyPerson: (frameBase64) =>
-    API.post("/api/tracking/identify-person", { frame_data: frameBase64 }),
+  identifyPerson: (frameBase64, personId = null) =>
+    API.post("/api/tracking/identify-person", { frame_data: frameBase64, person_id: personId }),
+  verifyCaregiver: (frameBase64) =>
+    axios.post("/api/face/verify-caregiver", { live_sample: frameBase64 }, { timeout: 5000 }),
+  startCaregiverSession: (caregiverDetails) =>
+    API.post("/api/tracking/start-caregiver-session", {
+      caregiver_name: caregiverDetails?.name || "Unknown",
+      caregiver_id: caregiverDetails?.id || null,
+    }),
+  updateCaregiverVisibility: (sessionId, frameBase64) =>
+    API.post("/api/tracking/update-caregiver-visibility", {
+      session_id: sessionId,
+      live_frame: frameBase64,
+    }),
   getExitAlerts: () => API.get("/api/tracking/exit-alerts"),
 };
 

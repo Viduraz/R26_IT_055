@@ -40,6 +40,10 @@ class TrackedPerson:
         self.trajectory = [self._centroid(bbox)]
         self.zone_status = "unknown"
         self.tracker_name = tracker_name
+        self.identity = None           # Matched caregiver/user name (e.g. "Sarah Connor")
+        self.role = None               # e.g. "caregiver", "elder", "admin"
+        self.confidence_id = 0.0       # Biometric match confidence
+        self.is_identified = False
 
     def _centroid(self, bbox):
         return (bbox["x"] + bbox["w"] / 2, bbox["y"] + bbox["h"] / 2)
@@ -53,6 +57,13 @@ class TrackedPerson:
         if len(self.trajectory) > 50:
             self.trajectory.pop(0)
 
+    def update_identity(self, name: str, role: str = "caregiver", confidence_id: float = 0.0):
+        if name:
+            self.identity = name
+            self.role = role
+            self.confidence_id = confidence_id
+            self.is_identified = True
+
     def is_stale(self, timeout_seconds=3.0) -> bool:
         return (time.time() - self.last_seen) > timeout_seconds
 
@@ -61,8 +72,15 @@ class TrackedPerson:
         h = self.bbox.get("h", 0) if self.bbox else 0
         aspect_ratio = round(w / h, 2) if h > 0 else 0.0
         is_sitting = aspect_ratio >= 0.55
+        display_name = f"{self.identity} ({self.tracker_name})" if self.identity else self.person_id
         return {
             "person_id": self.person_id,
+            "identity": self.identity or self.person_id,
+            "name": self.identity,
+            "role": self.role or "unidentified",
+            "is_identified": self.is_identified,
+            "confidence_id": self.confidence_id,
+            "display_name": display_name,
             "bbox": self.bbox,
             "confidence": self.confidence,
             "first_seen": self.first_seen,
@@ -316,6 +334,35 @@ class PersonTrackerEngine:
         all_tracked = list(tracked_dict.values())
         return [p.to_dict() for p in all_tracked if (now - p.last_seen) < self.ACTIVE_TIMEOUT]
 
+    def set_person_identity(self, person_id: str, name: str, role: str = "caregiver", conf: float = 0.0) -> bool:
+        """Associate a verified biometric name/identity to a tracked person."""
+        updated = False
+        for tracked in [self.bytetrack_tracked, self.deepsort_tracked]:
+            if person_id in tracked:
+                tracked[person_id].update_identity(name, role, conf)
+                updated = True
+
+        # If not exact match, match base track prefix e.g. "P-001"
+        if not updated and person_id:
+            base_pid = person_id.split()[0]
+            for tracked in [self.bytetrack_tracked, self.deepsort_tracked]:
+                for pid, p in tracked.items():
+                    if pid.startswith(base_pid):
+                        p.update_identity(name, role, conf)
+                        updated = True
+
+        # If still not matched, assign to the most recently updated active person
+        if not updated:
+            active_persons = self.get_confirmed_active_persons()
+            if len(active_persons) == 1:
+                pid = active_persons[0]["person_id"]
+                for tracked in [self.bytetrack_tracked, self.deepsort_tracked]:
+                    if pid in tracked:
+                        tracked[pid].update_identity(name, role, conf)
+                        updated = True
+
+        return updated
+
     def get_diagnostics(self) -> dict:
         """Return diagnostic info for debugging."""
         return {
@@ -332,3 +379,4 @@ class PersonTrackerEngine:
 
 # Global singleton — persists for the lifetime of the backend process
 tracker_engine = PersonTrackerEngine()
+
