@@ -19,7 +19,7 @@ class AuthService:
     def __init__(self):
         self._user_service = UserService()
         self._face_service_url = os.getenv("FACE_SERVICE_URL", "http://localhost:8001")
-        self._skeleton_service_url = os.getenv("SKELETON_SERVICE_URL", "http://localhost:8005")
+        self._skeleton_service_url = os.getenv("SKELETON_SERVICE_URL", "http://localhost:8007")
 
     async def register(self, payload: RegisterRequest) -> dict:
         # Check for duplicate email
@@ -122,6 +122,7 @@ class AuthService:
 
     async def login(self, payload: LoginRequest) -> dict | None:
         user = await self._user_service.get_by_email(payload.email)
+        
         if not user or not verify_password(payload.password, user["password_hash"]):
             return None
 
@@ -169,6 +170,9 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
+            import traceback
+            with open("C:/Secure-Eldercare-Project/auth-service/backend/error_traceback.txt", "w") as f:
+                f.write(traceback.format_exc())
             print(f"[ERROR] Unexpected Face verification connection issue: {repr(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

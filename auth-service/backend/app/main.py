@@ -29,3 +29,11 @@ app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "auth-service"}
+
+@app.get("/db-status")
+def db_status():
+    from shared.backend.config.database import get_db
+    from app.models.user_model import user_collection
+    db = get_db()
+    users = list(user_collection().find({}))
+    return {"type": str(type(db)), "users": len(users)}

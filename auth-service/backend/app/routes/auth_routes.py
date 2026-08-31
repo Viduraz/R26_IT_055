@@ -19,6 +19,7 @@ router.post("/caregiver/verify-face-login", summary="Login with Face Verificatio
 router.get("/me", summary="Get current user profile")(get_profile)
 
 
+
 @router.get("/camera-snapshot", summary="Proxy latest IP camera frame as base64 JPEG for face capture UI")
 def camera_snapshot():
     """

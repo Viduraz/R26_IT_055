@@ -20,9 +20,10 @@ try:
     dns.resolver.default_resolver = _dns_resolver
 
     def _patched_getaddrinfo(host, port, *args, **kwargs):
-        if 'mongodb.net' in host:
+        host_str = host.decode('utf-8') if isinstance(host, bytes) else host
+        if host_str and 'mongodb.net' in host_str:
             try:
-                answers = _dns_resolver.resolve(host, 'A')
+                answers = _dns_resolver.resolve(host_str, 'A')
                 if answers:
                     return _orig_getaddrinfo(str(answers[0]), port, *args, **kwargs)
             except Exception:
@@ -241,7 +242,7 @@ def get_db() -> Database:
             _client = MongoClient(
                 settings.MONGODB_URI,
                 tlsCAFile=certifi.where(),
-                serverSelectionTimeoutMS=2000,  # 2 second timeout
+                serverSelectionTimeoutMS=10000,  # 10 second timeout for heavy startup load
                 retryWrites=False
             )
             # Test connection
