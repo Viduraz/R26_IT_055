@@ -190,19 +190,23 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
     ctx.beginPath(); ctx.moveTo(x, y + h - cl); ctx.lineTo(x, y + h); ctx.lineTo(x + cl, y + h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x + w - cl, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cl); ctx.stroke();
 
-    // Label: Caregiver shows real name [Caregiver], all other persons show P-001 (ByteTrack)
+
+    // Label: caregiver shows real name, all others show clean P-001 short ID
     let label, sublabel, roleBadge;
     if (isCaregiver && caregiverName) {
       label = `👤 ${caregiverName}`;
       roleBadge = "[Caregiver]";
       sublabel = `${dur.toFixed(1)}s · ${trackerName}`;
     } else {
-      label = person.person_id; // e.g. "P-001 (ByteTrack)"
+      // Strip tracker suffix "(ByteTrack)" / "(DeepSORT)" for a clean short label
+      const shortId = (person.person_id || "").replace(/\s*\(.*?\)\s*$/, "").trim();
+      label = shortId || person.person_id;
       roleBadge = null;
       sublabel = `${dur.toFixed(1)}s · ${trackerName}`;
     }
 
     ctx.font = 'bold 13px "JetBrains Mono", monospace';
+
     const labelTextW = ctx.measureText(label).width;
     const badgeW = roleBadge ? ctx.measureText(` ${roleBadge}`).width : 0;
     const totalLabelW = Math.max(labelTextW + badgeW + 18, 120);
@@ -584,6 +588,7 @@ export default function TrackingFeed({
     const captureAndSend = async () => {
       if (!isActive || !monitoring) return;
 
+      const video = videoRef.current;
       let sourceElement = video;
       if (cameraSourceRef.current === "ip_camera") {
         sourceElement = document.getElementById("ip-camera-feed");
@@ -615,88 +620,104 @@ export default function TrackingFeed({
       const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.7);
       const base64 = dataUrl.split(",")[1];
 
-      try {
-        const res = await trackingApi.processFrame(base64, trackerTypeRef.current);
-        if (!isActive) return;
-
-        if (res.data) {
-          const newPersons = res.data.persons || [];
-          setPersons(newPersons);
-          failCountRef.current = 0;
-          setError(null);
-
-          // Draw immediately on every frame capture and sync canvas to video size
-          if (video && overlayCanvasRef.current) {
-            const rect = video.getBoundingClientRect();
-            if (rect.width > 0 && (overlayCanvasRef.current.width !== rect.width || overlayCanvasRef.current.height !== rect.height)) {
-              overlayCanvasRef.current.width = rect.width;
-              overlayCanvasRef.current.height = rect.height;
-              overlayCanvasRef.current.style.width = rect.width + "px";
-              overlayCanvasRef.current.style.height = rect.height + "px";
-            }
-            if (overlayCanvasRef.current.width > 0) {
-              const ctx = overlayCanvasRef.current.getContext("2d");
-              ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-              const scaleX = overlayCanvasRef.current.width / (video.videoWidth || 640);
-              const scaleY = overlayCanvasRef.current.height / (video.videoHeight || 480);
-
-              drawZones(ctx, zonesRef.current, scaleX, scaleY);
-              drawPersons(ctx, newPersons, scaleX, scaleY, breachedIdsRef.current, identityMapRef.current, warningIdsRef.current, warningRemainingRef.current, zonesRef.current);
-
-              if (drawingModeRef.current && drawingPointsRef.current.length > 0) {
-                drawPendingPolygon(ctx, drawingPointsRef.current, scaleX, scaleY, zoneTypeRef.current);
-              }
-            }
-          }
-
-          // Handle exit alerts from response
-          const exitAlerts = res.data.exit_alerts || [];
-          if (exitAlerts.length > 0) {
-            setLatestExitAlert(exitAlerts[0]);
-            setExitAlertActive(true);
-            playAlertSound();
-            if (exitAlertTimerRef.current) clearTimeout(exitAlertTimerRef.current);
-            exitAlertTimerRef.current = setTimeout(() => setExitAlertActive(false), 3000);
-          }
-        } else {
-          failCountRef.current++;
+      // Helper: redraw overlay canvas with latest persons + identity map
+      const redrawCanvas = (persons2draw, source) => {
+        const cvs = overlayCanvasRef.current;
+        if (!cvs || !source) return;
+        const rect = source.getBoundingClientRect();
+        if (rect.width === 0) return;
+        if (cvs.width !== rect.width || cvs.height !== rect.height) {
+          cvs.width = rect.width;
+          cvs.height = rect.height;
+          cvs.style.width = rect.width + "px";
+          cvs.style.height = rect.height + "px";
         }
-      } catch {
-        if (!isActive) return;
+        if (cvs.width === 0) return;
+        const rctx = cvs.getContext("2d");
+        rctx.clearRect(0, 0, cvs.width, cvs.height);
+        const srcW = cameraSourceRef.current === "webcam" ? (videoRef.current?.videoWidth || 640) : (source.naturalWidth || 640);
+        const srcH = cameraSourceRef.current === "webcam" ? (videoRef.current?.videoHeight || 480) : (source.naturalHeight || 480);
+        drawZones(rctx, zonesRef.current, cvs.width / (srcW || 640), cvs.height / (srcH || 480));
+        drawPersons(rctx, persons2draw, cvs.width / (srcW || 640), cvs.height / (srcH || 480),
+          breachedIdsRef.current, identityMapRef.current, warningIdsRef.current, warningRemainingRef.current, zonesRef.current);
+        if (drawingModeRef.current && drawingPointsRef.current.length > 0)
+          drawPendingPolygon(rctx, drawingPointsRef.current, cvs.width / (srcW || 640), cvs.height / (srcH || 480), zoneTypeRef.current);
+      };
+
+      // ── Run tracking and face-recognition IN PARALLEL ──────────────
+      frameCountRef.current++;
+      const shouldRecognize = !isRecognizingRef.current &&
+        (frameCountRef.current <= 2 || frameCountRef.current % 2 === 0);
+
+      const trackingPromise = trackingApi.processFrame(base64, trackerTypeRef.current);
+      const facePromise = shouldRecognize
+        ? (isRecognizingRef.current = true, trackingApi.verifyCaregiver(base64))
+        : Promise.resolve(null);
+
+      const [trackResult, faceResult] = await Promise.allSettled([trackingPromise, facePromise]);
+      if (!isActive) return;
+
+      // ── Handle tracking result ──────────────────────────────────────
+      let newPersons = [];
+      if (trackResult.status === "fulfilled" && trackResult.value?.data) {
+        newPersons = trackResult.value.data.persons || [];
+        setPersons(newPersons);
+        failCountRef.current = 0;
+        setError(null);
+
+        // Draw with current (possibly not-yet-updated) identityMap
+        redrawCanvas(newPersons, sourceElement);
+
+        const exitAlerts = trackResult.value.data.exit_alerts || [];
+        if (exitAlerts.length > 0) {
+          setLatestExitAlert(exitAlerts[0]);
+          setExitAlertActive(true);
+          playAlertSound();
+          if (exitAlertTimerRef.current) clearTimeout(exitAlertTimerRef.current);
+          exitAlertTimerRef.current = setTimeout(() => setExitAlertActive(false), 3000);
+        }
+      } else {
         failCountRef.current++;
       }
 
-      // ── Caregiver Recognition & Presence Session Tracking (LiveStream.jsx pattern) ──
-      frameCountRef.current++;
-      const currentPersons = personsRef.current || [];
-      const hasUnidentified = currentPersons.some((p) => !identityMapRef.current.has(p.person_id) && !p.name);
-
-      if ((frameCountRef.current % 4 === 0 || hasUnidentified) && currentPersons.length > 0) {
-        if (!isRecognizingRef.current) {
-          isRecognizingRef.current = true;
-          setIsRecognizing(true);
-          try {
-            const faceRes = await trackingApi.verifyCaregiver(base64);
+      // ── Handle face recognition result ─────────────────────────────
+      if (shouldRecognize) {
+        try {
+          if (faceResult.status === "fulfilled" && faceResult.value) {
+            const faceRes = faceResult.value;
             if (faceRes.data && faceRes.data.verified && faceRes.data.caregiver_details && isActive) {
               const now = Date.now();
               const caregiverDetails = faceRes.data.caregiver_details;
               const matchedName = caregiverDetails.name || "Caregiver";
               const matchedConf = faceRes.data.confidence || 90;
+              const matchedPersonId = faceRes.data.matched_person_id || null;
+              const currentPersons = personsRef.current || [];
 
               setCaregiver(caregiverDetails);
               setConfidence(matchedConf);
               setCaregiverStatus("verified_present");
               setAbsenceSecs(0);
 
-              // Associate verified caregiver identity with detected person
-              currentPersons.forEach((p) => {
-                identityMapRef.current.set(p.person_id, {
+              // Assign caregiver identity to the single matched person only
+              const targetPerson = matchedPersonId
+                ? currentPersons.find((p) => p.person_id === matchedPersonId) || currentPersons[0]
+                : currentPersons[0];
+
+              if (targetPerson) {
+                // Clear previous caregiver tag — only ONE person carries the label
+                for (const [pid, info] of identityMapRef.current.entries()) {
+                  if (info.role === "caregiver") identityMapRef.current.delete(pid);
+                }
+                identityMapRef.current.set(targetPerson.person_id, {
                   name: matchedName,
                   role: "caregiver",
                   confidence: matchedConf,
                   cachedAt: now,
                 });
-              });
+
+                // ── Force immediate canvas redraw with the updated label ──
+                redrawCanvas(personsRef.current || newPersons, sourceElement);
+              }
 
               // Create tracking session if not already created
               let sid = sessionIdRef.current;
@@ -713,7 +734,6 @@ export default function TrackingFeed({
                 sessionCreatingRef.current = false;
               }
 
-              // Notify dashboard parent
               onCaregiverUpdate?.({
                 caregiver: caregiverDetails,
                 confidence: matchedConf,
@@ -723,16 +743,14 @@ export default function TrackingFeed({
                 lastSeen: new Date(),
               });
 
-              // Also persist identity to tracking backend
               try {
-                await trackingApi.identifyPerson(base64, currentPersons[0]?.person_id);
+                await trackingApi.identifyPerson(base64, (personsRef.current?.[0] || newPersons[0])?.person_id);
               } catch { }
             }
-          } catch { /* face-verification degraded */ }
-          finally {
-            isRecognizingRef.current = false;
-            setIsRecognizing(false);
           }
+        } finally {
+          isRecognizingRef.current = false;
+          setIsRecognizing(false);
         }
       }
 
@@ -775,11 +793,11 @@ export default function TrackingFeed({
         setError("Backend offline — monitoring paused.");
         stopMonitoring();
       } else if (isActive && monitoring) {
-        intervalRef.current = setTimeout(captureAndSend, 500);
+        intervalRef.current = setTimeout(captureAndSend, 300);
       }
     };
 
-    intervalRef.current = setTimeout(captureAndSend, 500);
+    intervalRef.current = setTimeout(captureAndSend, 300);
 
     return () => {
       isActive = false;

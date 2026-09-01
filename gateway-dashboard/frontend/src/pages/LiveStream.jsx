@@ -3,10 +3,11 @@
  *
  * Caregiver Recognition + Live Tracking Flow:
  *   1. Camera opens via react-webcam
- *   2. Every 5s → frame posted to face-verification :8001/api/face/verify-caregiver
- *   3. On first successful recognition → tracking session created at :8002
- *   4. Every 5s (with active session) → frame+session_id posted to :8002/update-caregiver-visibility
+ *   2. Immediately + every RECOG_MS → frame posted to face-verification
+ *   3. Face recognition and visibility update run IN PARALLEL each tick
+ *   4. On first successful recognition → tracking session created at tracking-service
  *   5. Status overlay + alert panel updated based on responses
+ *   6. Caregiver name shown instantly on video overlay and info card
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -14,11 +15,11 @@ import Webcam from 'react-webcam';
 import axios from 'axios';
 
 // ─── Service base URLs ────────────────────────────────────────────────────────
-const FACE_API   = import.meta.env.VITE_FACE_BACKEND_URL   || 'http://localhost:8001/api/face';
-const TRACK_API  = import.meta.env.VITE_TRACKING_BACKEND_URL || 'http://localhost:8002/api/tracking';
+const FACE_API  = import.meta.env.VITE_FACE_BACKEND_URL  || 'http://localhost:8001/api/face';
+const TRACK_API = import.meta.env.VITE_TRACKING_BACKEND_URL || 'http://localhost:8002/api/tracking';
 
-// ─── Polling interval ─────────────────────────────────────────────────────────
-const POLL_MS = 2500;
+// ─── Polling interval: how often to run a recognition cycle ──────────────────
+const RECOG_MS = 800;   // fast enough to feel "instant" after camera warms up
 
 // ─── Map backend status → UI config ──────────────────────────────────────────
 function mapStatusToUI(status) {
@@ -72,183 +73,198 @@ const colorMap = {
 
 export default function LiveStream() {
   // ── Core camera state ──────────────────────────────────────────────────────
-  const [isCameraOn, setIsCameraOn]               = useState(false);
-  const [cameraError, setCameraError]             = useState('');
+  const [isCameraOn, setIsCameraOn]           = useState(false);
+  const [cameraError, setCameraError]         = useState('');
+  const [webcamReady, setWebcamReady]         = useState(false);
 
   // ── Caregiver recognition state ───────────────────────────────────────────
-  const [caregiver, setCaregiver]                 = useState(null);   // { name, ... }
-  const [confidence, setConfidence]               = useState(null);
-  const [lastRecognizedAt, setLastRecognizedAt]   = useState(null);
+  const [caregiver, setCaregiver]             = useState(null);   // { name, ... }
+  const [confidence, setConfidence]           = useState(null);
+  const [lastRecognizedAt, setLastRecognizedAt] = useState(null);
 
   // ── Tracking session state ────────────────────────────────────────────────
   const [trackingSessionId, setTrackingSessionId] = useState(null);
   const [caregiverStatus, setCaregiverStatus]     = useState('idle');
   const [absenceSecs, setAbsenceSecs]             = useState(0);
 
-  // ── Request in-flight guards (state for UI driven display) ────────────────
-  const [isRecognizing, setIsRecognizing]         = useState(false);
+  // ── In-flight guards ──────────────────────────────────────────────────────
+  const [isRecognizing, setIsRecognizing]           = useState(false);
   const [isUpdatingVisibility, setIsUpdatingVisibility] = useState(false);
 
-  // ── Error feedback ────────────────────────────────────────────────────────
-  const [error, setError]                         = useState('');
+  // ── Feedback ──────────────────────────────────────────────────────────────
+  const [error, setError] = useState('');
 
   // ── Refs ──────────────────────────────────────────────────────────────────
-  const webcamRef             = useRef(null);
-  const pollIntervalRef       = useRef(null);
-  const isRecognizingRef      = useRef(false);   // guards concurrent recognize calls
-  const isUpdatingRef         = useRef(false);   // guards concurrent visibility calls
-  const sessionCreatingRef    = useRef(false);   // prevents duplicate session creation
-  const sessionIdRef          = useRef(null);    // always in sync with state for closures
-  const isCameraOnRef         = useRef(false);   // for closure-safe cleanup
+  const webcamRef          = useRef(null);
+  const timerRef           = useRef(null);         // setTimeout handle for polling loop
+  const isRecognizingRef   = useRef(false);
+  const isUpdatingRef      = useRef(false);
+  const sessionCreatingRef = useRef(false);
+  const sessionIdRef       = useRef(null);
+  const isCameraOnRef      = useRef(false);
+  const caregiverRef       = useRef(null);         // latest caregiver for closures
+  const isActiveRef        = useRef(false);        // set false on stop to cancel in-flight
 
   // keep refs in sync
   useEffect(() => { sessionIdRef.current = trackingSessionId; }, [trackingSessionId]);
   useEffect(() => { isCameraOnRef.current = isCameraOn; }, [isCameraOn]);
+  useEffect(() => { caregiverRef.current = caregiver; }, [caregiver]);
 
-  // ── Helper: capture a base64 JPEG frame from the webcam ──────────────────
+  // ── Helper: capture frame (strip data URI prefix for backend) ────────────
   const captureFrame = useCallback(() => {
     if (!webcamRef.current) return null;
-    return webcamRef.current.getScreenshot();   // → "data:image/jpeg;base64,..."
+    const dataUrl = webcamRef.current.getScreenshot();
+    if (!dataUrl) return null;
+    // Return the raw base64 without "data:image/jpeg;base64," prefix
+    return dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
   }, []);
 
-  // ── Step 2: identify caregiver from frame ─────────────────────────────────
-  const verifyCaregiver = useCallback(async () => {
-    if (isRecognizingRef.current) return;   // skip if previous call still pending
-    const frame = captureFrame();
-    if (!frame) return;
-
-    isRecognizingRef.current = true;
-    setIsRecognizing(true);
-    try {
-      const { data } = await axios.post(`${FACE_API}/verify-caregiver`, {
-        live_sample: frame,  // payload matches ScanCaregiverModal.jsx
-      });
-
-      if (data.verified) {
-        setCaregiver(data.caregiver_details);
-        setConfidence(data.confidence);
-        setLastRecognizedAt(new Date());
-        setError('');
-        return data;  // bubble up for session creation logic
-      } else {
-        // Caregiver not matched this poll cycle — keep existing caregiver in state
-      }
-    } catch (err) {
-      // Silent degradation — don't crash UX on network hiccup
-      const msg = err.response?.data?.detail || err.message || 'Face API unreachable.';
-      setError(`Recognition: ${msg}`);
-    } finally {
-      isRecognizingRef.current = false;
-      setIsRecognizing(false);
-    }
-    return null;
-  }, [captureFrame]);
-
-  // ── Step 3: create a tracking session (called once per camera session) ────
+  // ── Create tracking session (once per camera session) ────────────────────
   const startTrackingSession = useCallback(async (caregiverDetails) => {
-    if (sessionCreatingRef.current || sessionIdRef.current) return; // already exists
+    if (sessionCreatingRef.current || sessionIdRef.current) return;
     sessionCreatingRef.current = true;
-
     try {
       const { data } = await axios.post(`${TRACK_API}/start-caregiver-session`, {
         caregiver_name: caregiverDetails?.name || 'Unknown',
         caregiver_id:   caregiverDetails?.id   || null,
       });
-      const sid = data.session_id;
-      setTrackingSessionId(sid);
-      setCaregiverStatus('verified_present');
+      if (data?.session_id) {
+        setTrackingSessionId(data.session_id);
+        sessionIdRef.current = data.session_id;
+        setCaregiverStatus('verified_present');
+      }
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || 'Tracking API unreachable.';
-      setError(`Session: ${msg}`);
+      console.warn('[LiveStream] session start:', msg);
     } finally {
       sessionCreatingRef.current = false;
     }
   }, []);
 
-  // ── Step 4: update caregiver visibility with session ─────────────────────
-  const updateCaregiverVisibility = useCallback(async () => {
+  // ── Update caregiver visibility (parallel with recognition) ──────────────
+  const updateVisibility = useCallback(async (frameBase64) => {
     const sid = sessionIdRef.current;
-    if (!sid || isUpdatingRef.current) return;
-
-    const frame = captureFrame();
-    if (!frame) return;
-
+    if (!sid || isUpdatingRef.current || !frameBase64) return;
     isUpdatingRef.current = true;
     setIsUpdatingVisibility(true);
     try {
       const { data } = await axios.post(`${TRACK_API}/update-caregiver-visibility`, {
         session_id: sid,
-        live_frame: frame,
+        live_frame:  frameBase64,
       });
-      setCaregiverStatus(data.status || 'idle');
-      setAbsenceSecs(data.absence_seconds || 0);
-    } catch (err) {
-      const msg = err.response?.data?.detail || err.message || 'Tracking update failed.';
-      setError(`Visibility: ${msg}`);
-    } finally {
+      if (isActiveRef.current) {
+        setCaregiverStatus(data.status || 'idle');
+        setAbsenceSecs(data.absence_seconds || 0);
+      }
+    } catch { /* silent */ }
+    finally {
       isUpdatingRef.current = false;
       setIsUpdatingVisibility(false);
     }
-  }, [captureFrame]);
+  }, []);
 
-  // ── Master poll tick — runs every POLL_MS while camera is on ─────────────
+  // ── Main poll tick ────────────────────────────────────────────────────────
   const pollTick = useCallback(async () => {
-    if (!isCameraOnRef.current) return;
+    if (!isActiveRef.current) return;
 
-    // Step 2 → verify caregiver
-    const result = await verifyCaregiver();
-
-    // Step 3 → create session on first recognition
-    if (result?.verified && result?.caregiver_details && !sessionIdRef.current) {
-      await startTrackingSession(result.caregiver_details);
+    const frame = captureFrame();
+    if (!frame) {
+      // Webcam not ready yet — retry quickly
+      timerRef.current = setTimeout(pollTick, 200);
+      return;
     }
 
-    // Step 4 → update visibility if session exists
-    if (sessionIdRef.current) {
-      await updateCaregiverVisibility();
+    // ── Fire recognition + visibility update IN PARALLEL ──────────────────
+    const recognizePromise = (async () => {
+      if (isRecognizingRef.current) return null;
+      isRecognizingRef.current = true;
+      setIsRecognizing(true);
+      try {
+        const { data } = await axios.post(
+          `${FACE_API}/verify-caregiver`,
+          { live_sample: frame },
+          { timeout: 5000 }
+        );
+        if (!isActiveRef.current) return null;
+        if (data?.verified && data?.caregiver_details) {
+          setCaregiver(data.caregiver_details);
+          setConfidence(data.confidence ?? null);
+          setLastRecognizedAt(new Date());
+          setError('');
+          setCaregiverStatus('verified_present');
+          return data;
+        }
+        return null;
+      } catch (err) {
+        const msg = err.response?.data?.detail || err.message || 'Face API unreachable.';
+        if (isActiveRef.current) setError(`Recognition: ${msg}`);
+        return null;
+      } finally {
+        isRecognizingRef.current = false;
+        setIsRecognizing(false);
+      }
+    })();
+
+    const visibilityPromise = updateVisibility(frame);
+
+    const [recognizeResult] = await Promise.allSettled([recognizePromise, visibilityPromise]);
+    if (!isActiveRef.current) return;
+
+    // Create tracking session on first successful recognition
+    const recogData = recognizeResult.status === 'fulfilled' ? recognizeResult.value : null;
+    if (recogData?.verified && recogData?.caregiver_details && !sessionIdRef.current) {
+      startTrackingSession(recogData.caregiver_details);
     }
-  }, [verifyCaregiver, startTrackingSession, updateCaregiverVisibility]);
+
+    // Schedule next tick
+    if (isActiveRef.current) {
+      timerRef.current = setTimeout(pollTick, RECOG_MS);
+    }
+  }, [captureFrame, updateVisibility, startTrackingSession]);
 
   // ── Start camera ──────────────────────────────────────────────────────────
-  const startCamera = () => {
+  const startCamera = useCallback(() => {
     setCameraError('');
     setError('');
     setCaregiver(null);
     setConfidence(null);
+    setLastRecognizedAt(null);
     setTrackingSessionId(null);
     setCaregiverStatus('idle');
     setAbsenceSecs(0);
+    setWebcamReady(false);
     sessionCreatingRef.current = false;
+    sessionIdRef.current = null;
+    isActiveRef.current = true;
     setIsCameraOn(true);
-  };
+  }, []);
 
   // ── Stop camera ───────────────────────────────────────────────────────────
-  const stopCamera = () => {
+  const stopCamera = useCallback(() => {
+    isActiveRef.current = false;
+    clearTimeout(timerRef.current);
+    timerRef.current = null;
     setIsCameraOn(false);
-    clearInterval(pollIntervalRef.current);
-    pollIntervalRef.current = null;
+    setWebcamReady(false);
     setTrackingSessionId(null);
     sessionIdRef.current = null;
     setCaregiverStatus('idle');
-  };
+  }, []);
 
-  // ── Start/stop polling when camera toggles ────────────────────────────────
-  useEffect(() => {
-    if (isCameraOn) {
-      // First poll immediately, then on interval
-      pollTick();
-      pollIntervalRef.current = setInterval(pollTick, POLL_MS);
-    } else {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+  // ── When webcam becomes ready, kick off first poll immediately ────────────
+  const handleWebcamReady = useCallback(() => {
+    setWebcamReady(true);
+    if (isActiveRef.current) {
+      // Small delay to let the first video frame render
+      timerRef.current = setTimeout(pollTick, 300);
     }
-    return () => clearInterval(pollIntervalRef.current);
-  }, [isCameraOn, pollTick]);
+  }, [pollTick]);
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
-      clearInterval(pollIntervalRef.current);
+      isActiveRef.current = false;
+      clearTimeout(timerRef.current);
     };
   }, []);
 
@@ -258,8 +274,8 @@ export default function LiveStream() {
   const isCritical = caregiverStatus === 'missing_critical';
 
   const webcamConstraints = {
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+    width:      { ideal: 1280 },
+    height:     { ideal: 720 },
     facingMode: 'user',
   };
 
@@ -272,7 +288,9 @@ export default function LiveStream() {
           <span className="text-2xl">🚨</span>
           <div>
             <p className="font-black text-red-300 text-lg tracking-wide">CRITICAL ALERT</p>
-            <p className="text-sm text-red-400">Caregiver has been absent for {absenceSecs.toFixed(0)}s. Immediate attention required.</p>
+            <p className="text-sm text-red-400">
+              {caregiver?.name || 'Caregiver'} has been absent for {absenceSecs.toFixed(0)}s. Immediate attention required.
+            </p>
           </div>
         </div>
       )}
@@ -325,7 +343,7 @@ export default function LiveStream() {
           <div className="bg-gray-800/80 px-5 py-3 flex items-center justify-between border-b border-gray-700">
             <div className="flex items-center gap-2 text-sm text-gray-300 font-medium">
               <span className={`w-2.5 h-2.5 rounded-full ${isCameraOn ? 'bg-emerald-500 animate-pulse' : 'bg-gray-600'}`} />
-              {isCameraOn ? 'Camera Active' : 'Camera Offline'}
+              {isCameraOn ? (webcamReady ? 'Camera Active' : 'Camera Initialising…') : 'Camera Offline'}
             </div>
             <div className="flex items-center gap-2">
               {isRecognizing && (
@@ -357,6 +375,7 @@ export default function LiveStream() {
                   audio={false}
                   screenshotFormat="image/jpeg"
                   videoConstraints={webcamConstraints}
+                  onUserMedia={handleWebcamReady}
                   onUserMediaError={(err) => {
                     setCameraError(err.message || 'Camera permission denied.');
                     setIsCameraOn(false);
@@ -371,23 +390,31 @@ export default function LiveStream() {
                   REC
                 </div>
 
-                {/* Caregiver identity overlay */}
+                {/* Caregiver identity overlay — shown as soon as name is known */}
                 {caregiver && (
                   <div className="absolute bottom-4 left-4 right-4 flex flex-wrap gap-2">
-                    <span className="flex items-center gap-2 bg-gray-900/80 backdrop-blur-sm border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-xl text-sm font-bold shadow-lg">
+                    <span className="flex items-center gap-2 bg-gray-900/90 backdrop-blur-sm border border-emerald-500/60 text-emerald-300 px-4 py-2 rounded-xl text-sm font-bold shadow-lg">
                       <span className="text-base">👤</span>
                       {caregiver.name}
                     </span>
                     {confidence !== null && (
-                      <span className="flex items-center gap-1 bg-gray-900/80 backdrop-blur-sm border border-indigo-500/40 text-indigo-300 px-3 py-2 rounded-xl text-sm font-medium shadow-lg">
+                      <span className="flex items-center gap-1 bg-gray-900/90 backdrop-blur-sm border border-indigo-500/40 text-indigo-300 px-3 py-2 rounded-xl text-sm font-medium shadow-lg">
                         {confidence}% match
                       </span>
                     )}
                     {trackingSessionId && (
-                      <span className="flex items-center gap-1 bg-gray-900/80 backdrop-blur-sm border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-xl text-xs font-mono shadow-lg">
+                      <span className="flex items-center gap-1 bg-gray-900/90 backdrop-blur-sm border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-xl text-xs font-mono shadow-lg">
                         SESSION: {trackingSessionId.slice(0, 8)}…
                       </span>
                     )}
+                  </div>
+                )}
+
+                {/* "Scanning" badge while webcam ready but no caregiver yet */}
+                {!caregiver && webcamReady && (
+                  <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-gray-900/80 backdrop-blur-sm border border-indigo-500/30 text-indigo-400 px-4 py-2 rounded-xl text-xs font-mono">
+                    <span className="w-2 h-2 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                    Scanning for registered caregiver…
                   </div>
                 )}
               </>
@@ -453,13 +480,15 @@ export default function LiveStream() {
                     👤
                   </div>
                   <div>
-                    <p className="text-white font-bold">{caregiver.name}</p>
-                    <p className="text-gray-400 text-xs">Registered Caregiver</p>
+                    <p className="text-white font-bold text-base">{caregiver.name}</p>
+                    <p className="text-gray-400 text-xs">
+                      Registered Caregiver{caregiver.id_number ? ` · ID: ${caregiver.id_number}` : ''}
+                    </p>
                   </div>
                 </div>
                 {confidence !== null && (
                   <div className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full border ${colors.badge}`}>
-                    {confidence}% biometric confidence
+                    ✔ {confidence}% biometric confidence
                   </div>
                 )}
                 {lastRecognizedAt && (
@@ -471,7 +500,13 @@ export default function LiveStream() {
             ) : (
               <div className="flex items-center gap-3 text-gray-600">
                 <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-lg opacity-40">👤</div>
-                <p className="text-sm">{isCameraOn ? 'Scanning for caregivers…' : 'No caregiver identified'}</p>
+                <p className="text-sm">
+                  {isCameraOn
+                    ? webcamReady
+                      ? 'AI scanning for registered caregiver…'
+                      : 'Camera initialising…'
+                    : 'No caregiver identified'}
+                </p>
               </div>
             )}
           </div>
@@ -502,7 +537,7 @@ export default function LiveStream() {
           {/* ── Polling Info ──────────────────────────────────── */}
           {isCameraOn && (
             <div className="text-center text-gray-700 text-xs font-mono">
-              Polling every {POLL_MS / 1000}s · AI biometric active
+              Polling every {RECOG_MS}ms · AI biometric active
             </div>
           )}
         </div>

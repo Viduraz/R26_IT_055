@@ -78,10 +78,18 @@ class FaceService:
             if live_emb is not None:
                 multi_embs = [live_emb]
             else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No face detected in the live camera feed."
-                )
+                # No face detected — return gracefully so frontend skips silently
+                return {
+                    "verified": False,
+                    "message": "No face detected in the live camera feed.",
+                    "similarity": 0.0,
+                    "confidence": 0.0,
+                    "caregiver_details": None,
+                    "session": None,
+                }
+
+        # Use the first (highest-confidence) detected face embedding for matching
+        live_emb = multi_embs[0]
 
         db = get_db()
         # Find all enrolled users with face embeddings
@@ -126,7 +134,7 @@ class FaceService:
                 except Exception as e:
                     print(f"[WARN] Session handoff error: {e}")
 
-        # Log into system audit trail
+        # Log into system audit trail (non-blocking — never let this affect the response)
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "matched": matched,
@@ -142,6 +150,8 @@ class FaceService:
         except Exception as e:
             print(f"[WARN] face_log insert error: {e}")
 
+        # Always return the match result regardless of logging outcome
+        if matched:
             return {
                 "verified": True,
                 "message": "Caregiver biometric verified successfully",
@@ -154,9 +164,9 @@ class FaceService:
             return {
                 "verified": False,
                 "message": "User not verified",
-                "similarity": 0.0,
+                "similarity": round(best_sim, 4),
                 "confidence": 0.0,
                 "caregiver_details": None,
                 "session": None,
-                "all_verified": []
             }
+
