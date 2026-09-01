@@ -36,8 +36,8 @@ import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
-const USE_LSTM = true;
-const USE_RF = true;  // Set to true to use Random Forest (requires backend model)
+const USE_LSTM = false;  // DIAGNOSTIC: Set to false to bypass LSTM and test threshold classifier only
+const USE_RF = false;   // DIAGNOSTIC: Set to false to bypass RF and test threshold classifier only
 const CONFIDENCE_THRESHOLD = 0.50;       // used for alignment / UI feedback
 const LSTM_CONFIDENCE_THRESHOLD = 0.55;  // below this, fall back to threshold classifier
 const RF_CONFIDENCE_THRESHOLD = 0.55;    // below this, fall back to threshold classifier for RF
@@ -79,7 +79,7 @@ const EATING_HAND_PROXIMITY_THRESHOLD = 0.25;   // Hand near mouth
 const EATING_PLATE_PROXIMITY_THRESHOLD = 0.40;  // Hand near plate/food
 const DRINKING_GESTURE_DURATION = 800;          // Single gesture timeout (ms)
 const DRINKING_HAND_PROXIMITY_THRESHOLD = 0.25; // Hand near mouth for drinking
-const WALKING_VELOCITY_THRESHOLD = 0.010;       // Simplified: if velocity > this, it's walking
+const WALKING_VELOCITY_THRESHOLD = 0.035;       // Significantly increased from 0.010 to prevent false positives from pose noise
 
 const LSTM_ACTIVITY_NAMES = [
   'Walking',
@@ -950,6 +950,30 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   let signals = { source: 'threshold_classifier_with_temporal_patterns' };
 
   // ──────────────────────────────────────────────────────────────────────
+  // PRIORITY 0: SLEEPING (HIGH PRIORITY - Override eating/drinking when clear)
+  // Check for sleeping FIRST if bed is detected or strong horizontal signals present
+  // ──────────────────────────────────────────────────────────────────────
+  if (
+    (hasBed && velocity < 0.05) ||
+    (torsoAlignment > 1.1 && velocity < 0.04) ||
+    (hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02)
+  ) {
+    activity = 'Sleeping';
+    confidence = hasBed && bodyIsStraight ? 0.94 : (torsoAlignment > 1.3 ? 0.90 : 0.82);
+    signals = {
+      rule: 'sleeping_high_priority_override',
+      bed_detected: hasBed,
+      torso_alignment: torsoAlignment.toFixed(2),
+      hip_height: hipHeight.toFixed(3),
+      body_height: bodyHeight.toFixed(3),
+      velocity: velocity.toFixed(4),
+      body_is_straight: bodyIsStraight,
+    };
+    console.log('😴 SLEEPING DETECTED (High Priority) - Bed:', hasBed, 'Confidence:', confidence.toFixed(2));
+    return { activity, confidence, signals };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   // PRIORITY 1: EATING (Temporal Pattern - Repeated Oscillation)
   // Detect eating via hand-to-mouth oscillation, works even without food detection
   // ──────────────────────────────────────────────────────────────────────
@@ -1002,21 +1026,57 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // PRIORITY 3: SLEEPING (Strict - Horizontal body + BED REQUIRED)
+  // PRIORITY 3: SLEEPING (Multiple conditions - Horizontal body OR low hip+height)
   // ──────────────────────────────────────────────────────────────────────
-  const isHorizontal = bodyIsStraight && torsoAlignment > 1.0 && hipAngle !== null && hipAngle > 160;
-  
-  if (isHorizontal && hasBed && velocity < 0.05) {
+  if (
+    (torsoAlignment > 1.1 && velocity < 0.04) ||
+    (hipHeight > 0.45 && bodyHeight < 0.60 && velocity < 0.02) ||
+    (torsoAlignment > 0.9 && bodyIsStraight && sawBedRecently && velocity < 0.05)
+  ) {
     activity = 'Sleeping';
-    confidence = 0.95;
+    confidence = (sawBedRecently && bodyIsStraight) ? 0.94 : (torsoAlignment > 1.3 ? 0.90 : 0.82);
     signals = {
-      rule: 'sleeping_horizontal_on_bed',
-      body_horizontal: true,
-      bed_detected: true,
+      rule: 'sleeping_horizontal_posture',
       torso_alignment: torsoAlignment.toFixed(2),
-      hip_angle: hipAngle.toFixed(1),
-      movement: 'minimal',
+      hip_height: hipHeight.toFixed(3),
+      body_height: bodyHeight.toFixed(3),
+      velocity: velocity.toFixed(4),
+      bed_detected: sawBedRecently,
+      body_is_straight: bodyIsStraight,
     };
+    console.log('😴 SLEEPING DETECTED - Torso:', torsoAlignment.toFixed(2), 'Confidence:', confidence.toFixed(2));
+    return { activity, confidence, signals };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PRIORITY 3.5: SITTING/REST (HIGH PRIORITY - Override walking if legs flexed)
+  // If legs are bent, person is sitting — not walking, even with arm/leg movement
+  // ──────────────────────────────────────────────────────────────────────
+  const isSittingPosture = (leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.08;
+  const hasChair = objects && objects.some(obj => obj.class === 'chair');
+  
+  if (isSittingPosture) {
+    activity = 'Sitting / rest';
+    if (hasChair) {
+      confidence = 0.91;
+      signals = {
+        rule: 'sitting_posture_with_chair_priority_override',
+        sitting_posture: true,
+        chair_detected: true,
+        leg_angle_left: leftLegAngle.toFixed(1),
+        leg_angle_right: rightLegAngle.toFixed(1),
+      };
+    } else {
+      confidence = 0.82; // Increased from 0.73 to be more aggressive about sitting detection
+      signals = {
+        rule: 'sitting_posture_priority_override',
+        sitting_posture: true,
+        chair_detected: false,
+        leg_angle_left: leftLegAngle.toFixed(1),
+        leg_angle_right: rightLegAngle.toFixed(1),
+      };
+    }
+    console.log('🪑 SITTING/REST DETECTED (Priority Override) - Left Leg:', leftLegAngle.toFixed(1), 'Right Leg:', rightLegAngle.toFixed(1), 'Confidence:', confidence.toFixed(2));
     return { activity, confidence, signals };
   }
 
@@ -1059,36 +1119,6 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
       thresholds_met: (isMoving ? 1 : 0) + (isUprightPosture ? 1 : 0) + (hasLegAsymmetry || hasArmMovement ? 1 : 0),
     };
     console.log('🚶 WALKING DETECTED - Velocity:', velocity.toFixed(4), 'Leg Asymmetry:', legAsymmetry.toFixed(2), 'Confidence:', confidence.toFixed(2));
-    return { activity, confidence, signals };
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
-  // PRIORITY 5: SITTING/REST (Flexed legs + low velocity)
-  // ──────────────────────────────────────────────────────────────────────
-  const isSittingPosture = (leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.05;
-  const hasChair = objects && objects.some(obj => obj.class === 'chair');
-  
-  if (isSittingPosture) {
-    activity = 'Sitting / rest';
-    if (hasChair) {
-      confidence = 0.91;
-      signals = {
-        rule: 'sitting_posture_with_chair',
-        sitting_posture: true,
-        chair_detected: true,
-        leg_angle_left: leftLegAngle.toFixed(1),
-        leg_angle_right: rightLegAngle.toFixed(1),
-      };
-    } else {
-      confidence = 0.73;
-      signals = {
-        rule: 'sitting_posture_without_chair_visible',
-        sitting_posture: true,
-        chair_detected: false,
-        leg_angle_left: leftLegAngle.toFixed(1),
-        leg_angle_right: rightLegAngle.toFixed(1),
-      };
-    }
     return { activity, confidence, signals };
   }
 

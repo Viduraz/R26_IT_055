@@ -307,7 +307,7 @@ export default function ActivityDetectorMonitor({
   const confirmActivityForLogging = (detectionData) => {
     const confirmation = activityConfirmationRef.current;
     const now = Date.now();
-    const CONFIRMATION_TIME = 1000;
+    const CONFIRMATION_TIME = 3000; // 3 seconds of stable detection required
 
     if (confirmation.activityName !== detectionData.activity_name) {
       if (confirmation.timeoutId) clearTimeout(confirmation.timeoutId);
@@ -672,7 +672,7 @@ export default function ActivityDetectorMonitor({
                 </div>
                 <div>
                   <p className="text-green-400 font-bold text-sm">
-                    Activity Confirmed (1s stable)
+                    Activity Confirmed (3s stable)
                   </p>
                   <p className="text-white text-base font-semibold">
                     {confirmedActivity.name}
