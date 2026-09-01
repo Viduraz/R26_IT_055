@@ -448,12 +448,12 @@ function extractRFFeatures(keypoints) {
 
     // 10: arm_velocity (horizontal + vertical movement of hands)
     const armVelocity = Math.abs(leftWrist.x - rightWrist.x) +
-                        Math.abs(leftWrist.y - rightWrist.y);
+      Math.abs(leftWrist.y - rightWrist.y);
     features.push(armVelocity);
 
     // 11: leg_velocity (horizontal + vertical movement of ankles)
     const legVelocity = Math.abs(leftAnkle.x - rightAnkle.x) +
-                        Math.abs(leftAnkle.y - rightAnkle.y);
+      Math.abs(leftAnkle.y - rightAnkle.y);
     features.push(legVelocity);
 
     // 12: torso_lean (difference in shoulder width vs hip width)
@@ -687,8 +687,8 @@ function detectWalkingWithThresholds(features, poseSequence) {
   // THRESHOLD 3: UPRIGHT POSTURE
   // Check if body is standing straight (not sitting, not lying down)
   // ──────────────────────────────────────────────────────────────────────
-  const legsAreStraight = leftLegAngle > WALKING_LEGS_STRAIGHT_THRESHOLD && 
-                          rightLegAngle > WALKING_LEGS_STRAIGHT_THRESHOLD;
+  const legsAreStraight = leftLegAngle > WALKING_LEGS_STRAIGHT_THRESHOLD &&
+    rightLegAngle > WALKING_LEGS_STRAIGHT_THRESHOLD;
   const bodyIsTall = bodyHeight > WALKING_UPRIGHT_MIN_HEIGHT;
   const isUprightPosture = legsAreStraight && bodyIsTall;
   signals.threshold3_uprightPosture = isUprightPosture;
@@ -705,13 +705,13 @@ function detectWalkingWithThresholds(features, poseSequence) {
   if (isWalking) {
     // Base confidence when all thresholds met
     confidence = 0.75;
-    
+
     // Boost if strong signals
     if (armMovement > WALKING_ARM_VELOCITY_MIN * 2) confidence += 0.05;
     if (legAsymmetry > WALKING_LEG_ASYMMETRY_MIN * 2) confidence += 0.05;
     if (velocity > WALKING_BODY_VELOCITY_MIN) confidence += 0.08;
     if (legsAreStraight && bodyHeight > 0.65) confidence += 0.05;
-    
+
     // Cap at 0.95
     confidence = Math.min(confidence, 0.95);
   } else {
@@ -723,9 +723,9 @@ function detectWalkingWithThresholds(features, poseSequence) {
     confidence = partialScore > 0 ? partialScore * 0.4 : 0; // Scale down if not all thresholds
   }
 
-  signals.thresholds_met = (hasArmMovement ? 1 : 0) + 
-                           (hasLegMovement ? 1 : 0) + 
-                           (isUprightPosture ? 1 : 0);
+  signals.thresholds_met = (hasArmMovement ? 1 : 0) +
+    (hasLegMovement ? 1 : 0) +
+    (isUprightPosture ? 1 : 0);
 
   return {
     isWalking,
@@ -753,8 +753,8 @@ function detectEatingPattern(handToMouth, velocity, objects, features) {
   const isMovingSlowly = velocity < 0.10; // Slightly relaxed threshold
 
   // Track hand motion history with more detail
-  if (handMotionHistory.length === 0 || 
-      Math.abs(handToMouth - handMotionHistory[handMotionHistory.length - 1].handToMouth) > 0.01) {
+  if (handMotionHistory.length === 0 ||
+    Math.abs(handToMouth - handMotionHistory[handMotionHistory.length - 1].handToMouth) > 0.01) {
     handMotionHistory.push({
       handToMouth,
       timestamp: now,
@@ -773,10 +773,10 @@ function detectEatingPattern(handToMouth, velocity, objects, features) {
   let nearToFarTransitions = 0;
   let farToNearTransitions = 0;
   let wasNear = false;
-  
+
   for (const entry of handMotionHistory) {
     const isNear = entry.isNearMouth;
-    
+
     if (!wasNear && isNear) {
       // Transition: far → near
       farToNearTransitions++;
@@ -806,9 +806,9 @@ function detectEatingPattern(handToMouth, velocity, objects, features) {
   // 2. Hand currently near or recently near mouth
   // 3. Slow body movement (not walking)
   // 4. Food visible is a bonus but not strictly required
-  const isEating = eatingCycleCount >= EATING_MIN_CYCLES && 
-                   isHandNearMouth && 
-                   isMovingSlowly;
+  const isEating = eatingCycleCount >= EATING_MIN_CYCLES &&
+    isHandNearMouth &&
+    isMovingSlowly;
 
   // Boost confidence if food is detected
   const confidenceBoost = hasFoodOrBowl ? 0.1 : 0;
@@ -837,7 +837,7 @@ function detectEatingPattern(handToMouth, velocity, objects, features) {
  */
 function detectDrinkingPattern(handToMouth, velocity, objects) {
   // Cup detection is optional - we can detect drinking from hand motion alone
-  const hasCup = objects && objects.some(obj => 
+  const hasCup = objects && objects.some(obj =>
     ['cup', 'bottle', 'wine glass', 'glass'].includes(obj.class)
   );
 
@@ -857,7 +857,7 @@ function detectDrinkingPattern(handToMouth, velocity, objects) {
     // Gesture started: hand moved to mouth (with slow body movement = controlled motion)
     drinkingGestureActive = true;
     drinkingGestureStartTime = now;
-    
+
     const signals = {
       gesture_status: 'started',
       hand_to_mouth: handToMouth.toFixed(3),
@@ -1004,14 +1004,14 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     // Boost with food detection
     confidence += eatingPattern.confidenceBoost;
     confidence = Math.min(confidence, 0.97);
-    
+
     signals = {
       rule: 'eating_temporal_oscillation_pattern',
       oscillation_cycles: eatingPattern.cycleCount,
       hand_to_mouth: handToMouth.toFixed(3),
       food_visible: hasFoodOrBowl,
       detected_food_objects: objects.filter(o => [
-        'bowl', 'plate', 'spoon', 'fork', 'sandwich', 'pizza', 
+        'bowl', 'plate', 'spoon', 'fork', 'sandwich', 'pizza',
         'food', 'apple', 'banana', 'donut', 'cake'
       ].includes(o.class)).map(o => o.class),
       pattern_details: eatingPattern.signals,
@@ -1029,7 +1029,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     activity = 'Drinking';
     confidence = 0.88;
     if (hasCup) confidence = 0.93; // Boost if cup visible
-    
+
     signals = {
       rule: 'drinking_temporal_gesture_pattern',
       hand_to_mouth: handToMouth.toFixed(3),
@@ -1073,7 +1073,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   // ──────────────────────────────────────────────────────────────────────
   const isSittingPosture = (leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.08;
   const hasChair = objects && objects.some(obj => obj.class === 'chair');
-  
+
   if (isSittingPosture) {
     activity = 'Sitting / rest';
     if (hasChair) {
@@ -1107,7 +1107,7 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
   const isUprightPosture = bodyHeight > WALKING_UPRIGHT_MIN_HEIGHT;
   const hasLegAsymmetry = legAsymmetry >= WALKING_LEG_ASYMMETRY_MIN;
   const hasArmMovement = wristOscillation >= WALKING_ARM_VELOCITY_MIN;
-  
+
   // Walking requires movement + upright posture + either leg asymmetry or arm movement
   const canBeWalking = isMoving && isUprightPosture && (hasLegAsymmetry || hasArmMovement);
 
@@ -1118,12 +1118,12 @@ function classifyActivity(features, poseSequence, mouthVariance = 0, objects = [
     if (velocity > WALKING_VELOCITY_THRESHOLD * 2) confidence = 0.76;
     if (velocity > WALKING_VELOCITY_THRESHOLD * 3) confidence = 0.84;
     if (velocity > WALKING_VELOCITY_THRESHOLD * 4) confidence = 0.90;
-    
+
     // Boost with leg asymmetry (walking gait pattern)
     if (hasLegAsymmetry) confidence = Math.min(confidence + 0.08, 0.96);
     // Boost with arm swing
     if (hasArmMovement) confidence = Math.min(confidence + 0.06, 0.96);
-    
+
     signals = {
       rule: 'walking_velocity_with_leg_asymmetry_and_arm_swing',
       body_velocity: velocity.toFixed(4),
@@ -1252,7 +1252,7 @@ async function classifyActivityWithPriority(normalizedKeypoints, thresholdFeatur
     let confidence = 0.82 + (Math.min(eatingPattern.cycleCount, 5) * 0.02);
     confidence += eatingPattern.confidenceBoost;
     confidence = Math.min(confidence, 0.97);
-    
+
     const signals = {
       rule: 'eating_temporal_oscillation_pattern',
       oscillation_cycles: eatingPattern.cycleCount,
@@ -1272,7 +1272,7 @@ async function classifyActivityWithPriority(normalizedKeypoints, thresholdFeatur
     let confidence = 0.88;
     const hasCup = objects && objects.some(obj => ['cup', 'bottle', 'wine glass'].includes(obj.class));
     if (hasCup) confidence = 0.93;
-    
+
     const signals = {
       rule: 'drinking_temporal_gesture_pattern',
       hand_to_mouth: handToMouth.toFixed(3),
@@ -1313,10 +1313,18 @@ async function detectPoseLoop() {
     let poses = [];
 
     try {
-      // Guard #2: re-check right before each detector call. stopPoseDetection()
-      // can null these out while we're paused at an `await`, so a check made
-      // only once at the top of the function is not enough.
+      // Guard #2: ...
       if (!isRunning || !detector) return;
+
+      const isVideo = (videoElement instanceof HTMLVideoElement);
+      const isImage = (videoElement instanceof HTMLImageElement);
+      const isReady = isVideo ? videoElement.readyState >= 2 : (isImage ? (videoElement.complete && videoElement.naturalHeight > 0) : false);
+
+      if (!isReady) {
+        requestAnimationFrame(detectPoseLoop);
+        return;
+      }
+
       poses = await detector.estimatePoses(videoElement);
 
       if (!isRunning || !faceDetector) return;
@@ -1343,8 +1351,8 @@ async function detectPoseLoop() {
 
     if (poses && poses.length > 0) {
       const pose = poses[0];
-      const width = videoElement.videoWidth || 640;
-      const height = videoElement.videoHeight || 480;
+      const width = videoElement.videoWidth || videoElement.naturalWidth || 640;
+      const height = videoElement.videoHeight || videoElement.naturalHeight || 480;
       const normalizedKeypoints = pose.keypoints.map(p => ({
         ...p,
         x: p.x / width,
@@ -1437,14 +1445,21 @@ async function detectPoseLoop() {
         }
       }
 
-      if (canvasElement && videoElement.videoWidth > 0) {
-        if (canvasElement.width !== videoElement.videoWidth) {
-          canvasElement.width = videoElement.videoWidth;
-          canvasElement.height = videoElement.videoHeight;
+      if (canvasElement && (videoElement.videoWidth > 0 || videoElement.naturalWidth > 0)) {
+        const w = videoElement.videoWidth || videoElement.naturalWidth;
+        const h = videoElement.videoHeight || videoElement.naturalHeight;
+
+        if (canvasElement.width !== w) {
+          canvasElement.width = w;
+          canvasElement.height = h;
         }
 
         const ctx = canvasElement.getContext('2d');
         ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        if (videoElement instanceof HTMLImageElement) {
+          ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+        }
 
         let isAligned = false;
         if (smoothedActivity && expectedActivityRef && expectedActivityRef.current) {
@@ -1554,3 +1569,75 @@ export function stopPoseDetection() {
   currentAlignment = false;
   frameCounter = 0;
 }
+
+let ipCamImgElement = null;
+
+export function getIPCameraStreamUrl() {
+  const BACKEND_BASE = import.meta.env.VITE_API_URL || "http://localhost:8004";
+  return `${BACKEND_BASE}/api/monitoring/camera/stream`;
+}
+
+function _stopIPCamFramePump() {
+  if (ipCamImgElement) {
+    ipCamImgElement.src = "";
+    ipCamImgElement = null;
+  }
+}
+
+export async function initializePoseDetectionWithIPCamera(videoEl, canvasEl, expectedRef, callback, onAlignCallback) {
+  if (isRunning || isInitializing) return;
+
+  isInitializing = true;
+  canvasElement = canvasEl;
+  expectedActivityRef = expectedRef;
+  onActivityCallback = callback;
+  onAlignmentChangeCallback = onAlignCallback;
+  currentAlignment = false;
+
+  try {
+    if (!detector) {
+      detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.BlazePose,
+        { runtime: 'tfjs', modelType: 'lite', enableSmoothing: true }
+      );
+    }
+    if (!faceDetector) {
+      const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+      faceDetector = await faceLandmarksDetection.createDetector(faceModel, { runtime: 'tfjs', refineLandmarks: false });
+    }
+    if (!objectDetector) {
+      objectDetector = await cocoSsd.load();
+    }
+
+    if (USE_LSTM) {
+      loadLSTMModel().catch(err => console.warn('LSTM model not found', err.message));
+    }
+
+    isRunning = true;
+    isInitializing = false;
+    frameCounter = 0;
+
+    ipCamImgElement = new Image();
+    ipCamImgElement.crossOrigin = "anonymous";
+    ipCamImgElement.src = getIPCameraStreamUrl();
+    videoElement = ipCamImgElement; // Override original videoEl reference with img for detection loop
+
+    let started = false;
+    ipCamImgElement.onload = () => {
+      if (!started && isRunning) {
+        started = true;
+        detectPoseLoop();
+      }
+    };
+    setTimeout(() => {
+      if (!started && isRunning) { started = true; detectPoseLoop(); }
+    }, 2000);
+
+    return { detector };
+  } catch (error) {
+    isInitializing = false;
+    console.error('Failed to init IP cam:', error);
+    throw error;
+  }
+}
+
