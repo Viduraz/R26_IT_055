@@ -13,23 +13,31 @@ class Settings(BaseSettings):
     """Application-wide settings loaded from .env"""
 
     # ── MongoDB ───────────────────────────────────────────────────────────────
-    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_uri: str = (
+        "mongodb://vidura:Vidura2002@ac-6iflcbf-shard-00-00.fki0mc1.mongodb.net:27017,"
+        "ac-6iflcbf-shard-00-01.fki0mc1.mongodb.net:27017,"
+        "ac-6iflcbf-shard-00-02.fki0mc1.mongodb.net:27017/"
+        "?ssl=true&replicaSet=atlas-24gsz4-shard-0&authSource=admin&retryWrites=true&w=majority&appName=Cluster0"
+    )
     mongodb_db: str = Field(default="skeleton_id", validation_alias="mongodb_db_name")
-    use_local_db: bool = False
-    local_db_path: str = "./data/local_db.json"
 
     # ── Service Ports ─────────────────────────────────────────────────────────
+    # FIX (B-3): Changed from 8001–8004 (collide with face/tracking/anomaly/schedule)
+    # to 8011–8014. These are used only for internal URL construction inside the
+    # single-process gateway — none of these ports are actually bound/listened on.
     gateway_port: int = Field(default=8007, validation_alias="skeleton_backend_port")
-    video_service_port: int = 8001
-    pose_service_port: int = 8002
-    feature_service_port: int = 8003
-    identification_service_port: int = 8004
+    video_service_port: int = 8011
+    pose_service_port: int = 8012
+    feature_service_port: int = 8013
+    identification_service_port: int = 8014
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model_dir: str = "./models"
-    confidence_threshold: float = 0.50
+    confidence_threshold: float = 0.72
     svm_weight: float = 0.5
     lstm_weight: float = 0.5
+    identification_window_seconds: float = 0.0  # Immediate real-time identification
+    min_analysis_frames: int = 1               # Immediate commitment on frame 1
 
     # ── Video ─────────────────────────────────────────────────────────────────
     camera_index: int = 0
@@ -47,9 +55,9 @@ class Settings(BaseSettings):
     ip_camera_snapshot_url: str = ""
 
     # ── Pose Estimation ───────────────────────────────────────────────────────
-    mediapipe_model_complexity: int = 0  # 0=fastest, 1=balanced, 2=most accurate
-    min_detection_confidence: float = 0.3
-    min_tracking_confidence: float = 0.3
+    mediapipe_model_complexity: int = 1  # 0=fastest, 1=balanced, 2=most accurate
+    min_detection_confidence: float = 0.15
+    min_tracking_confidence: float = 0.15
 
     # ── LSTM ──────────────────────────────────────────────────────────────────
     lstm_sequence_length: int = 30
@@ -61,7 +69,7 @@ class Settings(BaseSettings):
 
     # ── Enrollment ────────────────────────────────────────────────────────────
     enrollment_duration_seconds: int = 60
-    min_enrollment_frames: int = 50
+    min_enrollment_frames: int = 150
 
     # ── Service URLs (computed) ───────────────────────────────────────────────
     @property
@@ -80,7 +88,11 @@ class Settings(BaseSettings):
     def identification_service_url(self) -> str:
         return f"http://localhost:{self.identification_service_port}"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": [".env", "../.env", "../../.env"],
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 # Singleton

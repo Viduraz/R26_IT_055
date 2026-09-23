@@ -15,7 +15,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const DEFAULT_WS_URL = import.meta.env.VITE_SKELETON_WS_URL || "ws://localhost:8007/ws/stream";
+const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+// If VITE_SKELETON_WS_URL is set, use it. Otherwise seamlessly figure it out. 
+// When using the reverse proxy / Cloudflare tunnel, it will go to window.location.host
+const DEFAULT_WS_URL = import.meta.env.VITE_SKELETON_WS_URL || `${protocol}//${window.location.host}/ws/stream`;
 const SEND_INTERVAL_MS = 150; // ~6-7 fps — enough for smooth tracking without overloading the pose model
 
 export function usePoseStream({ enabled, getSourceElement, onResult, retryToken = 0 }) {
@@ -105,7 +108,7 @@ export function usePoseStream({ enabled, getSourceElement, onResult, retryToken 
     ws.onerror = () => {
       setConnected(false);
       setConnectionError(
-        "Cannot reach the skeleton-identification detection service (ws://localhost:8007). Make sure it is running."
+        `Cannot reach the skeleton-identification detection service. Make sure it is running. (${DEFAULT_WS_URL})`
       );
     };
 

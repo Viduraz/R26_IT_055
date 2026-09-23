@@ -46,3 +46,11 @@ export const updateUserStatus = async (token, userId, status) => {
   return res.data;
 };
 
+export const deleteUser = async (token, userId) => {
+  const res = await axios.delete(
+    `${DASHBOARD_BASE}/admin/users/${userId}`,
+    authHeader(token)
+  );
+  return res.data;
+};
+

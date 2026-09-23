@@ -39,14 +39,27 @@ async def update_person_zone_status(
     """Called every frame for each detected person to track zone occupancy and depth."""
     now = time.time()
     
-    centroid = (bbox["x"] + bbox["w"] / 2, bbox["y"] + bbox["h"] / 2)
+    feet = (bbox["x"] + bbox["w"] / 2, bbox["y"] + bbox["h"])
     area = bbox["w"] * bbox["h"]
     bottom_y = bbox["y"] + bbox["h"]
 
-    # Determine which zone person is currently in
-    current_zone = None
+    # Estimate depth from camera (depth = 850 / bbox_height)
+    person_w = bbox.get("w", 0)
+    person_h = bbox.get("h", 100)
+    aspect_ratio = (person_w / person_h) if person_h > 0 else 0.0
+    is_sitting = aspect_ratio >= 0.55
+
+    # Correct height for sitting posture to avoid artificial depth inflation
+    effective_h = max(person_h, person_w / 0.45) if is_sitting else person_h
+    distance_meters = 850.0 / effective_h if effective_h > 0 else 0.0
+
     for zone in zones:
-        if zone.get("is_active") and _point_in_polygon(centroid, zone.get("polygon", [])):
+        if zone.get("is_active") and _point_in_polygon(feet, zone.get("polygon", [])):
+            zone_dist = zone.get("camera_distance", 4.0)
+            if zone.get("zone_type") == "restricted":
+                # Persons sitting in chairs or in front of the zone should not trigger restricted zone entry alerts
+                if is_sitting or distance_meters < zone_dist - 0.5:
+                    continue
             current_zone = zone["name"]
             break
 
@@ -97,7 +110,7 @@ async def _trigger_exit_alert(person_id: str, identity: str, zone_name: str) -> 
         "last_zone": zone_name,
         "zone_name": zone_name,
         "breach_type": "exit",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "message": f"{identity if identity != 'Unknown' else person_id} has left the {zone_name} area",
         "resolved": False,
         "severity": "high",
@@ -166,7 +179,7 @@ async def get_exit_alerts(limit: int = 20) -> list:
 
 # ── Original CRUD / Breach / Alert functions (unchanged) ──────────
 
-async def create_zone(name: str, zone_type: str, polygon: list, color: str = "#00D4FF") -> dict:
+async def create_zone(name: str, zone_type: str, polygon: list, color: str = "#00D4FF", camera_distance: float = 4.0) -> dict:
     """Create a new geofence zone."""
     zone = {
         "zone_id": str(uuid.uuid4()),
@@ -174,6 +187,7 @@ async def create_zone(name: str, zone_type: str, polygon: list, color: str = "#0
         "zone_type": zone_type,
         "polygon": polygon,
         "color": color,
+        "camera_distance": camera_distance,
         "is_active": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -258,6 +272,18 @@ async def check_breach(person_id: str, x: float, y: float) -> dict:
         if db is None:
             return {"person_id": person_id, "breaches": [], "is_breached": False}
 
+        # Look up the tracked person to get their height and posture for depth estimation
+        from app.ml_services.yolo_tracker import tracker_engine
+        person_info = tracker_engine.bytetrack_tracked.get(person_id) or tracker_engine.deepsort_tracked.get(person_id)
+        
+        person_w = person_info.bbox.get("w", 0) if (person_info and person_info.bbox) else 0
+        person_h = person_info.bbox.get("h", 100) if (person_info and person_info.bbox) else 100
+        aspect_ratio = (person_w / person_h) if person_h > 0 else 0.0
+        is_sitting = getattr(person_info, "is_sitting", aspect_ratio >= 0.55) if person_info else (aspect_ratio >= 0.55)
+
+        effective_h = max(person_h, person_w / 0.45) if is_sitting else person_h
+        distance_meters = 850.0 / effective_h if effective_h > 0 else 0.0
+
         point = Point(x, y)
         cursor = db["geofence_zones"].find({"is_active": True}, {"_id": 0})
         zones = await cursor.to_list(length=200)
@@ -267,6 +293,12 @@ async def check_breach(person_id: str, x: float, y: float) -> dict:
             poly_coords = zone.get("polygon", [])
             if len(poly_coords) < 3:
                 continue
+
+            # Verify depth & posture for restricted zones to prevent false positives when person is sitting or in front
+            zone_dist = zone.get("camera_distance", 4.0)
+            if zone["zone_type"] == "restricted":
+                if is_sitting or distance_meters < zone_dist - 0.5:
+                    continue
 
             polygon = Polygon(poly_coords)
             if polygon.contains(point):
@@ -280,7 +312,7 @@ async def check_breach(person_id: str, x: float, y: float) -> dict:
                     "zone_id": zone["zone_id"],
                     "zone_name": zone["name"],
                     "breach_type": breach_type,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "resolved": False,
                 }
                 try:
@@ -301,8 +333,8 @@ async def check_breach(person_id: str, x: float, y: float) -> dict:
         return {"person_id": person_id, "breaches": [], "is_breached": False}
 
 
-async def get_alerts(resolved: bool = None) -> list:
-    """Retrieve geofence alerts, optionally filtered by resolved status."""
+async def get_alerts(resolved: bool = None, since: str = None) -> list:
+    """Retrieve geofence alerts, optionally filtered by resolved status and since timestamp."""
     try:
         db = get_database()
         if db is None:
@@ -310,6 +342,8 @@ async def get_alerts(resolved: bool = None) -> list:
         query = {}
         if resolved is not None:
             query["resolved"] = resolved
+        if since is not None:
+            query["timestamp"] = {"$gte": since}
         cursor = db["geofence_alerts"].find(query, {"_id": 0}).sort("timestamp", -1).limit(50)
         alerts = await cursor.to_list(length=50)
         return alerts
@@ -335,3 +369,17 @@ async def resolve_alert(alert_id: str) -> dict:
     except Exception as e:
         print(f"[WARN] DB error in resolve_alert: {e}")
         return None
+
+
+async def clear_alerts() -> dict:
+    """Clear all geofence alerts from the database."""
+    try:
+        db = get_database()
+        if db is None:
+            return {"status": "cleared", "deleted_count": 0}
+        result = await db["geofence_alerts"].delete_many({})
+        return {"status": "cleared", "deleted_count": result.deleted_count}
+    except Exception as e:
+        print(f"[WARN] DB error in clear_alerts: {e}")
+        return {"status": "error", "message": str(e), "deleted_count": 0}
+

@@ -123,16 +123,10 @@ def _delete_logs_for_schedule(base_schedule_id: str):
 # end_time from the owner's input will then be preserved untouched.
 TESTING_MODE = False
 
-# FIX: was DURATION_MINUTES=3.0 / START_OFFSET_MINUTES=2.0 — the entire
-# schedule (across all activities) closed within ~9-11 minutes of creation,
-# which is barely enough time to read the dashboard, let alone click "Start
-# Live Tracking" and let the camera actually observe each activity. The
-# background missed-sweep isn't buggy — it correctly marks an activity
-# Missed once its window closes with no detection, REGARDLESS of whether the
-# camera was ever turned on. Widened so each activity gets a realistic
-# window to actually demo detection in, not just to prove the sweep works.
+# Keep demo activities short so each one can be demonstrated quickly while
+# still leaving the early, late, and missed status transitions observable.
 TIMING_CONFIG = {
-    "DURATION_MINUTES": 10.0,
+    "DURATION_MINUTES": 1.0,
     "START_OFFSET_MINUTES": 5.0,
 }
 
@@ -190,6 +184,32 @@ def _is_finished_today(schedule: dict) -> bool:
     now = _local_now()
     last_end_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
     return now > last_end_dt
+
+
+def _is_fully_completed(schedule: dict) -> bool:
+    """Return True when every activity in a routine has a final log status."""
+    activities = schedule.get("activities") or []
+    if not activities:
+        return False
+
+    schedule_id = schedule.get("schedule_id")
+    logs = list(_activity_logs().find({}))
+    final_statuses = {"done", "late", "missed", "caregiver_missing"}
+    completed_names = {
+        log.get("activity_name")
+        for log in logs
+        if (
+            log.get("schedule_id") == schedule_id
+            or (log.get("schedule_id") or "").startswith(f"{schedule_id}::")
+        )
+        and log.get("status") in final_statuses
+    }
+    activity_names = {
+        activity.get("activity_name")
+        for activity in activities
+        if isinstance(activity, dict) and activity.get("activity_name")
+    }
+    return bool(activity_names) and activity_names.issubset(completed_names)
 
 
 def _normalize_schedule_activities(activities: list, anchor: datetime | None = None) -> list:
@@ -316,14 +336,55 @@ class ScheduleService:
                 ]
         return schedules
 
-    async def update_schedule(self, schedule_id: str, data: dict) -> dict:
+    def update_schedule(self, schedule_id: str, data: dict) -> dict:
         update_data = {k: v for k, v in data.items() if v is not None}
-        update_data["updated_at"] = datetime.utcnow()
+        update_data["updated_at"] = _local_now()
+        existing = _schedules().find_one({"schedule_id": schedule_id})
+        if existing and "activities" in data:
+            update_data["activities"] = _normalize_schedule_activities(
+                data["activities"]
+            )
+            new_indexes = {
+                activity.get("activity_name"): index
+                for index, activity in enumerate(update_data["activities"])
+                if isinstance(activity, dict) and activity.get("activity_name")
+            }
+            related_logs = list(_activity_logs().find({}))
+            for log in related_logs:
+                log_schedule_id = log.get("schedule_id") or ""
+                if not (
+                    log_schedule_id == schedule_id
+                    or log_schedule_id.startswith(f"{schedule_id}::")
+                ):
+                    continue
+                activity_name = log.get("activity_name")
+                if activity_name not in new_indexes:
+                    _delete_many(_activity_logs(), {"schedule_id": log_schedule_id})
+                else:
+                    _activity_logs().update_one(
+                        {"schedule_id": log_schedule_id},
+                        {"$set": {
+                            "schedule_id": f"{schedule_id}::{new_indexes[activity_name]}"
+                        }},
+                    )
         res = _schedules().update_one(
             {"schedule_id": schedule_id},
             {"$set": update_data},
         )
-        return {"success": res.matched_count > 0}
+        return {"success": res.matched_count > 0, "schedule_id": schedule_id}
+
+    def finalize_if_complete(self, schedule_id: str) -> bool:
+        """Archive and remove a schedule once every activity is final."""
+        schedule = _schedules().find_one({"schedule_id": schedule_id})
+        if not schedule or not _is_fully_completed(schedule):
+            return False
+
+        owner = schedule.get("user_id") or schedule.get("patient_id")
+        self._archive_schedule_as_report(owner, schedule)
+        _delete_logs_for_schedule(schedule_id)
+        _delete_many(_notifications(), {"user_id": owner})
+        _delete_many(_schedules(), {"schedule_id": schedule_id})
+        return True
 
     # ====================== ACTIVITY LOGS (read-only here) ======================
     def get_activity_logs(self, user_id: str = None, limit: int = 100):
@@ -412,13 +473,74 @@ class ScheduleService:
                 stats[status] += 1
         return {"stats": stats, "logs": logs}
 
+    def get_current_day_report(self, user_id: str, date: str):
+        """Build a report for today's active schedule before it is archived."""
+        if date != _local_now().strftime("%Y-%m-%d"):
+            return None
+
+        schedules = list(_schedules().find({}))
+        schedule = next(
+            (
+                item for item in schedules
+                if (item.get("user_id") == user_id or item.get("patient_id") == user_id)
+            ),
+            None,
+        )
+        if not schedule:
+            return None
+
+        schedule_id = schedule.get("schedule_id")
+        logs = [
+            log for log in _activity_logs().find({})
+            if log.get("date") == date
+            and (
+                log.get("schedule_id") == schedule_id
+                or (log.get("schedule_id") or "").startswith(f"{schedule_id}::")
+            )
+        ]
+        activities = []
+        counts = {"done": 0, "late": 0, "missed": 0, "caregiver_missing": 0, "pending": 0, "total": 0}
+        for activity in schedule.get("activities") or []:
+            name = activity.get("activity_name", "")
+            activity_log = next((log for log in logs if log.get("activity_name") == name), None)
+            status = activity_log.get("status") if activity_log else "pending"
+            counts[status] = counts.get(status, 0) + 1
+            counts["total"] += 1
+            activities.append({
+                "activity_name": name,
+                "start_time": activity.get("start_time"),
+                "end_time": activity.get("end_time"),
+                "status": status,
+                "detected_at": activity_log.get("detected_at") if activity_log else None,
+            })
+
+        return {
+            "report_id": None,
+            "user_id": user_id,
+            "date": date,
+            "schedule_id": schedule_id,
+            "activities": activities,
+            "counts": counts,
+            "live": True,
+        }
+
     # ====================== DAILY REPORT ARCHIVING ======================
     def _archive_schedule_as_report(self, user_id: str, old_schedule: dict):
         """Snapshot an ending schedule + logs into daily_archives BEFORE it
         gets deleted. Safe to call even with zero logs — counts will just
         come out all zero, and we still record that the day happened.
         """
-        logs = self.get_activity_logs(user_id)
+        base_schedule_id = old_schedule.get("schedule_id")
+        all_logs = list(_activity_logs().find({}))
+        logs = [
+            log for log in all_logs
+            if log.get("schedule_id") == base_schedule_id
+            or (log.get("schedule_id") or "").startswith(f"{base_schedule_id}::")
+        ]
+        logs.sort(
+            key=lambda log: log.get("created_at") or log.get("detected_at") or "",
+            reverse=True,
+        )
         counts = {
             "done": 0,
             "late": 0,
@@ -438,7 +560,7 @@ class ScheduleService:
             "report_id": str(uuid.uuid4()),
             "user_id": user_id,
             "date": report_date,
-            "schedule_id": old_schedule.get("schedule_id"),
+            "schedule_id": base_schedule_id,
             "activities": logs,
             "counts": counts,
             "created_at": _local_now(),
@@ -463,7 +585,9 @@ class ScheduleService:
         for sched in all_schedules:
             sched_date = _date_of(sched)
             is_past_day = bool(sched_date) and sched_date != today_str
-            is_finished_today = (sched_date == today_str) and _is_finished_today(sched)
+            is_finished_today = (sched_date == today_str) and (
+                _is_finished_today(sched) or _is_fully_completed(sched)
+            )
 
             if is_past_day or is_finished_today:
                 owner = sched.get("user_id") or user_id

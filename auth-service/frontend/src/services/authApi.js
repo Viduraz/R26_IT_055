@@ -3,6 +3,8 @@ import axios from "axios";
 
 const AUTH_BASE = import.meta.env.VITE_AUTH_BACKEND_URL || "http://localhost:8000/api/auth";
 
+export const getAuthBaseUrl = () => AUTH_BASE;
+
 export const loginUser = async (email, password) => {
   const res = await axios.post(`${AUTH_BASE}/login`, { email, password });
   return res.data;

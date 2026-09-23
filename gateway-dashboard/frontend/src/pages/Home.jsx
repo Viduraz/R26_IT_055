@@ -44,6 +44,13 @@ const SHORTCUT_CARDS = [
     href: `${BASE}/marketplace/`,
     badge: "New",
   },
+  {
+    title: "Skeleton Identification",
+    description: "Monitor real-time skeleton tracking and biometric identification status.",
+    icon: "🦴",
+    href: `${BASE}/skeleton/`,
+    badge: "Live",
+  },
 ];
 
 const Home = () => {

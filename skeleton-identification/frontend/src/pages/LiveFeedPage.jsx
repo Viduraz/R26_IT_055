@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { notifyUnknownPerson } from '../services/api';
+import { generateIncidentReport } from '../utils/reportGenerator';
 
 // Webcam-only: continuously record in short, self-contained segments so an
 // unknown-person alert can attach a real few-seconds-around-the-moment clip
@@ -18,7 +19,7 @@ const VIDEO_SEGMENT_MS = 6000;
 // backend's per-track tracker) before treating it as worth a real alert —
 // long enough for a one-off misread of an actually-known person to
 // self-correct, short enough that a genuine stranger still gets flagged fast.
-const ALERT_MIN_UNKNOWN_MS = 3000;
+const ALERT_MIN_UNKNOWN_MS = 1000;
 
 export default function LiveFeedPage({ onFpsChange }) {
   const { setSystemOnline, setWsConnected, setActiveTab } = useApp();
@@ -30,6 +31,7 @@ export default function LiveFeedPage({ onFpsChange }) {
   const [showIpcamBar, setShowIpcamBar] = useState(false);
   const [rtspUrl, setRtspUrl] = useState('rtsp://admin:admin@169.254.110.15:554/stream1');
   const [ipcamStatus, setIpcamStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'error'
+  const [isExpandedView, setIsExpandedView] = useState(false);
 
   // Everyone currently detected in frame — a lone person is just a list of
   // length 1, so this is the only identification state the page needs.
@@ -61,8 +63,6 @@ export default function LiveFeedPage({ onFpsChange }) {
   const canvasRef = useRef(null);
   const ipcamImgRef = useRef(null);
 
-  // WebSocket stream state (mutable, for the hook) — always multi-person: a
-  // single detected person is just the degenerate case of that same result.
   const streamStateRef = useRef({
     isStreaming: false,
     isEnrolling: false,
@@ -71,7 +71,7 @@ export default function LiveFeedPage({ onFpsChange }) {
     usePhoneCamera: false,
     phoneImage: null,
     phoneCameraUrl: '',
-    detectMode: 'multi',
+    detectMode: 'single',
   });
 
   const captureSnapshot = useCallback(() => {
@@ -180,7 +180,27 @@ export default function LiveFeedPage({ onFpsChange }) {
   }, []);
 
   const handleResult = useCallback((data) => {
-    const persons = data.persons || [];
+    let persons = [];
+    if (data.detected) {
+      if (data.persons && data.persons.length > 0) {
+        persons = [data.persons[0]];
+      } else {
+        persons = [{
+          bbox: data.bbox || [0.05, 0.05, 0.95, 0.95],
+          name: data.name || (data.identification && data.identification.user) || 'Unknown',
+          role: data.role || 'Caregiver',
+          confidence: data.confidence ?? 0,
+          is_known: data.is_known ?? false,
+          state: data.state || 'analyzing',
+          analysis_progress: data.analysis_progress,
+          time_remaining: data.time_remaining,
+          keypoints: data.keypoints,
+          method: data.method,
+          track_id: 1,
+          unknown_ms: data.unknown_ms || 0,
+        }];
+      }
+    }
     setPeople(persons);
     setPipelineStats({
       latency: `${data.latency_ms ?? '--'} ms`,
@@ -189,29 +209,22 @@ export default function LiveFeedPage({ onFpsChange }) {
     });
 
     const now = Date.now();
-    // Grace period after starting the camera, so walking into frame while
-    // still getting positioned doesn't immediately trigger an alert.
-    if (now - streamStartTimeRef.current <= 5000) return;
+    if (now - streamStartTimeRef.current <= 1000) return;
 
-    // Each track_id is assigned once by the backend's identity tracker and
-    // never reused for a different physical person (see stream.py's
-    // _stabilize_tracks) — so "have we alerted this track_id before" is a
-    // precise, no-flicker way to fire exactly once per newly-seen unknown
-    // person, using the same stability system the boxes/names already rely on.
-    // On top of that, only alert once a track has been continuously unknown
-    // for ALERT_MIN_UNKNOWN_MS — a single bad-angle misread of someone
-    // actually known gets a few seconds to self-correct before it can page
-    // anyone, while a real stranger is still flagged within a few seconds.
-    const unknownPersons = persons.filter((p) => !p.is_known && (p.unknown_ms || 0) >= ALERT_MIN_UNKNOWN_MS);
+    // Only fire alerts for persons whose 5-7s evaluation window has completed and confirmed as Unknown Person.
+    // Persons currently in 'analyzing' state are actively evaluating biometrics and should not be alerted prematurely.
+    const unknownPersons = persons.filter((p) => {
+      const isAnalyzing = p.state === 'analyzing' || (typeof p.name === 'string' && p.name.startsWith('Analyzing'));
+      if (isAnalyzing) return false;
+      const isUnregistered = (!p.is_known || p.name === 'Unknown' || p.name === 'Unknown Person' || p.state === 'unknown');
+      return isUnregistered && ((p.unknown_ms || 0) >= 1200 || p.state === 'unknown');
+    });
+
     unknownPersons.forEach((p) => {
-      const trackKey = p.track_id ?? `${p.bbox[0].toFixed(2)},${p.bbox[1].toFixed(2)}`;
+      const trackKey = p.session_id ? `session-${p.session_id}` : (p.track_id ?? `${p.bbox[0].toFixed(2)},${p.bbox[1].toFixed(2)}`);
       if (alertedTrackIdsRef.current.has(trackKey)) return;
       alertedTrackIdsRef.current.add(trackKey);
 
-      // Prefer the raw frame the backend already decoded for IP camera mode —
-      // drawing from the <img> element right after setting its src risks a
-      // decode race (the image may not have finished loading yet); the raw
-      // base64 the server sent has no such race.
       const snapshotUrl = data.camera_frame
         ? `data:image/jpeg;base64,${data.camera_frame}`
         : captureSnapshot();
@@ -223,7 +236,7 @@ export default function LiveFeedPage({ onFpsChange }) {
       const newAlert = {
         id: alertId,
         snapshot: snapshotUrl,
-        video: null, // fills in a few seconds later, once the in-progress recording segment completes
+        video: null,
         time: timeLabel,
         source,
         confidence: confPct,
@@ -233,6 +246,7 @@ export default function LiveFeedPage({ onFpsChange }) {
 
       setActiveAlert(newAlert);
       setAlerts((prev) => [newAlert, ...prev]);
+      toast('⚠️ Unregistered Person Detected!', 'error');
 
       if (source === 'Webcam') {
         captureVideoClip().then((clip) => {
@@ -425,6 +439,17 @@ export default function LiveFeedPage({ onFpsChange }) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsExpandedView(!isExpandedView)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all border flex items-center gap-1.5
+              ${isExpandedView
+                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                : 'bg-dark-600 text-slate-400 border-white/10 hover:border-white/20'
+              }`}
+            title="Expand camera view for multi-person display"
+          >
+            {isExpandedView ? '🗗 Standard View' : '⛶ Expand Video Screen'}
+          </button>
           {!isStreaming ? (
             <button onClick={startCamera} className="btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -534,10 +559,10 @@ export default function LiveFeedPage({ onFpsChange }) {
       )}
 
       {/* Main Grid: Video + Info Panel */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div className={`grid grid-cols-1 ${isExpandedView ? 'gap-6' : 'xl:grid-cols-3 gap-6'}`}>
         {/* Video Feed */}
-        <div className="xl:col-span-2 space-y-6">
-          <div className="glass-card relative overflow-hidden" style={{ paddingBottom: '56.25%' }}>
+        <div className={`${isExpandedView ? 'w-full' : 'xl:col-span-2'} space-y-6`}>
+          <div className="glass-card relative overflow-hidden" style={{ paddingBottom: isExpandedView ? '48%' : '56.25%' }}>
             <div className="absolute inset-0">
               {/* Webcam video */}
               <video
@@ -569,19 +594,38 @@ export default function LiveFeedPage({ onFpsChange }) {
                 </div>
               )}
 
-              {/* People-count badge */}
+              {/* Single Person Identification Status Badge */}
               {isStreaming && (
                 <div className="absolute bottom-4 left-4 animate-fade-in">
-                  <div className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-500/40 backdrop-blur-sm">
-                    <div className="text-sm font-bold text-violet-200">
-                      {people.length === 0
-                        ? 'No one detected'
-                        : `${people.length} ${people.length === 1 ? 'person' : 'people'} detected`}
-                    </div>
-                    {people.length > 0 && (
-                      <div className="text-xs text-violet-300/70">
-                        {people.filter(p => p.is_known).length} recognized
-                      </div>
+                  <div className="px-3 py-2 rounded-xl bg-dark-900/85 border border-white/10 backdrop-blur-md shadow-lg flex items-center gap-3">
+                    {people.length === 0 ? (
+                      <>
+                        <div className="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse" />
+                        <div className="text-xs font-semibold text-slate-300">
+                          No person detected
+                        </div>
+                      </>
+                    ) : (
+                      (() => {
+                        const p = people[0];
+                        const isAmbiguous = p.state === 'ambiguous' || p.status === 'AMBIGUOUS';
+                        const isKnown = p.is_known && p.name !== 'Unknown' && p.name !== 'Unknown Person' && !isAmbiguous;
+                        const confPct = Math.round((p.confidence || 0) * 100);
+
+                        return (
+                          <>
+                            <div className={`w-2.5 h-2.5 rounded-full ${isAmbiguous ? 'bg-amber-400 animate-pulse' : isKnown ? 'bg-emerald-400' : 'bg-rose-500'}`} />
+                            <div>
+                              <div className={`text-xs font-bold ${isAmbiguous ? 'text-amber-300' : isKnown ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                {isAmbiguous ? '⏳ Ambiguous: Movement Needed' : isKnown ? `✓ ${p.name}` : '⚠️ Unknown Person'}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {isAmbiguous ? `${confPct}% (Close Match)` : `${confPct}% Biometric Confidence`}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()
                     )}
                   </div>
                 </div>
@@ -661,6 +705,16 @@ export default function LiveFeedPage({ onFpsChange }) {
 
                       <div className="flex gap-1.5 mt-2">
                         <button
+                          onClick={() => generateIncidentReport(alert)}
+                          className="px-2 py-1 rounded text-[10px] font-medium bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 transition-all flex-1 text-center flex items-center justify-center gap-1"
+                          title="Export formal PDF Evidence Report"
+                        >
+                          <svg className="w-3 h-3 text-rose-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          PDF Report
+                        </button>
+                        <button
                           onClick={() => setActiveTab('enroll')}
                           className="px-2 py-1 rounded text-[10px] font-medium bg-cyan-500/15 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/25 transition-all flex-1 text-center"
                         >
@@ -682,14 +736,19 @@ export default function LiveFeedPage({ onFpsChange }) {
         </div>
 
         {/* Info Panel */}
-        <div className="space-y-4">
-          {/* Detected People Card */}
+        <div className={`space-y-4 ${isExpandedView ? 'w-full' : ''}`}>
+          {/* Detected Person Card */}
           <div className="glass-card p-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Detected People
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                <span>Person Biometric Status</span>
+                {people.length > 0 && (
+                  <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30 font-normal">
+                    {people[0]?.state === 'analyzing' ? 'Analyzing' : people[0]?.is_known ? 'Identified' : 'Unknown'}
+                  </span>
+                )}
               </h3>
-              <span className="text-xs font-mono text-violet-300">{people.length}</span>
+              <span className="text-xs font-mono text-cyan-300 font-bold">{people.length > 0 ? '1 Subject' : '0'}</span>
             </div>
 
             {people.length === 0 ? (
@@ -697,40 +756,68 @@ export default function LiveFeedPage({ onFpsChange }) {
                 {isStreaming ? 'Scanning for people…' : 'Start the camera to begin.'}
               </p>
             ) : (
-              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+              <div className={`space-y-3 max-h-[420px] overflow-y-auto pr-1 ${isExpandedView ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 space-y-0' : ''}`}>
                 {people.map((person, idx) => {
+                  const isAmbiguous = person.state === 'ambiguous' || person.status === 'AMBIGUOUS';
+                  const isKnown = person.is_known && person.name && person.name !== 'Unknown' && person.name !== 'Unknown Person' && !isAmbiguous;
                   const pConf = Math.round((person.confidence || 0) * 100);
-                  const barGradient = !person.is_known
-                    ? 'from-rose-500 to-rose-400'
-                    : pConf >= 85
-                      ? 'from-emerald-500 to-emerald-400'
-                      : 'from-amber-500 to-amber-400';
-                  const pTextColor = !person.is_known
-                    ? 'text-rose-300'
-                    : pConf >= 85
-                      ? 'text-emerald-300'
-                      : 'text-amber-300';
+
+                  const cardBorder = isAmbiguous
+                    ? 'border-amber-500/30 bg-amber-950/20'
+                    : isKnown
+                      ? 'border-emerald-500/30 bg-emerald-950/20'
+                      : 'border-rose-500/30 bg-rose-950/20';
+
+                  const pTextColor = isAmbiguous
+                    ? 'text-amber-400 font-semibold'
+                    : isKnown
+                      ? 'text-emerald-400 font-bold'
+                      : 'text-rose-400 font-semibold';
+
+                  const barGradient = isAmbiguous
+                    ? 'from-amber-400 to-yellow-500'
+                    : isKnown
+                      ? 'from-emerald-400 to-teal-500'
+                      : 'from-rose-500 to-amber-500';
+
+                  const barWidth = Math.max(pConf, 10);
+
                   return (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-baseline text-xs">
-                        <span className={`font-medium truncate ${pTextColor}`}>
-                          {person.is_known ? person.name : `Person ${idx + 1}`}
-                          {person.is_known && (person.role || person.method) && (
-                            <span className="text-[10px] text-slate-500 font-normal ml-1.5">
-                              {person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : ''}
-                              {person.role && person.method ? ' · ' : ''}
-                              {person.method ? `via ${person.method.replace('+', ' + ')}` : ''}
-                            </span>
-                          )}
-                        </span>
-                        <span className={`font-mono shrink-0 ${pTextColor}`}>
-                          {person.is_known ? `${pConf}%` : 'unknown'}
+                    <div key={idx} className={`p-3 rounded-xl border space-y-2 shadow-sm transition-all ${cardBorder}`}>
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="min-w-0">
+                          <div className={`font-semibold text-xs truncate ${pTextColor}`}>
+                            {isAmbiguous ? (
+                              <span>⏳ Ambiguous ({person.name}?)</span>
+                            ) : isKnown ? (
+                              <span>✓ {person.name}</span>
+                            ) : (
+                              <span>⚠️ Unknown Person</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                            {isAmbiguous ? (
+                              <span className="text-amber-300/80 font-mono">
+                                Awaiting movement verification
+                              </span>
+                            ) : isKnown ? (
+                              <>
+                                {person.role ? person.role.charAt(0).toUpperCase() + person.role.slice(1) : 'Caregiver'}
+                                {person.method ? ` · via ${person.method.replace(/\+/g, ' + ')}` : ''}
+                              </>
+                            ) : (
+                              'Unregistered Person / Visitor'
+                            )}
+                          </div>
+                        </div>
+                        <span className={`font-mono font-bold shrink-0 text-sm ${pTextColor}`}>
+                          {pConf}%
                         </span>
                       </div>
                       <div className="confidence-bar-track">
                         <div
                           className={`confidence-bar-fill bg-gradient-to-r ${barGradient}`}
-                          style={{ width: `${pConf}%` }}
+                          style={{ width: `${barWidth}%` }}
                         />
                       </div>
                     </div>
@@ -740,8 +827,7 @@ export default function LiveFeedPage({ onFpsChange }) {
             )}
 
             <p className="text-[11px] text-slate-500 leading-relaxed mt-3 pt-2.5 border-t border-white/5">
-              Every detected person is identified independently each frame — skeletal proportions fused with
-              face verification when a face is visible. Immediate, no warm-up buffer.
+              Instant frame-by-frame biometric identification matching scale-invariant skeletal proportions with temporal motion verification.
             </p>
           </div>
 

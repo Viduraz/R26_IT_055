@@ -26,6 +26,10 @@ archive (see schedule_service.py's _archive_schedule_as_report /
 get_report_by_date / get_reports_for_week) so the frontend Reports page can
 show Done/Late/Missed counts for any past day or a 7-day week, not just the
 currently-active schedule.
+
+FIX (this revision) — _shape_detection_response() no longer returns the
+literal string "Unexpected" for a no-match detection event. See that
+function's docstring below for the full reasoning.
 """
 from fastapi import HTTPException
 from app.services.schedule_service import ScheduleService
@@ -59,13 +63,27 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
     MonitoringService.process_detection_event() using each activity's own
     end_time, not LATE_THRESHOLD_MINUTES. This field is kept only so any
     existing frontend code reading response.data.deadline doesn't break.
+
+    FIX: this used to return "status": "Unexpected" whenever
+    process_detection_event() found no matching schedule entry (empty
+    results, or a raw status somehow outside STATUS_TO_DISPLAY's keys).
+    That's not a real status in the app's vocabulary (Early/Completed/
+    Late/Missed) — it was only ever meant as a "no backend match, let the
+    frontend decide" signal. Returning it as a literal string meant that if
+    the frontend's own fallback logic had any gap, "Unexpected" could leak
+    straight onto the screen — which is exactly what happened. Now this
+    returns "status": None instead — falsy, so
+    ActivityDetectorMonitor.jsx's
+    `if (backendStatus && FINAL_STATUSES.includes(backendStatus))` check
+    cleanly falls through to its own locally-computed Early/Completed/Late
+    every time, with no ambiguous placeholder string in between.
     """
     results = monitoring_result.get("results", [])
 
     if not results:
         return {
             **monitoring_result,
-            "status": "Unexpected",
+            "status": None,
             "adaptive_grace_minutes": EARLY_GRACE_MINUTES,
             "delay_minutes": LATE_THRESHOLD_MINUTES,
             "deadline": None,
@@ -73,7 +91,7 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
 
     match = results[0]
     lower_status = match.get("status", "")
-    display_status = STATUS_TO_DISPLAY.get(lower_status, "Unexpected")
+    display_status = STATUS_TO_DISPLAY.get(lower_status)  # None if truly unmapped
 
     deadline_iso = None
     end_time = match.get("end_time")
@@ -93,6 +111,9 @@ def _shape_detection_response(monitoring_result: dict) -> dict:
 
 def get_schedule(user: dict):
     """Get current schedule for the user."""
+    # Persist missed activities before ScheduleService checks whether the
+    # routine has finished, so the archive contains the final statuses.
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
     return _svc.get_schedule(user.get("user_id"))
 
 
@@ -112,6 +133,11 @@ def create_schedule(user: dict, payload):
 def delete_schedule(user: dict, schedule_id: str):
     """Delete a schedule."""
     return _svc.delete_schedule(user.get("user_id", "dev-user"), schedule_id)
+
+
+def update_schedule(user: dict, schedule_id: str, data: dict):
+    """Update an active schedule without creating an archive entry."""
+    return _svc.update_schedule(schedule_id, data)
 
 
 def log_detected_activity(user: dict, schedule_id: str, payload):
@@ -179,12 +205,18 @@ def get_reports(user: dict):
 def get_day_report(user: dict, date: str):
     """Get the archived Done/Late/Missed/Total counts for one specific
     calendar day (YYYY-MM-DD), e.g. Monday's finished routine."""
-    return _svc.get_report_by_date(user.get("user_id"), date)
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
+    _svc._expire_finished_or_stale_schedules(user.get("user_id"))
+    user_id = user.get("user_id")
+    report = _svc.get_report_by_date(user_id, date)
+    return report or _svc.get_current_day_report(user_id, date)
 
 
 def get_week_report(user: dict, start_date: str):
     """Get 7 days of archived reports plus summed weekly totals,
     starting at start_date (YYYY-MM-DD)."""
+    _monitoring.evaluate_missed_tasks(user.get("user_id", "patient_001"))
+    _svc._expire_finished_or_stale_schedules(user.get("user_id"))
     return _svc.get_reports_for_week(user.get("user_id"), start_date)
 
 

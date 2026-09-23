@@ -1,9 +1,13 @@
 """
 schedule-monitoring/backend/app/routes/monitoring_routes.py
-Monitoring endpoints: detection events, today's status, logs, notifications.
+Monitoring endpoints: detection events, today's status, logs, notifications,
+and an MJPEG proxy stream for the IP camera.
 """
+import os
+import cv2
+import time
 from fastapi import APIRouter
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 from datetime import datetime
 from app.controllers.monitoring_controller import (
@@ -15,9 +19,90 @@ from app.controllers.monitoring_controller import (
     mark_all_notifications_read,
     trigger_missed_evaluation,
 )
+from app.services.activity_service import get_activity_service
 
 router = APIRouter()
 
+# ── IP Camera MJPEG Stream ──────────────────────────────────────────────────
+
+def _build_rtsp_url() -> str:
+    """Build RTSP URL from env. Uses IP_CAMERA_RTSP_URL if set, otherwise
+    constructs one from host/user/pass."""
+    rtsp = os.getenv("IP_CAMERA_RTSP_URL", "").strip()
+    if rtsp:
+        return rtsp
+    host = os.getenv("IP_CAMERA_HOST", "169.254.110.15")
+    user = os.getenv("IP_CAMERA_USER", "admin")
+    pwd  = os.getenv("IP_CAMERA_PASS", "admin")
+    return f"rtsp://{user}:{pwd}@{host}:554/stream1"
+
+
+def _mjpeg_generator():
+    """Generator that yields MJPEG frames from the IP camera RTSP stream."""
+    rtsp_url = _build_rtsp_url()
+    cap = None
+    retry_delay = 2  # seconds between reconnect attempts
+
+    while True:
+        try:
+            if cap is None or not cap.isOpened():
+                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            ret, frame = cap.read()
+            if not ret:
+                # Camera temporarily unavailable — send a placeholder frame
+                if cap:
+                    cap.release()
+                    cap = None
+                time.sleep(retry_delay)
+                continue
+
+            # Encode as JPEG (quality 80 for good balance of size vs clarity)
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 80]
+            _, jpeg = cv2.imencode(".jpg", frame, encode_params)
+            data = jpeg.tobytes()
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+            )
+
+        except GeneratorExit:
+            break
+        except Exception as exc:
+            print(f"[ip_cam] stream error: {exc}")
+            if cap:
+                cap.release()
+                cap = None
+            time.sleep(retry_delay)
+
+    if cap:
+        cap.release()
+
+
+@router.get(
+    "/camera/stream",
+    summary="MJPEG proxy stream from the IP camera",
+    response_class=StreamingResponse,
+)
+async def ip_camera_stream():
+    """
+    Returns a multipart/x-mixed-replace MJPEG stream directly from the
+    IP camera RTSP feed, so the browser can consume it as a plain <video>
+    or <img> src without needing RTSP support.
+    """
+    return StreamingResponse(
+        _mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+# ── Detection / Monitoring Routes ───────────────────────────────────────────
 
 class DetectionEventPayload(BaseModel):
     patient_id: str = "patient_001"
@@ -61,3 +146,64 @@ async def _mark_all_read(patient_id: str):
 @router.post("/evaluate-missed/{patient_id}", summary="Manually trigger missed-task evaluation")
 async def _evaluate_missed(patient_id: str):
     return await trigger_missed_evaluation(patient_id)
+
+
+# ── Random Forest Activity Detection ────────────────────────────────────────
+
+class RFPredictionPayload(BaseModel):
+    """Payload for Random Forest activity prediction"""
+    features: List[float]  # 15 pose features
+
+
+@router.post("/predict-rf", summary="Predict activity using Random Forest model")
+async def predict_activity_rf(payload: RFPredictionPayload):
+    """
+    Predict activity from 15 pose features using the trained Random Forest model.
+    
+    **Features (15 total):**
+    0. shoulder_angle
+    1. elbow_angle_left
+    2. elbow_angle_right
+    3. hip_angle
+    4. knee_angle_left
+    5. knee_angle_right
+    6. arm_raise_left
+    7. arm_raise_right
+    8. hand_to_mouth
+    9. hand_to_face
+    10. arm_velocity
+    11. leg_velocity
+    12. torso_lean
+    13. body_symmetry
+    14. hand_height
+    
+    **Response:**
+    - `activity`: Predicted activity name (Walking, Sitting/rest, Sleeping, Eating, Drinking)
+    - `confidence`: Confidence score from 0-1
+    - `model_ready`: Whether the model is loaded and ready
+    """
+    service = get_activity_service()
+    
+    if not service.is_model_loaded():
+        return {
+            "activity": None,
+            "confidence": 0.0,
+            "model_ready": False,
+            "error": "Random Forest model not loaded. Ensure rf_model.pkl is in app/models/"
+        }
+    
+    try:
+        activity, confidence = service.predict_activity(payload.features)
+        return {
+            "activity": activity,
+            "confidence": confidence,
+            "model_ready": True
+        }
+    
+    except ValueError as e:
+        return {
+            "activity": None,
+            "confidence": 0.0,
+            "model_ready": True,
+            "error": str(e)
+        }

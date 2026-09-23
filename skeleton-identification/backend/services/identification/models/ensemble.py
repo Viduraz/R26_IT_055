@@ -22,7 +22,7 @@ class EnsembleIdentifier:
         self,
         svm_weight: float = 0.5,
         lstm_weight: float = 0.5,
-        confidence_threshold: float = 0.65,
+        confidence_threshold: float = 0.35,
     ):
         self.svm = SkeletonSVM()
         self.lstm = SkeletonLSTM()
@@ -40,7 +40,7 @@ class EnsembleIdentifier:
 
     @property
     def is_trained(self) -> bool:
-        return self.svm_ready  # SVM is minimum requirement
+        return self.svm_ready or self.lstm_ready
 
     def predict(
         self,
@@ -190,15 +190,21 @@ class EnsembleIdentifier:
         log.info("ensemble_saved", path=directory)
 
     def load(self, directory: str):
-        """Load both models (graceful if one is missing)."""
+        """Load both models (graceful if one is missing or fails)."""
         from pathlib import Path
         path = Path(directory)
 
         if (path / "svm_model.pkl").exists():
-            self.svm.load(directory)
+            try:
+                self.svm.load(directory)
+            except Exception as e:
+                log.error("svm_load_failed", error=str(e))
 
         if (path / "lstm_model.pt").exists():
-            self.lstm.load(directory)
+            try:
+                self.lstm.load(directory)
+            except Exception as e:
+                log.error("lstm_load_failed", error=str(e))
 
         log.info(
             "ensemble_loaded",

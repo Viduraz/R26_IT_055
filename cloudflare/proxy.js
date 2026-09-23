@@ -68,6 +68,9 @@ function getRouteTarget(url) {
   if (url.startsWith('/api/skeleton')) {
     return { host: '127.0.0.1', port: 8007 };
   }
+  if (url.startsWith('/ws/stream') || url.startsWith('/ws/ip-stream')) {
+    return { host: '127.0.0.1', port: 8007 };
+  }
 
   // ── Fallback: Gateway Dashboard (served at root '/') ─────────────────────
   return { host: '127.0.0.1', port: 5178 };
@@ -96,8 +99,12 @@ const server = http.createServer((req, res) => {
 
   proxyReq.on('error', (err) => {
     console.error(`[HTTP Proxy Error] ${req.url}: ${err.message}`);
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end(`Bad Gateway: Proxy connection failed to ${target.host}:${target.port}\nError: ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end(`Bad Gateway: Proxy connection failed to ${target.host}:${target.port}\nError: ${err.message}`);
+    } else {
+      res.end();
+    }
   });
 
   req.pipe(proxyReq);

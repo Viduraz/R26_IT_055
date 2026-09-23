@@ -31,8 +31,11 @@ const tf = require('@tensorflow/tfjs-node');
 // ── Must match activityDetection.js exactly ─────────────────────────────────
 const SEQ_LEN = 30;
 const ACTIVITY_NAMES = [
-  'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
-  'Walking', 'Sitting / rest', 'Standing', 'Movement'
+  'Walking',
+  'Sitting / rest',
+  'Sleeping',
+  'Eating',
+  'Drinking'
 ];
 const NUM_FEATURES = 15;
 

@@ -17,6 +17,10 @@ export function useWebSocket(refs, state, cbs) {
   const lastFpsTimeRef = useRef(Date.now());
   const stateRef = useRef(state);
 
+  const reconnectTimerRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 15;
+
   // Keep stateRef in sync with latest state
   useEffect(() => {
     stateRef.current = state;
@@ -29,25 +33,9 @@ export function useWebSocket(refs, state, cbs) {
   const offscreenCtx = useRef(offscreenCanvas.current.getContext('2d'));
 
   const handleResult = useCallback((data) => {
-    const { isEnrolling, detectMode } = stateRef.current;
+    const { isEnrolling } = stateRef.current;
     const canvasRef = isEnrolling ? refs.enrollCanvasRef : refs.canvasRef;
     const canvas = canvasRef?.current;
-
-    // Multi-person mode is its own, independent rendering path — driven by
-    // data.persons (bounding boxes), not the single-person keypoints/detected
-    // fields, so it's handled separately before any single-person logic runs.
-    if (detectMode === 'multi') {
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (data.persons && data.persons.length > 0) {
-          drawPersons(ctx, data.persons, canvas.width, canvas.height);
-        } else {
-          clearCanvas(ctx, canvas.width, canvas.height);
-        }
-      }
-      cbs.onResult?.({ ...data, detected: !!(data.persons && data.persons.length > 0) });
-      return;
-    }
 
     if (!data.detected) {
       if (canvas) clearCanvas(canvas.getContext('2d'), canvas.width, canvas.height);
@@ -56,7 +44,7 @@ export function useWebSocket(refs, state, cbs) {
     }
 
     if (data.keypoints && canvas) {
-      drawSkeleton(canvas.getContext('2d'), data.keypoints, canvas.width, canvas.height);
+      drawSkeleton(canvas.getContext('2d'), data.keypoints, canvas.width, canvas.height, data);
     }
 
     if (isEnrolling && data.mode === 'enroll' && data.features_ok) {
@@ -137,13 +125,48 @@ export function useWebSocket(refs, state, cbs) {
     }
   }, [sendFrame]);
 
+  const scheduleReconnect = useCallback((isIpCam, rtspUrl) => {
+    if (!stateRef.current.isStreaming || reconnectTimerRef.current) return;
+
+    if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttemptsRef.current += 1;
+      const delay = Math.min(1000 * Math.pow(1.3, reconnectAttemptsRef.current), 5000);
+      console.info(`[useWebSocket] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        connect(isIpCam, rtspUrl);
+      }, delay);
+    } else {
+      console.warn('[useWebSocket] Max reconnect attempts reached. Stopping auto-retry.');
+    }
+  }, []);
+
   const connect = useCallback((isIpCam = false, rtspUrl = '') => {
-    if (wsRef.current) wsRef.current.close();
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    if (wsRef.current) {
+      // Remove listeners so manual close doesn't trigger reconnect
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
 
     const url = isIpCam ? getIpWsUrl() : getWsUrl();
-    wsRef.current = new WebSocket(url);
+    try {
+      wsRef.current = new WebSocket(url);
+    } catch (e) {
+      console.warn('[useWebSocket] Failed to instantiate WebSocket:', e);
+      cbs.onStatusChange?.(false);
+      scheduleReconnect(isIpCam, rtspUrl);
+      return;
+    }
 
     wsRef.current.onopen = () => {
+      reconnectAttemptsRef.current = 0;
       cbs.onStatusChange?.(true);
       waitingRef.current = false;
       if (isIpCam && rtspUrl) {
@@ -184,17 +207,25 @@ export function useWebSocket(refs, state, cbs) {
       }
     };
 
-    wsRef.current.onclose = () => {
+    wsRef.current.onclose = (event) => {
       cbs.onStatusChange?.(false);
+      if (stateRef.current.isStreaming && !event.wasClean) {
+        scheduleReconnect(isIpCam, rtspUrl);
+      }
     };
 
     wsRef.current.onerror = (err) => {
-      console.error('WS error', err);
+      console.warn(`[useWebSocket] Error on ${url}`);
       cbs.onStatusChange?.(false);
     };
-  }, [cbs, handleResult, scheduleFrame, refs]);
+  }, [cbs, handleResult, scheduleFrame, scheduleReconnect, refs]);
 
   const disconnect = useCallback(() => {
+    reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     waitingRef.current = false;
     if (frameTimerRef.current) {
       cancelAnimationFrame(frameTimerRef.current);
@@ -202,6 +233,8 @@ export function useWebSocket(refs, state, cbs) {
       frameTimerRef.current = null;
     }
     if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
       wsRef.current.close();
       wsRef.current = null;
     }

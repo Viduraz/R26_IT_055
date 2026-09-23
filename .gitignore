@@ -75,10 +75,15 @@ logs/
 # MongoDB dumps
 dump/
 
-# ML Datasets & Scripts (Do not commit the 5GB dataset)
-raw_downloads/
-datasets/
-KGAT_*/
-build_real_dataset.py
-retrain_models.py
-fix_dataset_copy.py
+# Ignore raw datasets and large video files
+data/raw_videos/
+data/processed/
+*.mp4
+*.avi
+*.mov
+
+# Ignore virtual environments & caches
+.venv/
+.kiro/
+.qodo/
+.vite/

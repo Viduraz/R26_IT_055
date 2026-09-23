@@ -35,18 +35,17 @@ import {
   WifiOff,
   RefreshCcw,
 } from "lucide-react";
-import { getCameraSnapshot } from "../services/authApi";
+import { getAuthBaseUrl } from "../services/authApi";
 import { usePoseStream } from "../hooks/usePoseStream";
 import { estimateHeadPose, isFullBodyVisible, keypointMovement, drawSkeleton } from "../utils/pose";
 
 const VIDEO_CONSTRAINTS = { width: 1280, height: 720, facingMode: "user" };
-const IP_POLL_MS = 500;
 
 const FRONT_YAW_THRESHOLD = 0.35;
 const HEAD_SMOOTHING_ALPHA = 0.4;
-const FACE_HOLD_MS = 550;
-const SKELETON_STABLE_STREAK = 4; // consecutive "not moving" frames required before capturing
-const SKELETON_MOVEMENT_THRESHOLD = 0.012;
+const FACE_HOLD_MS = 250;
+const SKELETON_STABLE_STREAK = 1; // 1 stable frame (which requires 2 consecutive frames to match)
+const SKELETON_MOVEMENT_THRESHOLD = 0.045;
 const MANUAL_FALLBACK_MS = 8000;
 
 function ConnectionBanner({ connected, error, onRetry }) {
@@ -98,53 +97,36 @@ const FaceLoginStep = ({ onVerify, onCancel, loading }) => {
   const stableStreakRef = useRef(0);
   const prevKpsRef = useRef(null);
 
-  // ── IP camera polling ───────────────────────────────────────────────────────
-  const [ipFrame, setIpFrame] = useState(null);
+  // ── IP camera streaming ───────────────────────────────────────────────────
   const [ipError, setIpError] = useState(null);
   const [ipLoading, setIpLoading] = useState(false);
-  const ipActiveRef = useRef(false);
-  const ipFrameRef = useRef(null);
 
-  useEffect(() => { ipFrameRef.current = ipFrame; }, [ipFrame]);
+  const streamUrl = `${getAuthBaseUrl()}/camera-stream`;
 
   useEffect(() => {
     if (source !== "ip_camera") {
-      ipActiveRef.current = false;
-      setIpFrame(null);
       setIpError(null);
       return;
     }
-
-    ipActiveRef.current = true;
     setIpLoading(true);
     setIpError(null);
-
-    const poll = async () => {
-      if (!ipActiveRef.current) return;
-      try {
-        const data = await getCameraSnapshot();
-        if (ipActiveRef.current) {
-          setIpFrame(data.frame);
-          setIpError(null);
-          setIpLoading(false);
-        }
-      } catch (err) {
-        if (ipActiveRef.current) {
-          setIpError(err.response?.data?.detail || "IP camera unreachable");
-          setIpLoading(false);
-        }
-      }
-      if (ipActiveRef.current) setTimeout(poll, IP_POLL_MS);
-    };
-
-    poll();
-    return () => { ipActiveRef.current = false; };
   }, [source]);
 
   // Full-resolution frame for the actual verification sample
   const getFrame = useCallback(() => {
     if (source === "webcam") return webcamRef.current?.getScreenshot() ?? null;
-    return ipFrameRef.current;
+    if (source === "ip_camera" && ipImgRef.current) {
+      const img = ipImgRef.current;
+      if (!img.naturalWidth) return null; // not loaded yet
+
+      const cv = document.createElement("canvas");
+      cv.width = img.naturalWidth || 1280;
+      cv.height = img.naturalHeight || 720;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      return cv.toDataURL("image/jpeg", 0.85);
+    }
+    return null;
   }, [source]);
   const getFrameRef = useRef(getFrame);
   useEffect(() => { getFrameRef.current = getFrame; }, [getFrame]);
@@ -329,9 +311,8 @@ const FaceLoginStep = ({ onVerify, onCancel, loading }) => {
           Face
         </span>
         <span className="text-gray-600">→</span>
-        <span className={`flex items-center gap-1.5 text-xs font-semibold ${
-          phase === "skeleton" ? "text-indigo-300" : phase === "done" ? "text-emerald-400" : "text-gray-500"
-        }`}>
+        <span className={`flex items-center gap-1.5 text-xs font-semibold ${phase === "skeleton" ? "text-indigo-300" : phase === "done" ? "text-emerald-400" : "text-gray-500"
+          }`}>
           {phase === "done" ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Activity className="w-3.5 h-3.5" />}
           Skeleton
         </span>
@@ -351,8 +332,8 @@ const FaceLoginStep = ({ onVerify, onCancel, loading }) => {
             onClick={() => setSource(id)}
             disabled={isVerifying}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-sm font-semibold transition-all ${source === id
-                ? "bg-indigo-600 text-white shadow"
-                : "text-gray-400 hover:text-white"
+              ? "bg-indigo-600 text-white shadow"
+              : "text-gray-400 hover:text-white"
               } disabled:opacity-50`}
           >
             <Icon className="w-4 h-4" />
@@ -376,25 +357,35 @@ const FaceLoginStep = ({ onVerify, onCancel, loading }) => {
 
         {source === "ip_camera" && (
           <>
-            {ipLoading && !ipFrame && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-xs">
-                <div className="w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin" />
-                <span>Connecting…</span>
+            {ipLoading && !ipError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black z-10">
+                <Loader2 className="w-10 h-10 text-indigo-500 animate-spin" />
+                <span className="text-gray-400 font-semibold text-sm animate-pulse">Connecting to Live Stream…</span>
               </div>
             )}
-            {ipError && !ipFrame && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-red-400 text-xs text-center px-4">
+            {ipError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black z-10 text-red-400 text-xs text-center px-4">
                 <span className="text-3xl">📡</span>
-                <span className="font-semibold">Camera Unreachable</span>
-                <span className="text-red-500">{ipError}</span>
+                <span className="font-semibold text-base mb-1">Camera Unreachable</span>
+                <span className="text-gray-500 max-w-sm">{ipError}</span>
               </div>
             )}
-            {ipFrame && (
-              <img ref={ipImgRef} src={ipFrame} alt="IP camera live feed" className="w-full h-full object-cover" />
-            )}
-            {ipFrame && (
-              <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-black/60 text-indigo-300 text-[10px] font-mono px-2 py-0.5 rounded-full">
-                LIVE · 169.254.110.15
+            <img
+              ref={ipImgRef}
+              src={streamUrl}
+              alt="IP camera live feed"
+              className="w-full h-full object-cover"
+              crossOrigin="anonymous"
+              onLoad={() => { setIpLoading(false); setIpError(null); }}
+              onError={(e) => {
+                // It might fail immediately if endpoint is down or return 503
+                setIpError("The stream disconnected or the IP camera is not available.");
+                setIpLoading(false);
+              }}
+            />
+            {(!ipLoading && !ipError) && (
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-black/60 text-indigo-300 text-[10px] font-mono px-2 py-0.5 rounded-full z-10">
+                LIVE MJPEG
               </div>
             )}
           </>
@@ -404,9 +395,8 @@ const FaceLoginStep = ({ onVerify, onCancel, loading }) => {
         {phase === "face" && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div
-              className={`w-64 h-72 sm:w-72 sm:h-80 rounded-xl border-4 border-dashed transition-colors ${
-                justCaptured ? "border-emerald-400" : "border-indigo-400/60"
-              }`}
+              className={`w-64 h-72 sm:w-72 sm:h-80 rounded-xl border-4 border-dashed transition-colors ${justCaptured ? "border-emerald-400" : "border-indigo-400/60"
+                }`}
             />
           </div>
         )}

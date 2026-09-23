@@ -74,6 +74,8 @@ class EnrollUserImagesRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_type: str = "ensemble"  # svm | lstm | ensemble
     epochs: int = 100
     batch_size: int = 32
@@ -186,10 +188,15 @@ async def enroll_frame(req: EnrollFrameRequest):
     # Update enrollment progress
     profile = await FeatureProfileCRUD.get_by_user(req.user_id)
     count = profile["sample_count"] if profile else 0
-    min_frames = settings.min_enrollment_frames  # configurable (default 50)
+    min_frames = settings.min_enrollment_frames
     status = "completed" if count >= min_frames else "in_progress"
 
     await UserCRUD.update_enrollment_status(req.user_id, status, count)
+
+    # Instant template reload if completed
+    if status == "completed" and predictor is not None:
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
 
     return {
         "user_id": req.user_id,
@@ -220,7 +227,7 @@ async def enroll_user_images(req: EnrollUserImagesRequest):
     static_ext = StaticFeatureExtractor()
     processor = VideoProcessor()
 
-    processed_count = 0
+    extracted_vectors = []
     try:
         for base64_frame in req.frames:
             frame_bgr = processor.base64_to_frame(base64_frame)
@@ -237,22 +244,29 @@ async def enroll_user_images(req: EnrollUserImagesRequest):
             if raw_features is None:
                 continue
             static_vector = static_ext.to_vector(raw_features)
-
-            await FeatureProfileCRUD.upsert(
-                user_id=req.user_id,
-                static_vector=static_vector,
-            )
-            processed_count += 1
+            extracted_vectors.append(static_vector.tolist())
     finally:
         pose.close()
+
+    if extracted_vectors:
+        await FeatureProfileCRUD.bulk_upsert_samples(
+            user_id=req.user_id,
+            static_vectors=extracted_vectors,
+            feature_version=StaticFeatureExtractor.FEATURE_VERSION,
+        )
 
     profile = await FeatureProfileCRUD.get_by_user(req.user_id)
     count = profile["sample_count"] if profile else 0
     await UserCRUD.update_enrollment_status(req.user_id, "completed", count)
 
+    # Instant template reload
+    if predictor is not None:
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
+
     return {
         "user_id": req.user_id,
-        "processed_frames": processed_count,
+        "processed_frames": len(extracted_vectors),
         "total_samples": count,
         "status": "completed",
     }
@@ -331,9 +345,11 @@ async def train_model(req: TrainRequest):
             log.warning("lstm_training_skipped", error=str(e))
             lstm_result = {"success": False, "message": str(e)}
 
-    # Reload models
+    # Reload models and refresh KNN templates
     if predictor is not None:
         predictor.load_models()
+        profiles = await FeatureProfileCRUD.get_all_profiles()
+        predictor.load_knn_templates(profiles)
 
     duration = (time.perf_counter() - t_start) * 1000
 

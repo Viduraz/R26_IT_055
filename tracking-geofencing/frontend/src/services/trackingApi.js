@@ -44,14 +44,26 @@ export async function checkBackendHealth() {
 
 // Tracking API
 export const trackingApi = {
-  processFrame: (frameBase64) =>
-    API.post("/api/tracking/process-frame", { frame: frameBase64 }),
+  processFrame: (frameBase64, trackerType = "bytetrack") =>
+    API.post("/api/tracking/process-frame", { frame: frameBase64, tracker_type: trackerType }),
   getHistory: (page = 1, pageSize = 50) =>
     API.get("/api/tracking/history", { params: { page, page_size: pageSize } }),
   getActive: () => API.get("/api/tracking/active"),
   getStats: () => API.get("/api/tracking/stats"),
-  identifyPerson: (frameBase64) =>
-    API.post("/api/tracking/identify-person", { frame_data: frameBase64 }),
+  identifyPerson: (frameBase64, personId = null) =>
+    API.post("/api/tracking/identify-person", { frame_data: frameBase64, person_id: personId }),
+  verifyCaregiver: (frameBase64) =>
+    axios.post("/api/face/verify-caregiver", { live_sample: frameBase64 }, { timeout: 5000 }),
+  startCaregiverSession: (caregiverDetails) =>
+    API.post("/api/tracking/start-caregiver-session", {
+      caregiver_name: caregiverDetails?.name || "Unknown",
+      caregiver_id: caregiverDetails?.id || null,
+    }),
+  updateCaregiverVisibility: (sessionId, frameBase64) =>
+    API.post("/api/tracking/update-caregiver-visibility", {
+      session_id: sessionId,
+      live_frame: frameBase64,
+    }),
   getExitAlerts: () => API.get("/api/tracking/exit-alerts"),
 };
 
@@ -63,12 +75,14 @@ export const geofenceApi = {
   updateZone: (zoneId, data) => API.put(`/api/geofence/zones/${zoneId}`, data),
   deleteZone: (zoneId) => API.delete(`/api/geofence/zones/${zoneId}`),
   checkBreach: (data) => API.post("/api/geofence/check-breach", data),
-  getAlerts: (resolved) => {
+  getAlerts: (resolved, since) => {
     const params = {};
     if (resolved !== undefined && resolved !== null) params.resolved = resolved;
+    if (since) params.since = since;
     return API.get("/api/geofence/alerts", { params });
   },
   resolveAlert: (alertId) => API.put(`/api/geofence/alerts/${alertId}/resolve`),
+  clearAlerts: () => API.delete("/api/geofence/alerts"),
 };
 
 export default API;

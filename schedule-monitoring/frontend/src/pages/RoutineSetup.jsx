@@ -3,15 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { createSchedule } from "../services/scheduleApi";
 
 const ACTIVITY_TYPES = [
-  "Eating",
-  "Drinking",
-  "Sleeping",
   "Walking",
   "Sitting / rest",
+  "Sleeping",
+  "Eating",
+  "Drinking",
 ];
 
-const START_OFFSET_MINUTES = 2;
-const ACTIVITY_WINDOW_MINUTES = 3;
+const START_OFFSET_MINUTES = 5;
+const ACTIVITY_WINDOW_MINUTES = 1;
 
 const formatTime = (date) => date.toTimeString().slice(0, 5);
 
@@ -182,8 +182,8 @@ export default function RoutineSetup() {
               Create a daily routine and open the monitoring camera.
             </p>
             <p className="text-xs text-sky-300/80 mt-2">
-              First activity starts 2 minutes after saving; each activity gets a
-              3 minute window.
+              First activity starts 5 minutes after saving; each activity gets a
+              1 minute window.
             </p>
           </div>
         </div>

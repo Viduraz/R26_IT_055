@@ -14,6 +14,7 @@ from app.controllers.schedule_controller import (
     get_schedule,
     create_schedule,
     delete_schedule,
+    update_schedule,
     get_reports,
     get_day_report,
     get_week_report,
@@ -45,9 +46,11 @@ def _create(payload: CreateScheduleSchema = Body(...), user: dict = Depends(get_
 @router.delete("/{schedule_id}", summary="Delete schedule")
 def _delete(schedule_id: str, user: dict = Depends(get_current_user)):
     """Delete a specific schedule."""
-    return delete_schedule(user, schedule_id)
-
-
+    return delete_schedule(_user, schedule_id)
+@router.put("/{schedule_id}", summary="Update schedule")
+def _update(schedule_id: str, payload: dict = Body(...)):
+    """Update the active schedule without archiving the previous version."""
+    return update_schedule(_user, schedule_id, payload)
 @router.get("/logs", summary="Get activity logs")
 def _logs(user: dict = Depends(get_current_user)):
     """Retrieve all activity detection logs."""

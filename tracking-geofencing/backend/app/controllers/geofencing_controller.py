@@ -11,6 +11,7 @@ from app.services.geofence_service import (
     check_breach,
     get_alerts,
     resolve_alert,
+    clear_alerts,
 )
 from app.models.tracking_models import (
     ZoneCreateRequest,
@@ -26,6 +27,7 @@ async def handle_create_zone(request: ZoneCreateRequest) -> dict:
         zone_type=request.zone_type,
         polygon=request.polygon,
         color=request.color,
+        camera_distance=request.camera_distance,
     )
 
 
@@ -59,11 +61,17 @@ async def handle_check_breach(request: BreachCheckRequest) -> dict:
     )
 
 
-async def handle_get_alerts(resolved: bool = None) -> list:
+async def handle_get_alerts(resolved: bool = None, since: str = None) -> list:
     """Get all alerts."""
-    return await get_alerts(resolved)
+    return await get_alerts(resolved, since)
 
 
 async def handle_resolve_alert(alert_id: str) -> dict:
     """Resolve an alert."""
     return await resolve_alert(alert_id)
+
+
+async def handle_clear_alerts() -> dict:
+    """Clear all alerts."""
+    return await clear_alerts()
+

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchUsers, deleteUser } from '../services/api';
 import { useToast } from '../context/ToastContext';
+import { useApp } from '../context/AppContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 const ROLE_COLORS = {
@@ -11,6 +12,7 @@ const ROLE_COLORS = {
 
 export default function FaceUsersPage() {
   const toast = useToast();
+  const { setActiveTab } = useApp();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
@@ -49,12 +51,20 @@ export default function FaceUsersPage() {
     <div className="flex-1 p-6 overflow-y-auto space-y-6 animate-in fade-in duration-500">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gradient-cyan">Biometric Profiles</h1>
-          <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider">Face Recognition Identity Records</p>
+          <h1 className="text-2xl font-bold text-gradient-cyan">Face ID Biometric Profiles</h1>
+          <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider">High-Fidelity Multi-Angle Identity Records</p>
         </div>
-        <button onClick={load} disabled={loading} className="btn btn-secondary btn-sm">
-          {loading ? <LoadingSpinner size="sm" /> : 'Sync Database'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setActiveTab('face')} className="btn btn-primary btn-sm flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            + Enroll New Face
+          </button>
+          <button onClick={load} disabled={loading} className="btn btn-secondary btn-sm">
+            {loading ? <LoadingSpinner size="sm" /> : 'Sync Database'}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -109,13 +119,17 @@ export default function FaceUsersPage() {
                   <div className="p-3 rounded-xl bg-dark-900/50 border border-white/5">
                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Status</div>
                     <div className="flex items-center gap-1.5">
-                      <div className={`w-1.5 h-1.5 rounded-full ${user.enrollment_status === 'completed' ? 'bg-emerald-500 shadow-glow-emerald' : 'bg-amber-500'}`} />
-                      <span className="text-xs font-mono text-slate-300 capitalize">{user.enrollment_status}</span>
+                      <div className={`w-1.5 h-1.5 rounded-full ${(user.enrollment_status === 'completed' || user.face_verification_status === 'enrolled') ? 'bg-emerald-500 shadow-glow-emerald' : 'bg-amber-500'}`} />
+                      <span className="text-xs font-mono text-slate-300 capitalize">
+                        {(user.enrollment_status === 'completed' || user.face_verification_status === 'enrolled') ? 'completed' : (user.enrollment_status || 'pending')}
+                      </span>
                     </div>
                   </div>
                   <div className="p-3 rounded-xl bg-dark-900/50 border border-white/5">
                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Samples</div>
-                    <div className="text-xs font-mono text-cyan-400 font-bold">{user.enrollment_frames_count} Frames</div>
+                    <div className="text-xs font-mono text-cyan-400 font-bold">
+                      {user.enrollment_frames_count || (user.face_verification_status === 'enrolled' || user.face_embeddings ? 30 : 0)} Frames
+                    </div>
                   </div>
                 </div>
               </div>

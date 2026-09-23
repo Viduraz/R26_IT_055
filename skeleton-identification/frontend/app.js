@@ -560,7 +560,7 @@ function drawSkeleton(keypoints, canvasSelector = "#skeleton-canvas") {
     SKELETON_CONNECTIONS.forEach(([i, j]) => {
         const a = keypoints[i];
         const b = keypoints[j];
-        if (a && b && a.visibility > 0.2 && b.visibility > 0.2) {
+        if (a && b && a.visibility > 0.05 && b.visibility > 0.05) {
             ctx.beginPath();
             ctx.moveTo(a.x * w, a.y * h);
             ctx.lineTo(b.x * w, b.y * h);
@@ -570,7 +570,7 @@ function drawSkeleton(keypoints, canvasSelector = "#skeleton-canvas") {
 
     // Draw keypoints
     keypoints.forEach((kp, idx) => {
-        if (kp.visibility > 0.2) {
+        if (kp.visibility > 0.05) {
             ctx.beginPath();
             ctx.arc(kp.x * w, kp.y * h, 4, 0, Math.PI * 2);
             ctx.fillStyle =

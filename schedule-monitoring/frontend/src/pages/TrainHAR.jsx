@@ -3,8 +3,11 @@ import * as tf from '@tensorflow/tfjs';
 
 const SEQ_LEN = 30;
 const ACTIVITY_NAMES = [
-  'Sleeping', 'Eating', 'Drinking', 'Taking Medications',
-  'Walking', 'Sitting / rest', 'Standing', 'Movement'
+  'Walking',
+  'Sitting / rest',
+  'Sleeping',
+  'Eating',
+  'Drinking'
 ];
 const NUM_FEATURES = 15;
 const WINDOW_STRIDE = 5;

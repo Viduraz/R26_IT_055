@@ -49,23 +49,27 @@ def main():
     """Start the gateway service."""
     import uvicorn
 
-    print("""
-    ╔══════════════════════════════════════════════════════════╗
-    ║                                                          ║
-    ║   🦴  Skeleton-Based Person Identification System        ║
-    ║                                                          ║
-    ║   Gateway:    http://localhost:{port:<5s}                  ║
-    ║   Dashboard:  http://localhost:{port:<5s}                  ║
-    ║   API Docs:   http://localhost:{port:<5s}/docs              ║
-    ║   Health:     http://localhost:{port:<5s}/health             ║
-    ║                                                          ║
-    ║   MongoDB:    {mongodb:<40s} ║
-    ║                                                          ║
-    ╚══════════════════════════════════════════════════════════╝
+    banner = """
+    +----------------------------------------------------------+
+    |                                                          |
+    |      Skeleton-Based Person Identification System         |
+    |                                                          |
+    |   Gateway:    http://localhost:{port:<5s}                  |
+    |   Dashboard:  http://localhost:{port:<5s}                  |
+    |   API Docs:   http://localhost:{port:<5s}/docs              |
+    |   Health:     http://localhost:{port:<5s}/health             |
+    |                                                          |
+    |   MongoDB:    {mongodb:<40s} |
+    |                                                          |
+    +----------------------------------------------------------+
     """.format(
         port=str(settings.gateway_port),
         mongodb=settings.mongodb_uri[:40],
-    ))
+    )
+    try:
+        print(banner)
+    except UnicodeEncodeError:
+        print("Skeleton-Based Person Identification System starting...")
 
     uvicorn.run(
         "gateway.main:app",

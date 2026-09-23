@@ -1,8 +1,11 @@
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 pydantic==2.7.1
-pymongo==4.7.2
+pymongo>=4.9.0,<5.0.0  # FIX (B-7): was 4.7.2; upgraded to satisfy skeleton-id >=4.9.0 requirement
 python-dotenv==1.0.1
 PyJWT==2.8.0
-numpy==1.24.3
-apscheduler==3.10.4
+numpy>=1.26.0,<2.0.0   # FIX (B-6): was 1.24.3; aligned with anomaly-detection and skeleton-id
+# apscheduler removed (FIX B-11): was listed but never used; background sweep uses threading.Thread
+scikit-learn==1.4.1.post1
+joblib==1.3.2
+

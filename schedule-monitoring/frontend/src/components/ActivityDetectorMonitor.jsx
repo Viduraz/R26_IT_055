@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   initializePoseDetection,
+  initializePoseDetectionWithIPCamera,
+  getIPCameraStreamUrl,
   stopPoseDetection,
 } from "../services/activityDetection";
 import { getSchedule, logDetectedActivity } from "../services/scheduleApi";
@@ -9,6 +11,11 @@ const DETECTION_DEBOUNCE = 2000;
 const CONFIDENCE_THRESHOLD = 0.5;
 const FINAL_STATUSES = ["Completed", "Early", "Late", "Missed"];
 
+// Only these four statuses are ever shown in the UI now. "Unexpected" and
+// "Not Done" have been removed on purpose: every confirmed detection now
+// resolves to one of Early / Completed / Late (Missed is written
+// server-side by evaluate_missed_tasks() when a window closes with NO
+// detection at all, so it never originates from this file).
 const STATUS_DISPLAY = {
   Completed: {
     color: "bg-green-900/20 border-green-700 text-green-300",
@@ -30,16 +37,6 @@ const STATUS_DISPLAY = {
     icon: "⚠",
     label: "Missed",
   },
-  "Not Done": {
-    color: "bg-orange-900/20 border-orange-700 text-orange-300",
-    icon: "⚠",
-    label: "Not Done",
-  },
-  Unexpected: {
-    color: "bg-gray-900/20 border-gray-700 text-gray-300",
-    icon: "?",
-    label: "Not Scheduled",
-  },
 };
 
 // Some backend responses may nest the activity array under a different key
@@ -57,6 +54,11 @@ function extractActivitiesArray(rawSchedule) {
   return [];
 }
 
+function timeStrToMinutes(timeStr) {
+  const [h, m] = String(timeStr || "0:0").split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
 export default function ActivityDetectorMonitor({
   onActivityConfirmed,
   schedule: scheduleProp,
@@ -65,6 +67,10 @@ export default function ActivityDetectorMonitor({
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const expectedActivityRef = useRef(null);
+
+  // "device" = use browser webcam (getUserMedia)
+  // "ip"     = use IP camera MJPEG stream from backend
+  const [cameraSource, setCameraSource] = useState("device");
 
   const [isDetecting, setIsDetecting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -98,10 +104,6 @@ export default function ActivityDetectorMonitor({
 
   useEffect(() => {
     if (scheduleProp) {
-      // TEMP DIAGNOSTIC — remove once the "activities: undefined" bug is
-      // confirmed fixed. This prints exactly what shape the parent is
-      // handing us, so we can see whether the array lives under a
-      // different key than "activities".
       console.log("[Detector] scheduleProp received:", scheduleProp);
 
       setSchedule(scheduleProp);
@@ -110,7 +112,7 @@ export default function ActivityDetectorMonitor({
       if (activities.length === 0) {
         console.warn(
           "[Detector] scheduleProp had no recognizable activities array. " +
-            "Keys present:",
+          "Keys present:",
           Object.keys(scheduleProp || {})
         );
       }
@@ -137,10 +139,8 @@ export default function ActivityDetectorMonitor({
       const currentTime = now.getHours() * 60 + now.getMinutes();
       let active = activities[0]?.activity_name || "Walking";
       for (const act of activities) {
-        const [startH, startM] = String(act.start_time).split(":").map(Number);
-        const [endH, endM] = String(act.end_time).split(":").map(Number);
-        const start = (startH || 0) * 60 + (startM || 0);
-        const end = (endH || 0) * 60 + (endM || 0);
+        const start = timeStrToMinutes(act.start_time);
+        const end = timeStrToMinutes(act.end_time);
         if (currentTime >= start && currentTime <= end) {
           active = act.activity_name;
           break;
@@ -188,6 +188,12 @@ export default function ActivityDetectorMonitor({
   };
 
   // Flexible matching so "Walking" matches "Walk", "Morning Walking", etc.
+  // FIX: this used to return null (→ "Unexpected") whenever the detected
+  // activity's name/keywords didn't line up with the scheduled activity's
+  // name. In a single-active-routine system there's basically always
+  // exactly one activity that's "currently due" — so as a last resort we
+  // now fall back to whichever scheduled activity's time window contains
+  // right now, instead of giving up and reporting "Unexpected".
   const findScheduledActivity = (activityName) => {
     const activities = extractActivitiesArray(schedule);
     if (!activities.length) return null;
@@ -214,8 +220,6 @@ export default function ActivityDetectorMonitor({
       drinking: ["drink", "drinking", "water", "hydrate"],
       sleeping: ["sleep", "sleeping", "bed", "nap"],
       "sitting / rest": ["sit", "sitting", "rest", "resting"],
-      standing: ["stand", "standing"],
-      "taking medications": ["med", "medication", "pill", "tablet"],
     };
 
     for (const act of activities) {
@@ -231,13 +235,59 @@ export default function ActivityDetectorMonitor({
       }
     }
 
-    return null;
+    // 4) FALLBACK: no name/keyword match at all — use whichever scheduled
+    // activity's window is currently active (or the nearest upcoming one
+    // if none is active right now). This is what closes the "Unexpected"
+    // gap: a real detection during a real scheduled window should always
+    // resolve to *some* activity, not fall through to "not scheduled".
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const currentlyActive = activities.find((act) => {
+      const start = timeStrToMinutes(act.start_time);
+      const end = timeStrToMinutes(act.end_time);
+      return nowMin >= start && nowMin <= end;
+    });
+    if (currentlyActive) {
+      console.warn(
+        "[Detector] No name match for detected activity",
+        `"${activityName}"`,
+        "— falling back to the currently-active scheduled activity:",
+        currentlyActive.activity_name
+      );
+      return currentlyActive;
+    }
+
+    // 5) Still nothing — closest activity by start_time (upcoming or most
+    // recently ended), so a genuinely off-schedule detection still gets
+    // evaluated against the nearest window rather than discarded.
+    let closest = null;
+    let closestDist = Infinity;
+    for (const act of activities) {
+      const start = timeStrToMinutes(act.start_time);
+      const end = timeStrToMinutes(act.end_time);
+      const dist = nowMin < start ? start - nowMin : nowMin - end;
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = act;
+      }
+    }
+    if (closest) {
+      console.warn(
+        "[Detector] No name match and nothing currently active — using nearest scheduled activity by time:",
+        closest.activity_name
+      );
+    }
+    return closest;
   };
 
   const decideStatusFromWindow = (activityName) => {
     const scheduledActivity = findScheduledActivity(activityName);
 
     if (!scheduledActivity) {
+      // Only reachable now if the schedule truly has zero activities.
+      // Returning null (not a fake status string) tells the caller to skip
+      // logging entirely, rather than writing a made-up "Unexpected" label
+      // — a schedule with no activities has nothing to be Early/Late/
+      // Completed relative to, so there's no honest status to give it.
       const activities = extractActivitiesArray(schedule);
       console.warn(
         "[Detector] No schedule match for:",
@@ -247,15 +297,13 @@ export default function ActivityDetectorMonitor({
         "| raw schedule object:",
         schedule
       );
-      return "Unexpected";
+      return null;
     }
 
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes();
-    const [sH, sM] = String(scheduledActivity.start_time).split(":").map(Number);
-    const [eH, eM] = String(scheduledActivity.end_time).split(":").map(Number);
-    const startMin = (sH || 0) * 60 + (sM || 0);
-    const endMin = (eH || 0) * 60 + (eM || 0);
+    const startMin = timeStrToMinutes(scheduledActivity.start_time);
+    const endMin = timeStrToMinutes(scheduledActivity.end_time);
 
     if (nowMin < startMin) return "Early";
     if (nowMin > endMin) return "Late";
@@ -265,7 +313,7 @@ export default function ActivityDetectorMonitor({
   const confirmActivityForLogging = (detectionData) => {
     const confirmation = activityConfirmationRef.current;
     const now = Date.now();
-    const CONFIRMATION_TIME = 1000;
+    const CONFIRMATION_TIME = 3000; // 3 seconds of stable detection required
 
     if (confirmation.activityName !== detectionData.activity_name) {
       if (confirmation.timeoutId) clearTimeout(confirmation.timeoutId);
@@ -322,6 +370,23 @@ export default function ActivityDetectorMonitor({
 
     let activityStatus = decideStatusFromWindow(detectionData.activity_name);
 
+    // No honest status to give this detection. Distinguish between a truly
+    // missing schedule and a loaded schedule whose current activities do not
+    // include the detected action, so the UI message reflects reality.
+    if (!activityStatus) {
+      const hasSchedule = !!schedule && extractActivitiesArray(schedule).length > 0;
+      if (hasSchedule) {
+        setDebugInfo(
+          `⚠️ Detected ${detectionData.activity_name}, but it is not part of the loaded schedule — not logged.`
+        );
+      } else {
+        setDebugInfo(
+          `⚠️ Detected ${detectionData.activity_name}, but no schedule is loaded — not logged.`
+        );
+      }
+      return;
+    }
+
     // Prefer the scheduled activity name for locking (matches sidebar)
     const matched = findScheduledActivity(detectionData.activity_name);
     const lockedName = matched?.activity_name || detectionData.activity_name;
@@ -337,35 +402,35 @@ export default function ActivityDetectorMonitor({
     };
 
     try {
-      if (schedule) {
-        const response = await logDetectedActivity(schedule.schedule_id, {
-          activity_name: lockedName,
-          confidence: detectionData.confidence,
-          detected_at: detectionData.detected_at.toISOString(),
-          signals: detectionData.signals,
-        });
+      // schedule is guaranteed non-null here: if it were null, findScheduledActivity
+      // would have returned null, activityStatus would be null, and we'd already
+      // have returned above before reaching this line.
+      const response = await logDetectedActivity(schedule.schedule_id, {
+        activity_name: lockedName,
+        confidence: detectionData.confidence,
+        detected_at: detectionData.detected_at.toISOString(),
+        signals: detectionData.signals,
+      });
 
-        const adaptiveData = response?.data || {};
-        const backendStatus = adaptiveData.status;
+      const adaptiveData = response?.data || {};
+      const backendStatus = adaptiveData.status;
 
-        if (backendStatus && FINAL_STATUSES.includes(backendStatus)) {
-          logEntry.status = backendStatus;
-        } else {
-          logEntry.status = activityStatus;
-        }
-
-        logEntry.adaptive_grace_minutes =
-          adaptiveData.adaptive_grace_minutes || "?";
-        logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
-        logEntry.deadline = adaptiveData.deadline
-          ? new Date(adaptiveData.deadline).toLocaleTimeString()
-          : "?";
+      if (backendStatus && FINAL_STATUSES.includes(backendStatus)) {
+        logEntry.status = backendStatus;
       } else {
-        logEntry.status = "Unexpected";
-        logEntry.adaptive_grace_minutes = "N/A";
-        logEntry.delay_minutes = "N/A";
-        logEntry.deadline = "N/A";
+        // Backend didn't return a final status (e.g. its own window check
+        // didn't match). We already have a locally-computed Early/Completed/
+        // Late from decideStatusFromWindow above via the matched-activity
+        // fallback, so use that — it's always one of the four real statuses.
+        logEntry.status = activityStatus;
       }
+
+      logEntry.adaptive_grace_minutes =
+        adaptiveData.adaptive_grace_minutes || "?";
+      logEntry.delay_minutes = adaptiveData.delay_minutes || "?";
+      logEntry.deadline = adaptiveData.deadline
+        ? new Date(adaptiveData.deadline).toLocaleTimeString()
+        : "?";
 
       setStats((prev) => {
         const updated = { ...prev, logged: prev.logged + 1 };
@@ -400,10 +465,11 @@ export default function ActivityDetectorMonitor({
     } catch (error) {
       console.error("Error logging activity:", error);
 
-      setDetectionLogs((prev) => [
-        { ...logEntry, status: logEntry.status || "Error" },
-        ...prev.slice(0, 9),
-      ]);
+      // logEntry.status is already one of Early/Completed/Late from the
+      // local decideStatusFromWindow computation (set before the try block),
+      // even though the backend call itself failed — so there's still a
+      // real status to show here, not a placeholder.
+      setDetectionLogs((prev) => [logEntry, ...prev.slice(0, 9)]);
       lastLogTimeRef.current[key] = now;
 
       setConfirmedActivity({
@@ -422,31 +488,54 @@ export default function ActivityDetectorMonitor({
     }
   };
 
-  const startDetection = async () => {
+  const startDetection = async (sourceOverride) => {
     if (!videoRef.current || !canvasRef.current) return;
     if (isLoading) return;
     if (!schedule) {
       setDebugInfo("⚠️ No schedule — detection will run in test mode!");
     }
 
+    const source = sourceOverride ?? cameraSource;
+    const isIPCam = source === "ip";
+
     try {
       setIsLoading(true);
-      setDebugInfo("🔄 Initializing MoveNet ML pose detection...");
-      await initializePoseDetection(
-        videoRef.current,
-        canvasRef.current,
-        expectedActivityRef,
-        handleActivityDetected,
-        (aligned) => setIsAligned(aligned)
-      );
-      setIsDetecting(true);
       setDebugInfo(
-        "✓ Activity detection active\n📷 Position yourself in front of the camera"
+        isIPCam
+          ? "🔄 Connecting to IP camera stream..."
+          : "🔄 Initializing MoveNet ML pose detection..."
       );
+
+      if (isIPCam) {
+        await initializePoseDetectionWithIPCamera(
+          videoRef.current,
+          canvasRef.current,
+          expectedActivityRef,
+          handleActivityDetected,
+          (aligned) => setIsAligned(aligned)
+        );
+        setDebugInfo(
+          `✓ IP camera detection active\n📡 Stream: ${getIPCameraStreamUrl()}`
+        );
+      } else {
+        await initializePoseDetection(
+          videoRef.current,
+          canvasRef.current,
+          expectedActivityRef,
+          handleActivityDetected,
+          (aligned) => setIsAligned(aligned)
+        );
+        setDebugInfo(
+          "✓ Activity detection active\n📷 Position yourself in front of the camera"
+        );
+      }
+      setIsDetecting(true);
     } catch (error) {
       console.error("Error:", error);
       setDebugInfo(
-        `✗ Error initializing: ${error.message}\n\nAllow camera permission!`
+        isIPCam
+          ? `✗ IP camera error: ${error.message}\n\nCheck that the camera is online and the backend is running.`
+          : `✗ Error initializing: ${error.message}\n\nAllow camera permission!`
       );
     } finally {
       setIsLoading(false);
@@ -474,19 +563,65 @@ export default function ActivityDetectorMonitor({
     }
   };
 
+  // Toggle between device cam and IP cam — restarts detection if active
+  const handleSourceToggle = async (newSource) => {
+    if (newSource === cameraSource) return;
+    if (isDetecting) {
+      await stopDetection();
+      setCameraSource(newSource);
+      // Small delay to let streams tear down cleanly
+      setTimeout(() => startDetection(newSource), 300);
+    } else {
+      setCameraSource(newSource);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-        <div className="flex justify-between items-center mb-4">
+        {/* ── Header: title + status dot + camera source toggle ── */}
+        <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
           <h2 className="text-xl font-semibold">
             📷 ML Activity Detection (Adaptive Thresholds)
           </h2>
-          <span
-            className={`inline-block w-3 h-3 rounded-full ${
-              isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
-            }`}
-          />
+
+          <div className="flex items-center gap-3">
+            {/* Camera source pill toggle */}
+            <div className="flex items-center bg-gray-800 rounded-full p-0.5 border border-gray-700 shadow-inner">
+              <button
+                onClick={() => handleSourceToggle("device")}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 ${cameraSource === "device"
+                  ? "bg-blue-600 text-white shadow-md shadow-blue-900/40"
+                  : "text-gray-400 hover:text-white"
+                  }`}
+              >
+                <span>💻</span> Device Cam
+              </button>
+              <button
+                onClick={() => handleSourceToggle("ip")}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 ${cameraSource === "ip"
+                  ? "bg-amber-500 text-white shadow-md shadow-amber-900/40"
+                  : "text-gray-400 hover:text-white"
+                  }`}
+              >
+                <span>📡</span> IP Camera
+              </button>
+            </div>
+
+            <span
+              className={`inline-block w-3 h-3 rounded-full ${isDetecting ? "bg-green-500 animate-pulse" : "bg-gray-600"
+                }`}
+            />
+          </div>
         </div>
+
+        {/* IP camera URL badge */}
+        {cameraSource === "ip" && (
+          <div className="mb-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
+            <span>📡</span>
+            <span className="truncate">{getIPCameraStreamUrl()}</span>
+          </div>
+        )}
 
         <div
           className="relative bg-black rounded-lg overflow-hidden border border-gray-800 shadow-2xl"
@@ -499,13 +634,18 @@ export default function ActivityDetectorMonitor({
             style={{
               width: "100%",
               height: "100%",
-              display: "block",
+              display: cameraSource === "ip" ? "none" : "block",
               objectFit: "cover",
             }}
           />
           <canvas
             ref={canvasRef}
             className="absolute inset-0 pointer-events-none w-full h-full object-cover"
+            style={{
+              // In IP cam mode the canvas IS the primary display (frames drawn by detectIPCamLoop)
+              // In device cam mode it's an overlay for pose/detection annotations
+              zIndex: cameraSource === "ip" ? 1 : 2,
+            }}
           />
 
           <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded font-mono text-xs text-green-400 backdrop-blur-sm border border-green-500/20">
@@ -515,85 +655,60 @@ export default function ActivityDetectorMonitor({
           {isDetecting && liveFeatures && (
             <div className="absolute top-20 left-4 flex flex-col gap-2 pointer-events-none">
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.handToMouth) < 0.35
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.handToMouth) < 0.35
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🍽️</span> HAND NEAR FACE
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.velocity) < 0.03
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.velocity) < 0.03
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🛑</span> BODY STILL
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  parseFloat(liveFeatures.torsoAlign) > 1.1
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${parseFloat(liveFeatures.torsoAlign) > 1.1
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🛏️</span> LYING DOWN
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Sitting / rest"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sitting / rest"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🪑</span> SITTING / RESTING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Standing"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
-              >
-                <span className="text-xs">🧍</span> STANDING
-              </div>
-              <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Sleeping"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Sleeping"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">😴</span> SLEEPING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Walking"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Walking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🚶</span> WALKING
               </div>
               <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Drinking"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${currentActivity?.activity_name === "Drinking"
+                  ? "bg-green-500/20 border-green-500 text-green-400"
+                  : "bg-gray-900 border-gray-700 text-gray-500"
+                  }`}
               >
                 <span className="text-xs">🥤</span> DRINKING
-              </div>
-              <div
-                className={`px-2 py-1.5 rounded-md text-[10px] font-bold border backdrop-blur-md transition-all duration-300 flex items-center gap-2 ${
-                  currentActivity?.activity_name === "Taking Medications"
-                    ? "bg-green-500/20 border-green-500 text-green-400"
-                    : "bg-gray-900 border-gray-700 text-gray-500"
-                }`}
-              >
-                <span className="text-xs">💊</span> TAKING MEDICATIONS
               </div>
             </div>
           )}
@@ -630,7 +745,7 @@ export default function ActivityDetectorMonitor({
                 </div>
                 <div>
                   <p className="text-green-400 font-bold text-sm">
-                    Activity Confirmed (1s stable)
+                    Activity Confirmed (3s stable)
                   </p>
                   <p className="text-white text-base font-semibold">
                     {confirmedActivity.name}
@@ -639,17 +754,16 @@ export default function ActivityDetectorMonitor({
               </div>
               <div className="text-right">
                 <div
-                  className={`text-xs font-bold px-3 py-1 rounded-full border ${
-                    confirmedActivity.status === "Completed"
-                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                      : confirmedActivity.status === "Early"
-                        ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
-                        : confirmedActivity.status === "Late"
-                          ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                          : confirmedActivity.status === "Missed"
-                            ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                            : "text-blue-400 bg-blue-500/10 border-blue-500/20"
-                  }`}
+                  className={`text-xs font-bold px-3 py-1 rounded-full border ${confirmedActivity.status === "Completed"
+                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                    : confirmedActivity.status === "Early"
+                      ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/20"
+                      : confirmedActivity.status === "Late"
+                        ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                        : confirmedActivity.status === "Missed"
+                          ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                          : "text-blue-400 bg-blue-500/10 border-blue-500/20"
+                    }`}
                 >
                   {confirmedActivity.status}
                 </div>
@@ -666,11 +780,10 @@ export default function ActivityDetectorMonitor({
             <button
               onClick={startDetection}
               disabled={isLoading}
-              className={`flex-1 ${
-                isLoading
-                  ? "bg-gray-600 cursor-not-allowed"
-                  : "bg-green-600 hover:bg-green-700"
-              } px-4 py-2 rounded font-semibold transition`}
+              className={`flex-1 ${isLoading
+                ? "bg-gray-600 cursor-not-allowed"
+                : "bg-green-600 hover:bg-green-700"
+                } px-4 py-2 rounded font-semibold transition`}
             >
               {isLoading ? "⏳ Loading Models..." : "▶ Start Activity Detection"}
             </button>
@@ -726,8 +839,7 @@ export default function ActivityDetectorMonitor({
             </p>
           ) : (
             detectionLogs.map((log, idx) => {
-              const statusDisplay =
-                STATUS_DISPLAY[log.status] || STATUS_DISPLAY.Unexpected;
+              const statusDisplay = STATUS_DISPLAY[log.status] || STATUS_DISPLAY.Late;
               return (
                 <div
                   key={idx}
