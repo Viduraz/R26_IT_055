@@ -32,20 +32,19 @@ async def websocket_process(websocket: WebSocket, token: str = ""):
     """
     Persistent WebSocket stream for real-time anomaly detection.
     Phase 3: latency instrumentation + metrics recording per frame.
-    Phase 4: JWT token validated via query param:
+    Phase 4: JWT token validated via query param (REQUIRED):
              ws://localhost:8003/api/anomaly/ws/process?token=<jwt>
+    FIX (B-8): Token is now always required. Missing or invalid
+               token is rejected immediately with close code 4001.
     """
-    # ── JWT validation before accepting ──────────────────────────────────────
-    if token:
-        try:
-            from shared.backend.auth.jwt_handler import decode_access_token
-            decode_access_token(token)
-        except Exception as auth_err:
-            print(f"[websocket] JWT rejected: {repr(auth_err)}")
-            await websocket.close(code=4001)
-            return
-    # If no token provided, allow through (supports unauthenticated demo mode)
-    # In full production, change the above `if token:` to always validate.
+    # ── JWT validation — mandatory ────────────────────────────────────────────
+    try:
+        from shared.backend.auth.jwt_handler import decode_access_token
+        decode_access_token(token)
+    except Exception as auth_err:
+        print(f"[websocket] JWT rejected: {repr(auth_err)}")
+        await websocket.close(code=4001)
+        return
 
     await websocket.accept()
     person_id   = None

@@ -244,6 +244,7 @@ services:
     restart: unless-stopped
 
   # ─── Caregiver Marketplace ───────────────────────────────────────────────────
+  # FIX (B-4): marketplace services were missing from docker-compose.
   marketplace-backend:
     build:
       context: .
@@ -284,3 +285,10 @@ services:
         condition: service_healthy
     networks: [ eldercare-net ]
     restart: unless-stopped
+
+  # ─── Skeleton Identification ─────────────────────────────────────────────────
+  # NOTE (B-4): skeleton-identification has no Dockerfile yet and cannot be
+  # containerised via docker-compose. Use start-all.ps1 to run it locally
+  # (skeleton-identification/backend on port 8007, frontend on port 3000).
+  # To enable Docker support: add a Dockerfile to skeleton-identification/backend/
+  # and skeleton-identification/frontend/, then add service definitions here.

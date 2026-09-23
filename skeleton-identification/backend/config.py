@@ -22,11 +22,14 @@ class Settings(BaseSettings):
     mongodb_db: str = Field(default="skeleton_id", validation_alias="mongodb_db_name")
 
     # ── Service Ports ─────────────────────────────────────────────────────────
+    # FIX (B-3): Changed from 8001–8004 (collide with face/tracking/anomaly/schedule)
+    # to 8011–8014. These are used only for internal URL construction inside the
+    # single-process gateway — none of these ports are actually bound/listened on.
     gateway_port: int = Field(default=8007, validation_alias="skeleton_backend_port")
-    video_service_port: int = 8001
-    pose_service_port: int = 8002
-    feature_service_port: int = 8003
-    identification_service_port: int = 8004
+    video_service_port: int = 8011
+    pose_service_port: int = 8012
+    feature_service_port: int = 8013
+    identification_service_port: int = 8014
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model_dir: str = "./models"

@@ -11,6 +11,13 @@
 # 3. Create CNAME DNS records per dns-setup.md
 # 4. Update all frontend .env.tunnel files with your actual domain
 # 5. Run .\cloudflare\start-tunnel.ps1
+#
+# ⚠️  FIX (B-5): This file still contains TEMPLATE PLACEHOLDERS.
+# Named-tunnel mode (start-tunnel.ps1) will FAIL until you replace:
+#   <TUNNEL_ID>, <YOUR_USERNAME>, and yourdomain.com
+# with real values. Quick Tunnel mode (start-all.ps1 default) does
+# NOT use this file and works without any changes here.
+# ───────────────────────────────────────────────────────────────
 
 tunnel: <TUNNEL_ID>
 credentials-file: C:\Users\<YOUR_USERNAME>\.cloudflared\<TUNNEL_ID>.json

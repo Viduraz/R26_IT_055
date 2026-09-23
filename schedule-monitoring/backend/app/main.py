@@ -38,9 +38,6 @@ app.include_router(schedule_router, prefix="/api/schedule", tags=["Schedule"])
 app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitoring"])
 
 
-# ── Background sweep thread ────────────────────────────────────────────────
-from shared.backend.config.database import get_db
-
 
 def _get_all_patient_ids() -> list:
     """Return every distinct patient/user ID that has an active schedule."""
