@@ -94,7 +94,10 @@ class FaceService:
         db = get_db()
         # Find all enrolled users with face embeddings
         enrolled_users = list(db["users"].find({
-            "face_embeddings": {"$exists": True, "$ne": None}
+            "$or": [
+                {"face_embeddings.0": {"$exists": True}},
+                {"face_verification_status": "enrolled"}
+            ]
         }))
 
         best_match = None

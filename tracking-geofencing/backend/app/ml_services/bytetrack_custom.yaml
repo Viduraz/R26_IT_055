@@ -1,0 +1,10 @@
+# Custom ByteTrack configuration for Secure Elder Care
+# Optimized for elderly person tracking: slower movement, frequent sitting/standing postures,
+# occasional occlusion by furniture, and CPU/GPU real-time processing.
+
+tracker_type: bytetrack
+track_high_thresh: 0.45    # Threshold for first association (lowered from 0.50 to catch sitting postures)
+track_low_thresh: 0.10     # Threshold for second association (recovers occluded/partially visible person)
+new_track_thresh: 0.50     # Threshold to initialize new track (lowered from 0.60 so conf ~0.5 starts a track)
+track_buffer: 60           # Retain lost tracks for up to 60 frames (survives 2-4s of temporary occlusion)
+match_thresh: 0.75         # Balanced IoU matching threshold

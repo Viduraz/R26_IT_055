@@ -21,7 +21,8 @@ from app.services.absence_monitor_service import evaluate_absence
 from app.ml_services.inference.skeleton_tracker import SkeletonTracker
 
 
-FACE_VERIFICATION_URL = "http://localhost:8001"
+import os
+FACE_VERIFICATION_URL = os.getenv("FACE_SERVICE_URL", "http://127.0.0.1:8001")
 
 
 async def handle_process_frame(request: ProcessFrameRequest) -> dict:

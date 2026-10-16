@@ -94,6 +94,8 @@ class BreachCheckRequest(BaseModel):
     person_id: str
     x: float
     y: float
+    frame_w: Optional[float] = None
+    frame_h: Optional[float] = None
 
 
 class BreachCheckResponse(BaseModel):
