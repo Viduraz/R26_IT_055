@@ -124,8 +124,18 @@ class AuthService:
 
     async def login(self, payload: LoginRequest) -> dict | None:
         user = await self._user_service.get_by_email(payload.email)
-        
-        if not user or not verify_password(payload.password, user["password_hash"]):
+
+        if not user:
+            print(f"[AUTH] Login failed: no user found for email '{payload.email}'")
+            return None
+
+        pw_hash = user.get("password_hash", "")
+        if not pw_hash:
+            print(f"[AUTH] Login failed: user '{payload.email}' has no password_hash stored")
+            return None
+
+        if not verify_password(payload.password, pw_hash):
+            print(f"[AUTH] Login failed: password mismatch for '{payload.email}'")
             return None
 
         if user.get("role") == "caregiver":
@@ -139,7 +149,11 @@ class AuthService:
 
     async def login_with_face(self, payload: FaceLoginRequest) -> dict | None:
         user = await self._user_service.get_by_email(payload.email)
-        if not user or not verify_password(payload.password, user["password_hash"]):
+        if not user:
+            print(f"[AUTH] Face login failed: no user for '{payload.email}'")
+            return None
+        if not verify_password(payload.password, user.get("password_hash", "")):
+            print(f"[AUTH] Face login failed: password mismatch for '{payload.email}'")
             return None
 
         async def verify_face():
@@ -192,10 +206,16 @@ class AuthService:
                 import traceback
                 with open("C:/Secure-Eldercare-Project/auth-service/backend/error_traceback.txt", "w") as f:
                     f.write(traceback.format_exc())
-                print(f"[ERROR] Unexpected Face verification connection issue: {repr(e)}")
+                # ConnectTimeout / ConnectError means the face service is offline.
+                # Treat as a non-fatal warning so login is not completely blocked.
+                err_str = repr(e)
+                if any(x in err_str for x in ("ConnectTimeout", "ConnectError", "ConnectionRefused")):
+                    print(f"[WARNING] Face verification service unreachable — skipping check: {err_str}")
+                    return  # allow login to proceed without face check
+                print(f"[ERROR] Unexpected Face verification connection issue: {err_str}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Face verification connection issue: {repr(e)}"
+                    detail=f"Face verification connection issue: {err_str}"
                 )
 
         async def verify_skeleton():
