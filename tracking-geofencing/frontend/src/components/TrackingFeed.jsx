@@ -793,11 +793,11 @@ export default function TrackingFeed({
         setError("Backend offline — monitoring paused.");
         stopMonitoring();
       } else if (isActive && monitoring) {
-        intervalRef.current = setTimeout(captureAndSend, 300);
+        intervalRef.current = setTimeout(captureAndSend, 120);
       }
     };
 
-    intervalRef.current = setTimeout(captureAndSend, 300);
+    intervalRef.current = setTimeout(captureAndSend, 120);
 
     return () => {
       isActive = false;
@@ -879,7 +879,13 @@ export default function TrackingFeed({
             newBreachedIds.add(person.person_id);
             if (!breachLoggedRef.current.has(breachKey)) {
               breachLoggedRef.current.add(breachKey);
-              geofenceApi.checkBreach({ person_id: person.person_id, x: feetX, y: feetY })
+              geofenceApi.checkBreach({
+                person_id: person.person_id,
+                x: feetX,
+                y: feetY,
+                frame_w: videoRef.current?.videoWidth || 640,
+                frame_h: videoRef.current?.videoHeight || 480,
+              })
                 .then((res) => {
                   playAlertSound();
 

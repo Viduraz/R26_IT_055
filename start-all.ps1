@@ -12,7 +12,7 @@ param(
     [switch]$LocalOnly
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 Write-Host ""
 Write-Host "====================================================" -ForegroundColor Cyan
@@ -25,13 +25,13 @@ $processes = @()
 # Python executable for services without a dedicated venv.
 # NOTE: The root .venv is incomplete (missing uvicorn etc.), so we use the full
 # system Python311 installation which has all packages installed globally.
-$rootPython = "C:\Users\vidur\AppData\Local\Programs\Python\Python311\python.exe"
+$rootPython = "C:\Users\minid\AppData\Local\Programs\Python\Python311\python.exe"
 
 $backends = @(
     @{ Path = "auth-service\backend";            Name = "Auth Backend (8000)";        Python = $rootPython },
     @{ Path = "face-verification\backend";       Name = "Face Backend (8001)";        Python = $rootPython },
     @{ Path = "tracking-geofencing\backend";     Name = "Tracking Backend (8002)";    Python = $rootPython },
-    @{ Path = "anomaly-detection\backend";       Name = "Anomaly Backend (8003)";     Python = "$PSScriptRoot\anomaly-detection\backend\venv\Scripts\python.exe" },
+    @{ Path = "anomaly-detection\backend";       Name = "Anomaly Backend (8003)";     Python = $rootPython },
     @{ Path = "schedule-monitoring\backend";     Name = "Schedule Backend (8004)";    Python = $rootPython },
     @{ Path = "gateway-dashboard\backend";       Name = "Gateway Backend (8005)";     Python = $rootPython },
     @{ Path = "caregiver-marketplace\backend";   Name = "Marketplace Backend (8006)"; Python = $rootPython },
@@ -73,9 +73,11 @@ foreach ($fe in $frontends) {
         $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", "npm run dev -- --host 127.0.0.1 --mode tunnel" -WorkingDirectory $fullPath -WindowStyle Minimized -PassThru
     }
     $processes += $proc
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 400
 }
 Write-Host "[SUCCESS] Frontends started." -ForegroundColor Green
+Write-Host "[INFO] Waiting 10s for Vite dev servers to fully boot..." -ForegroundColor Gray
+Start-Sleep -Seconds 10
 Write-Host ""
 
 # --- 3. Start Local Reverse Proxy ---
@@ -85,8 +87,8 @@ $tunnelLog   = "$PSScriptRoot\tunnel.log"
 
 # Clean up previous cloudflared processes
 Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
-if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
+Start-Sleep -Milliseconds 600
+if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force -ErrorAction SilentlyContinue }
 
 # Kill any process already holding port 8080 (prevents EADDRINUSE on re-run)
 $port8080Line = netstat -ano | Select-String ":8080 " | Select-String "LISTEN"

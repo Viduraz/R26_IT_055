@@ -58,6 +58,8 @@ async def handle_check_breach(request: BreachCheckRequest) -> dict:
         person_id=request.person_id,
         x=request.x,
         y=request.y,
+        frame_w=request.frame_w,
+        frame_h=request.frame_h,
     )
 
 
