@@ -22,10 +22,14 @@ Write-Host ""
 
 $processes = @()
 
-# Python executable for services without a dedicated venv.
-# NOTE: The root .venv is incomplete (missing uvicorn etc.), so we use the full
-# system Python311 installation which has all packages installed globally.
-$rootPython = "C:\Users\minid\AppData\Local\Programs\Python\Python311\python.exe"
+# Python executable: use the full system Python311 installation which has all
+# packages installed globally (the root .venv is an empty stub with no packages).
+$rootPython = "C:\Users\vidur\AppData\Local\Programs\Python\Python311\python.exe"
+if (-not (Test-Path $rootPython)) {
+    # Fallback: resolve from PATH (skip the broken .venv if it is first in PATH)
+    $rootPython = (where.exe python 2>$null | Where-Object { $_ -notlike "*\.venv\*" } | Select-Object -First 1)
+    if (-not $rootPython) { $rootPython = "python" }
+}
 
 $backends = @(
     @{ Path = "auth-service\backend";            Name = "Auth Backend (8000)";        Python = $rootPython },
