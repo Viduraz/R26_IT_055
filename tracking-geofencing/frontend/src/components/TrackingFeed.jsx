@@ -865,18 +865,19 @@ export default function TrackingFeed({
         const personDistFromCam = effectiveHeightPx > 0 ? (850 / effectiveHeightPx) : 0;
         const zoneDistFromCam = zone.camera_distance || 4.0;
 
-        const feetInPolygon = pointInPolygon([feetX, feetY], zone.polygon);
-        const centerX = person.bbox.x + bboxW / 2;
-        const centerY = person.bbox.y + bboxH / 2;
-        const centerInPolygon = pointInPolygon([centerX, centerY], zone.polygon);
+        const headX = person.bbox.x + bboxW / 2;
+        const headY = person.bbox.y + Math.min(15, bboxH * 0.15);
+        const headInPolygon = pointInPolygon([headX, headY], zone.polygon) || pointInPolygon([headX, person.bbox.y], zone.polygon);
+
+        const legsInPolygon = pointInPolygon([feetX, feetY], zone.polygon) || pointInPolygon([feetX, feetY - Math.min(15, bboxH * 0.15)], zone.polygon);
 
         // 1. Person in front of the zone: DO NOT generate alert message
         const isFeetInFront = feetY > (zoneMaxY + 6);
         const isDepthInFront = zone.camera_distance ? (personDistFromCam < zoneDistFromCam - 0.5) : false;
         const isInFrontOfZone = isFeetInFront || (isDepthInFront && feetY > (zoneMinY + zoneMaxY) / 2);
 
-        // 2. Alert only when person goes BACK into the zone and fully covers the zone
-        const isFullyInZone = feetInPolygon && !isInFrontOfZone && (centerInPolygon || pointInPolygon([feetX, feetY - bboxH * 0.25], zone.polygon));
+        // 2. Alert only when person goes BACK into the zone: BOTH legs inside AND head inside the red zone
+        const isFullyInZone = legsInPolygon && headInPolygon && !isInFrontOfZone;
         const isBreaching = isFullyInZone;
 
         // Trigger breach if breaching
