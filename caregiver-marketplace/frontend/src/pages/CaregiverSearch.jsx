@@ -5,10 +5,23 @@ import Footer from "../components/Footer";
 import CaregiverCard from "../components/CaregiverCard";
 import { searchCaregivers } from "../services/caregiverApi";
 
+// Decode the JWT stored in localStorage to check if the current user is admin.
+function getJwtRole() {
+  try {
+    const token = localStorage.getItem("access_token");
+    if (!token) return null;
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload?.role || null;
+  } catch {
+    return null;
+  }
+}
+
 const CaregiverSearch = () => {
   const [caregivers, setCaregivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const isAdmin = getJwtRole() === "admin";
 
   // Filter States
   const [specialization, setSpecialization] = useState("");
@@ -63,7 +76,7 @@ const CaregiverSearch = () => {
       <Navbar />
 
       <main className="flex-grow max-w-7xl w-full mx-auto px-6 py-10">
-        
+
         {/* Page Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
           <div>
@@ -82,7 +95,7 @@ const CaregiverSearch = () => {
 
         {/* Search Panel & Grid */}
         <div className="grid lg:grid-cols-4 gap-8">
-          
+
           {/* Filters Panel */}
           <div className="lg:col-span-1 glass-panel rounded-2xl p-6 h-fit shrink-0 border border-slate-800">
             <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-4 mb-6">
@@ -100,7 +113,7 @@ const CaregiverSearch = () => {
             </div>
 
             <div className="flex flex-col gap-5">
-              
+
               {/* Specialization Filter */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
@@ -199,7 +212,11 @@ const CaregiverSearch = () => {
               <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
                 {caregivers.map((caregiver) => (
                   <div key={caregiver.id} className="h-full">
-                    <CaregiverCard caregiver={caregiver} />
+                    <CaregiverCard
+                      caregiver={caregiver}
+                      isAdmin={isAdmin}
+                      onVerify={() => fetchCaregivers()}
+                    />
                   </div>
                 ))}
               </div>

@@ -2,7 +2,7 @@
 caregiver-marketplace/backend/app/routes/booking_routes.py
 API endpoints for creating and managing bookings.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List
 
 from app.schemas.booking_schema import CreateBookingRequest, BookingResponse, ResendPatientIdRequest
@@ -13,15 +13,47 @@ from app.middleware.verify_token import get_current_user
 router = APIRouter()
 booking_service = BookingService()
 
+async def dispatch_notifications(notify_email, notify_sms, booking, email_override=None, phone_override=None):
+    if notify_email:
+        family_email = email_override or booking.get("family_email")
+        if family_email:
+            email_sent = await send_patient_id_email(
+                family_email=family_email,
+                family_name=booking.get("family_name", "Family"),
+                caregiver_name=booking.get("caregiver_name", "Caregiver"),
+                elder_name=booking.get("elder", {}).get("name", "Elder"),
+                patient_id=booking.get("patient_id"),
+                booking_id=booking.get("booking_id")
+            )
+            if email_sent:
+                await booking_service.mark_patient_id_sent(booking["booking_id"], "email")
+
+    if notify_sms:
+        phone = phone_override or booking.get("family_phone")
+        if phone:
+            sms_sent = await send_patient_id_sms(
+                phone=phone,
+                patient_id=booking.get("patient_id"),
+                elder_name=booking.get("elder", {}).get("name", "Elder"),
+                caregiver_name=booking.get("caregiver_name", "Caregiver")
+            )
+            if sms_sent:
+                await booking_service.mark_patient_id_sent(booking["booking_id"], "sms")
+
+
 
 @router.post("/bookings", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
 async def create_booking(
     request: CreateBookingRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """
     Create a new caregiver booking. Generates a unique Patient ID and sends it to the user.
     """
+    # JWT stores user ID as 'sub'; fall back to 'id' for compatibility
+    user_id = current_user.get("sub") or current_user.get("id", "")
+
     # Prevent caregivers from booking other caregivers
     if current_user.get("role") == "caregiver":
         raise HTTPException(
@@ -31,50 +63,31 @@ async def create_booking(
 
     # Convert request to dict and create booking
     booking = await booking_service.create_booking(
-        family_user_id=current_user["id"],
+        family_user_id=user_id,
         payload=request.dict()
     )
 
-    # Attempt to send Patient ID via chosen channels
-    email_sent = False
-    sms_sent = False
-
-    if request.notify_email and booking.get("family_email"):
-        email_sent = await send_patient_id_email(
-            family_email=booking["family_email"],
-            family_name=booking["family_name"],
-            caregiver_name=booking["caregiver_name"],
-            elder_name=booking["elder"]["name"],
-            patient_id=booking["patient_id"],
-            booking_id=booking["booking_id"]
-        )
-        if email_sent:
-            await booking_service.mark_patient_id_sent(booking["booking_id"], "email")
-
-    if request.notify_sms:
-        phone = request.family_phone or booking.get("family_phone")
-        if phone:
-            sms_sent = await send_patient_id_sms(
-                phone=phone,
-                patient_id=booking["patient_id"],
-                elder_name=booking["elder"]["name"],
-                caregiver_name=booking["caregiver_name"]
-            )
-            if sms_sent:
-                await booking_service.mark_patient_id_sent(booking["booking_id"], "sms")
+    # Attempt to send Patient ID via chosen channels in the background
+    background_tasks.add_task(
+        dispatch_notifications,
+        notify_email=request.notify_email,
+        notify_sms=request.notify_sms,
+        booking=booking,
+        phone_override=request.family_phone
+    )
 
     # Construct user-facing message
     channels = []
-    if email_sent:
+    if request.notify_email and booking.get("family_email"):
         channels.append("email")
-    if sms_sent:
+    if request.notify_sms and (request.family_phone or booking.get("family_phone")):
         channels.append("sms")
         
     msg = f"Booking confirmed. Patient ID {booking['patient_id']} has been generated"
     if channels:
-        msg += f" and sent via {', '.join(channels)}."
+        msg += f" and delivery via {', '.join(channels)} has been initiated."
     else:
-        msg += " but could not be sent (check SMTP/SMS configuration)."
+        msg += " (no delivery channels configured)."
 
     return BookingResponse(
         booking_id=booking["booking_id"],
@@ -93,9 +106,10 @@ async def list_bookings(current_user: dict = Depends(get_current_user)):
     """
     Get all bookings related to the logged-in user (family member or caregiver).
     """
+    user_id = current_user.get("sub") or current_user.get("id", "")
     return await booking_service.get_bookings_for_user(
-        user_id=current_user["id"],
-        role=current_user["role"]
+        user_id=user_id,
+        role=current_user.get("role", "family_member")
     )
 
 
@@ -132,9 +146,10 @@ async def cancel_booking(
     """
     Cancel an active booking. Only the family member who made the booking can cancel it.
     """
+    user_id = current_user.get("sub") or current_user.get("id", "")
     success = await booking_service.cancel_booking(
         booking_id=booking_id,
-        user_id=current_user["id"]
+        user_id=user_id
     )
     if not success:
         raise HTTPException(
@@ -148,6 +163,7 @@ async def cancel_booking(
 async def resend_patient_id(
     booking_id: str,
     request: ResendPatientIdRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -166,43 +182,24 @@ async def resend_patient_id(
             detail="Only the booking creator can request Patient ID delivery"
         )
 
-    email_sent = False
-    sms_sent = False
-
-    if request.via_email and booking.get("family_email"):
-        email_sent = await send_patient_id_email(
-            family_email=booking["family_email"],
-            family_name=booking["family_name"],
-            caregiver_name=booking["caregiver_name"],
-            elder_name=booking["elder"]["name"],
-            patient_id=booking["patient_id"],
-            booking_id=booking["booking_id"]
-        )
-        if email_sent:
-            await booking_service.mark_patient_id_sent(booking["booking_id"], "email")
-
-    if request.via_sms:
-        phone = request.phone_override or booking.get("family_phone")
-        if phone:
-            sms_sent = await send_patient_id_sms(
-                phone=phone,
-                patient_id=booking["patient_id"],
-                elder_name=booking["elder"]["name"],
-                caregiver_name=booking["caregiver_name"]
-            )
-            if sms_sent:
-                await booking_service.mark_patient_id_sent(booking["booking_id"], "sms")
-
     channels = []
-    if email_sent:
+    if request.via_email and booking.get("family_email"):
         channels.append("email")
-    if sms_sent:
+    if request.via_sms and (request.phone_override or booking.get("family_phone")):
         channels.append("sms")
 
     if not channels:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send notification. Verify SMTP or Twilio setup."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid delivery channels specified or found."
         )
 
-    return {"status": "success", "message": f"Patient ID resent via {', '.join(channels)}."}
+    background_tasks.add_task(
+        dispatch_notifications,
+        notify_email=request.via_email,
+        notify_sms=request.via_sms,
+        booking=booking,
+        phone_override=request.phone_override
+    )
+
+    return {"status": "success", "message": f"Patient ID resend via {', '.join(channels)} initiated."}

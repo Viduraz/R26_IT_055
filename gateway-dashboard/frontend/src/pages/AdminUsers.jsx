@@ -2,7 +2,7 @@
 // Full user management panel — accessible from the Admin Dashboard stat tiles.
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getAllUsers, updateUserStatus } from "../services/dashboardApi";
+import { getAllUsers, updateUserStatus, deleteUser } from "../services/dashboardApi";
 import { useAuth } from "@shared/hooks/useAuth";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -47,23 +47,31 @@ const Shield = () => (
     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
   </svg>
 );
+const Trash = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    <path d="M10 11v6M14 11v6" />
+    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+  </svg>
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const ROLE_COLORS = {
-  admin:         { bg: "bg-indigo-500/15", text: "text-indigo-400", border: "border-indigo-500/30" },
-  caregiver:     { bg: "bg-purple-500/15", text: "text-purple-400", border: "border-purple-500/30" },
-  family_member: { bg: "bg-blue-500/15",   text: "text-blue-400",   border: "border-blue-500/30"   },
+  admin: { bg: "bg-indigo-500/15", text: "text-indigo-400", border: "border-indigo-500/30" },
+  caregiver: { bg: "bg-purple-500/15", text: "text-purple-400", border: "border-purple-500/30" },
+  family_member: { bg: "bg-blue-500/15", text: "text-blue-400", border: "border-blue-500/30" },
 };
 
 const STATUS_COLORS = {
   approved: { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/30", dot: "bg-emerald-400" },
-  pending:  { bg: "bg-amber-500/15",   text: "text-amber-400",   border: "border-amber-500/30",   dot: "bg-amber-400"  },
-  rejected: { bg: "bg-red-500/15",     text: "text-red-400",     border: "border-red-500/30",     dot: "bg-red-400"    },
+  pending: { bg: "bg-amber-500/15", text: "text-amber-400", border: "border-amber-500/30", dot: "bg-amber-400" },
+  rejected: { bg: "bg-red-500/15", text: "text-red-400", border: "border-red-500/30", dot: "bg-red-400" },
 };
 
 const FACE_STATUS_COLORS = {
   enrolled: { text: "text-emerald-400", label: "Enrolled" },
-  pending:  { text: "text-amber-400",   label: "Pending"  },
+  pending: { text: "text-amber-400", label: "Pending" },
 };
 
 function roleLabel(role) {
@@ -83,24 +91,24 @@ function avatarColor(name = "") {
 }
 
 // ── Detail slide-over panel ───────────────────────────────────────────────────
-function UserDetailPanel({ user, onClose, onStatusChange, loading }) {
+function UserDetailPanel({ user, onClose, onStatusChange, onDelete, loading }) {
   if (!user) return null;
   const role = ROLE_COLORS[user.role] || ROLE_COLORS.family_member;
   const statusCfg = STATUS_COLORS[user.approval_status] || STATUS_COLORS.pending;
   const isCaregiver = user.role === "caregiver";
 
   const fields = [
-    { label: "Email",             value: user.email },
-    { label: "Role",              value: roleLabel(user.role) },
-    { label: "Contact Number",    value: user.contact_number || "—" },
-    { label: "Date of Birth",     value: user.date_of_birth || "—" },
-    { label: "Gender",            value: user.gender || "—" },
-    { label: "ID Number",         value: user.id_number || "—" },
+    { label: "Email", value: user.email },
+    { label: "Role", value: roleLabel(user.role) },
+    { label: "Contact Number", value: user.contact_number || "—" },
+    { label: "Date of Birth", value: user.date_of_birth || "—" },
+    { label: "Gender", value: user.gender || "—" },
+    { label: "ID Number", value: user.id_number || "—" },
     { label: "Permanent Address", value: user.permanent_address || "—" },
-    { label: "Office Address",    value: user.office_address || "—" },
-    { label: "Relationship",      value: user.relationship_to_elder || "—" },
+    { label: "Office Address", value: user.office_address || "—" },
+    { label: "Relationship", value: user.relationship_to_elder || "—" },
     { label: "Emergency Contact", value: user.emergency_contact_name ? `${user.emergency_contact_name} (${user.emergency_contact_number})` : "—" },
-    { label: "Registered",        value: user.created_at ? new Date(user.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—" },
+    { label: "Registered", value: user.created_at ? new Date(user.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—" },
   ];
 
   return (
@@ -179,6 +187,17 @@ function UserDetailPanel({ user, onClose, onStatusChange, loading }) {
             </div>
           ))}
         </div>
+
+        {/* Danger zone — Delete */}
+        <div className="p-5 border-t border-white/8 mt-auto">
+          <button
+            onClick={() => onDelete(user)}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-600/15 hover:bg-red-600/30 border border-red-500/25 text-red-400 hover:text-red-300 text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Trash /> Delete User Account
+          </button>
+        </div>
       </div>
 
       <style>{`
@@ -203,6 +222,7 @@ export default function AdminUsers() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // user object to delete
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
@@ -238,9 +258,25 @@ export default function AdminUsers() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!confirmDelete) return;
+    setActionLoading(true);
+    try {
+      await deleteUser(token, confirmDelete.id);
+      setUsers((prev) => prev.filter((u) => u.id !== confirmDelete.id));
+      if (selected?.id === confirmDelete.id) setSelected(null);
+      showToast(`${confirmDelete.name || "User"} deleted`, "success");
+    } catch (err) {
+      showToast(err.response?.data?.detail || "Delete failed", "error");
+    } finally {
+      setActionLoading(false);
+      setConfirmDelete(null);
+    }
+  };
+
   // Filtered list
   const filtered = users.filter((u) => {
-    const matchRole   = roleFilter === "all" || u.role === roleFilter;
+    const matchRole = roleFilter === "all" || u.role === roleFilter;
     const matchStatus = statusFilter === "all" || (u.approval_status || "pending") === statusFilter;
     const q = search.toLowerCase();
     const matchSearch = !q || (u.name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
@@ -259,11 +295,10 @@ export default function AdminUsers() {
 
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-6 right-6 z-[100] flex items-center gap-2 px-4 py-3 rounded-xl border shadow-lg text-sm font-medium transition-all ${
-          toast.type === "success"
+        <div className={`fixed top-6 right-6 z-[100] flex items-center gap-2 px-4 py-3 rounded-xl border shadow-lg text-sm font-medium transition-all ${toast.type === "success"
             ? "bg-emerald-900/80 border-emerald-500/40 text-emerald-300"
             : "bg-red-900/80 border-red-500/40 text-red-300"
-        }`}>
+          }`}>
           {toast.type === "success" ? <Check /> : <X />}
           {toast.msg}
         </div>
@@ -307,9 +342,8 @@ export default function AdminUsers() {
               <button
                 key={r}
                 onClick={() => setRoleFilter(r)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition ${
-                  roleFilter === r ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-white"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition ${roleFilter === r ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-white"
+                  }`}
               >
                 {r === "all" ? "All Roles" : r === "family_member" ? "Family" : r.charAt(0).toUpperCase() + r.slice(1)}
               </button>
@@ -322,9 +356,8 @@ export default function AdminUsers() {
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition ${
-                  statusFilter === s ? "bg-white/15 text-white" : "text-gray-400 hover:text-white"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition ${statusFilter === s ? "bg-white/15 text-white" : "text-gray-400 hover:text-white"
+                  }`}
               >
                 {s === "all" ? "All Status" : s}
               </button>
@@ -335,10 +368,10 @@ export default function AdminUsers() {
         {/* Stats bar */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: "Total",    val: users.length,                                                              color: "text-white"        },
-            { label: "Caregivers", val: users.filter(u => u.role === "caregiver").length,                      color: "text-purple-400"   },
-            { label: "Pending",  val: users.filter(u => !u.approval_status || u.approval_status === "pending").length, color: "text-amber-400"  },
-            { label: "Approved", val: users.filter(u => u.approval_status === "approved").length,               color: "text-emerald-400"  },
+            { label: "Total", val: users.length, color: "text-white" },
+            { label: "Caregivers", val: users.filter(u => u.role === "caregiver").length, color: "text-purple-400" },
+            { label: "Pending", val: users.filter(u => !u.approval_status || u.approval_status === "pending").length, color: "text-amber-400" },
+            { label: "Approved", val: users.filter(u => u.approval_status === "approved").length, color: "text-emerald-400" },
           ].map((s) => (
             <div key={s.label} className="rounded-xl border border-white/8 bg-white/3 p-3 text-center">
               <p className={`text-2xl font-bold tabular-nums ${s.color}`}>{s.val}</p>
@@ -444,14 +477,23 @@ export default function AdminUsers() {
                             {u.created_at ? new Date(u.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                           </span>
                         </td>
-                        {/* View detail */}
+                        {/* View + Delete */}
                         <td className="px-5 py-3.5">
-                          <button
-                            onClick={() => setSelected(u)}
-                            className="flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-400 transition px-2 py-1 rounded-lg hover:bg-indigo-500/10"
-                          >
-                            <Eye /> View
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setSelected(u)}
+                              className="flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-400 transition px-2 py-1 rounded-lg hover:bg-indigo-500/10"
+                            >
+                              <Eye /> View
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmDelete(u); }}
+                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                              title="Delete user"
+                            >
+                              <Trash />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -471,8 +513,46 @@ export default function AdminUsers() {
           user={selected}
           onClose={() => setSelected(null)}
           onStatusChange={handleStatusChange}
+          onDelete={(u) => { setSelected(null); setConfirmDelete(u); }}
           loading={actionLoading}
         />
+      )}
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setConfirmDelete(null)} />
+          <div className="relative bg-[#0d1525] border border-red-500/20 rounded-2xl p-6 max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/25 flex items-center justify-center text-red-400 flex-shrink-0">
+                <Trash />
+              </div>
+              <div>
+                <h3 className="font-bold text-white text-base">Delete User</h3>
+                <p className="text-xs text-gray-500">This action is permanent and cannot be undone.</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-300 mb-6">
+              Are you sure you want to delete <span className="font-semibold text-white">{confirmDelete.name || confirmDelete.email}</span>? Their account and all associated data will be removed permanently.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={actionLoading}
+                className="flex-1 py-2.5 rounded-xl bg-white/6 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-white text-sm font-semibold transition disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={actionLoading}
+                className="flex-1 py-2.5 rounded-xl bg-red-600/25 hover:bg-red-600/40 border border-red-500/30 text-red-400 hover:text-red-300 text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {actionLoading ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

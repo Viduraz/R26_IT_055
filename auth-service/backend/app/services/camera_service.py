@@ -103,6 +103,8 @@ class _CameraStream:
         while self._running:
             cap = None
             try:
+                # Optimizing latency for real-time MJPEG stream streaming (drop buffers)
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
                 print(f"[auth-camera] Connecting RTSP: {self._rtsp_url}")
                 cap = cv2.VideoCapture(self._rtsp_url, cv2.CAP_FFMPEG)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -117,7 +119,8 @@ class _CameraStream:
                     if not ok or frame is None:
                         print("[auth-camera] Empty frame — reconnecting…")
                         break
-                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    # Faster JPEG encoding and lower payload size (70% instead of 90%)
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     with self._lock:
                         self._latest_jpeg = buf.tobytes()
                         self._error       = None
@@ -139,6 +142,27 @@ _stream = _CameraStream()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+import asyncio
+
+async def stream_camera_frames():
+    """
+    Generator yielding MJPEG frames from the background thread.
+    """
+    _stream.start()
+    while True:
+        jpeg = _stream.get_latest_jpeg()
+        if jpeg is not None:
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+        else:
+            fallback = _try_http_snapshot(_stream._host, _stream._user, _stream._pwd)
+            if fallback:
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n\r\n" + fallback + b"\r\n")
+        
+        await asyncio.sleep(0.033) # ~30 fps
+
 
 def get_camera_frame() -> str:
     """

@@ -24,3 +24,13 @@ export const submitCaregiverReview = async (reviewData) => {
   const response = await api.post("/reviews", reviewData);
   return response.data;
 };
+
+// Admin-only: approve or reject a caregiver
+// action: 'approved' | 'rejected'
+export const verifyCaregiver = async (caregiverId, action = "approved") => {
+  const response = await api.patch(
+    `/caregivers/${caregiverId}/verify?action=${action}`
+  );
+  return response.data;
+};
+

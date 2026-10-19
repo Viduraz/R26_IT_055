@@ -6,6 +6,25 @@ import LoadingSpinner from '../components/LoadingSpinner';
 
 const TOTAL_FRAMES = 150;
 
+function playEnrollPing() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(920, ctx.currentTime);
+    gain.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.08);
+  } catch {
+    // Ignore audio policy blocks
+  }
+}
+
 export default function EnrollPage() {
   const toast = useToast();
 
@@ -23,7 +42,11 @@ export default function EnrollPage() {
   const [progress, setProgress] = useState(0);
   const [framesCollected, setFramesCollected] = useState(0);
   const [statusMsg, setStatusMsg] = useState('Select a user and start enrollment');
+  const [stagePrompt, setStagePrompt] = useState('Stage 1/15 (Frames 1-10): Neutral Posture — Face Camera Directly');
+  const [flashActive, setFlashActive] = useState(false);
+  const [postureHolding, setPostureHolding] = useState(false);
 
+  const lastCountRef = useRef(0);
   const cameraStreamRef = useRef(null);
   const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
@@ -51,36 +74,34 @@ export default function EnrollPage() {
     return () => { cancelled = true; };
   }, []);
 
+  const stopEnrollmentRef = useRef(null);
+
   const handleResult = useCallback((data) => {
+    if (data.stage_prompt) setStagePrompt(data.stage_prompt);
     if (data.status_msg) setStatusMsg(data.status_msg);
+    if (data.posture_holding !== undefined) setPostureHolding(data.posture_holding);
     if (!data.detected) {
-      setStatusMsg(data.status_msg || 'No person detected');
+      setStatusMsg(data.status_msg || 'No person detected — stand in camera view');
       return;
     }
-    if (data.features_ok) setStatusMsg('');
-    if (data.mode === 'enroll' && data.features_ok && data.frames_collected != null) {
+    if (data.features_ok && !data.posture_holding) setStatusMsg('');
+    if (data.mode === 'enroll' && data.frames_collected != null) {
+      if (data.frames_collected > lastCountRef.current) {
+        lastCountRef.current = data.frames_collected;
+        playEnrollPing();
+        setFlashActive(true);
+        setTimeout(() => setFlashActive(false), 160);
+      }
       setFramesCollected(data.frames_collected);
-
-      // Speed up enrollment for presentation
-      /*const TARGET_FRAMES = 10;
-      const pct = Math.min((data.frames_collected / TARGET_FRAMES) * 100, 100);
+      const pct = Math.min((data.frames_collected / TOTAL_FRAMES) * 100, 100);
       setProgress(pct);
 
-      if (data.frames_collected >= TARGET_FRAMES) {
-        toast('Enrollment complete! ✅', 'success');
-        stopEnrollment();
+      if (data.enrollment_status === 'completed' || data.frames_collected >= TOTAL_FRAMES) {
+        toast('High-Precision 150-Frame Biometric Dataset complete! ✅ (Ready for Live Feed)', 'success');
+        if (stopEnrollmentRef.current) stopEnrollmentRef.current();
       }
-       */
-      //Original logic kept for after presentation:
-      const pct = Math.min((data.progress || 0), 100);
-      setProgress(pct);
-      if (data.enrollment_status === 'completed') {
-        toast('Enrollment complete! ✅', 'success');
-        stopEnrollment();
-      }
-
     }
-  }, []);
+  }, [toast]);
 
   const { connect, disconnect } = useWebSocket(
     { enrollVideoRef, enrollCanvasRef },
@@ -183,10 +204,34 @@ export default function EnrollPage() {
     setStatusMsg('Select a user and start enrollment');
   }, [disconnect]);
 
+  useEffect(() => {
+    stopEnrollmentRef.current = stopEnrollment;
+  }, [stopEnrollment]);
+
   const progressPct = Math.min(progress, 100);
 
   return (
     <div className="flex-1 p-6 overflow-y-auto">
+      {/* Skeleton Identification Information Banner */}
+      <div className="glass-card p-4 border-l-4 border-cyan-500 bg-cyan-950/20 text-slate-300 text-xs leading-relaxed mb-6">
+        <div className="flex items-start gap-3">
+          <span className="text-xl">🦴</span>
+          <div className="w-full">
+            <h4 className="font-semibold text-cyan-400 text-sm mb-1">
+              High-Precision Skeleton Biometric Enrollment (150 Frames across 15 Posture Stages)
+            </h4>
+            <p>
+              This system extracts <strong>scale-invariant skeletal bone structure ratios</strong> and <strong>temporal gait dynamics</strong> for high-accuracy live feed identification.
+            </p>
+            <ul className="list-disc list-inside mt-1.5 space-y-1 text-slate-400">
+              <li><strong>1 Frame per Posture:</strong> Staying still in 1 position captures 1 frame. You must alter your angle/posture to capture subsequent keyframes.</li>
+              <li><strong>150 High-Precision Keyframes:</strong> Deliberate 15-stage posture dataset (Neutral, 15°/45°/90° rotations, A-Pose, T-Pose, torso leans, and steps).</li>
+              <li><strong>Model Auto-Retraining:</strong> Upon capturing 150 keyframes, the machine learning models automatically retrain in real time for immediate live feed recognition.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] gap-6 w-full">
 
         {/* Form Panel */}
@@ -196,7 +241,7 @@ export default function EnrollPage() {
           {/* Create User */}
           <div className="space-y-3">
             <div>
-              <label className="form-label">Fullllll Nameeee</label>
+              <label className="form-label">Full Name</label>
               <input
                 type="text"
                 value={name}
@@ -330,6 +375,17 @@ export default function EnrollPage() {
               />
               <canvas ref={enrollCanvasRef} className="absolute inset-0 w-full h-full" />
 
+              {/* Flash border ring on frame capture */}
+              <div className={`absolute inset-0 pointer-events-none transition-all duration-150 ${flashActive ? 'border-4 border-emerald-400 bg-emerald-500/10' : 'border-0'}`} />
+
+              {/* HUD keyframe counter badge */}
+              {isEnrolling && (
+                <div className="absolute top-3 right-3 bg-dark-900/80 backdrop-blur-md border border-cyan-500/40 text-cyan-300 px-3 py-1.5 rounded-full text-xs font-mono flex items-center gap-2 shadow-lg z-10">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>📸 {framesCollected}/{TOTAL_FRAMES} Keyframes</span>
+                </div>
+              )}
+
               {/* Status overlay */}
               {(!isEnrolling || statusMsg) && (
                 <div className={`absolute inset-0 flex items-center justify-center bg-dark-900/70 transition-opacity ${isEnrolling && !statusMsg ? 'opacity-0 pointer-events-none' : ''}`}>
@@ -342,9 +398,21 @@ export default function EnrollPage() {
             </div>
           </div>
 
-          {/* Progress */}
+          {/* Progress & Posture Guidance */}
           {isEnrolling && (
-            <div className="p-4 border-t border-white/5 space-y-2 animate-fade-in">
+            <div className="p-4 border-t border-white/5 space-y-3 animate-fade-in">
+              <div className={`border rounded-lg p-3 text-center transition-all ${postureHolding ? 'bg-amber-500/10 border-amber-500/40 text-amber-200' : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'}`}>
+                <span className="text-xs font-semibold uppercase tracking-wider block mb-0.5">
+                  {postureHolding ? '⚠️ Posture Held — Movement Required' : '🟢 Active Guided Biometric Step'}
+                </span>
+                <p className="text-sm font-medium text-white">{stagePrompt}</p>
+                <p className="text-xs mt-1 text-slate-300">
+                  {postureHolding
+                    ? '💡 Standing still captures only 1 frame. Please turn, tilt, or shift your posture to record next keyframe.'
+                    : '✨ Movement detected! Keyframe captured successfully.'
+                  }
+                </p>
+              </div>
               <div className="confidence-bar-track">
                 <div
                   className="confidence-bar-fill bg-gradient-to-r from-violet-500 to-cyan-500"
@@ -352,7 +420,7 @@ export default function EnrollPage() {
                 />
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-slate-400">{framesCollected} frames collected</span>
+                <span className="text-slate-400">{framesCollected} / {TOTAL_FRAMES} high-precision keyframes</span>
                 <span className="font-mono text-violet-400">{Math.round(progressPct)}%</span>
               </div>
             </div>

@@ -3,7 +3,10 @@ tracking-geofencing/backend/app/services/tracking_service.py
 Orchestrates YOLOv8 detection + ByteTrack + geofence logic.
 """
 from datetime import datetime
-from shared.backend.config.database import get_db
+try:
+    from shared.backend.config.database import get_db
+except ImportError:
+    from app.database.db import get_database as get_db
 from app.ml_services.inference.skeleton_tracker import SkeletonTracker
 from app.services.absence_monitor_service import evaluate_absence
 from app.schemas.tracking_schema import SessionHandoffRequest, TrackVisibilityRequest

@@ -28,16 +28,19 @@ class CaregiverProfileUpdate(BaseModel):
     specializations: Optional[List[str]] = None
     hourly_rate: Optional[float] = None
     languages: Optional[List[str]] = None
-    availability: Optional[dict[str, AvailabilitySlot]] = None
+    availability: Optional[dict] = None
     service_area: Optional[str] = None
     profile_photo_url: Optional[str] = None
 
 
 class CaregiverPublicProfile(BaseModel):
     """Public-facing caregiver profile returned by the API."""
+    model_config = {"extra": "ignore"}  # silently drop unknown DB fields
+
     id: str
-    name: str
-    email: str
+    # name/email Optional — users registered before marketplace may lack these
+    name: Optional[str] = ""
+    email: Optional[str] = ""
     bio: Optional[str] = None
     specializations: Optional[List[str]] = None
     hourly_rate: Optional[float] = None
@@ -48,6 +51,8 @@ class CaregiverPublicProfile(BaseModel):
     rating: Optional[float] = 0.0
     total_reviews: Optional[int] = 0
     face_verification_status: Optional[str] = None
+    verification_status: Optional[str] = "pending"   # admin-controlled field
     caregiver_license_or_staff_id: Optional[str] = None
     contact_number: Optional[str] = None
     created_at: Optional[str] = None
+

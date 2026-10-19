@@ -2,7 +2,11 @@
 tracking-geofencing/backend/app/services/absence_monitor_service.py
 Mutates caregiver session state by calculating elapsed timer gaps against MediaPipe pings.
 """
-from shared.backend.config.database import get_db
+try:
+    from shared.backend.config.database import get_db
+except ImportError:
+    from app.database.db import get_database as get_db
+
 from datetime import datetime, timezone
 
 def evaluate_absence(session_id: str, visible: bool) -> dict:

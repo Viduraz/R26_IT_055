@@ -28,8 +28,8 @@ export default function Signup() {
     }
   };
 
-  const handleFaceEnrollmentComplete = (faceSamples) => {
-    const finalPayload = { ...form, face_samples: faceSamples };
+  const handleBiometricEnrollmentComplete = (faceSamples, skeletonSamples) => {
+    const finalPayload = { ...form, face_samples: faceSamples, skeleton_samples: skeletonSamples };
     submitRegistration(finalPayload);
   };
 
@@ -49,7 +49,7 @@ export default function Signup() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-8 w-full max-w-2xl">
+      <div className={`bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-8 w-full transition-all duration-300 ${step === 2 ? "max-w-6xl" : "max-w-2xl"}`}>
         <h1 className="text-3xl font-bold text-white mb-2 text-center">Create Account</h1>
         <p className="text-gray-400 text-center mb-8">Join Secure Elder Care</p>
 
@@ -157,15 +157,15 @@ export default function Signup() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold rounded-lg py-3 mt-4 transition"
+              className="w-full bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 disabled:opacity-60 text-white font-semibold rounded-lg py-3 mt-4 transition shadow-lg shadow-cyan-500/20"
             >
-              {loading ? "Creating account…" : form.role === "caregiver" ? "Proceed to Face Enrollment" : "Create Account"}
+              {loading ? "Creating account…" : form.role === "caregiver" ? "Proceed to Hybrid Biometric Enrollment" : "Create Account"}
             </button>
           </form>
         )}
 
         {step === 2 && form.role === "caregiver" && (
-          <FaceEnrollmentStep onComplete={handleFaceEnrollmentComplete} />
+          <FaceEnrollmentStep onComplete={handleBiometricEnrollmentComplete} />
         )}
 
         {step === 1 && (

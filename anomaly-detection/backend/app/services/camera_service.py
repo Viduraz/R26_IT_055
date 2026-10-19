@@ -171,8 +171,8 @@ class _CameraStream:
                         print("[camera] Empty frame — stream may have dropped, reconnecting…")
                         break
 
-                    # Encode to JPEG at 85% quality (good balance of size vs. fidelity)
-                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Encode to JPEG at 50% quality — smallest reasonable payload for low latency
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                     jpeg = buf.tobytes()
 
                     with self._lock:
@@ -240,6 +240,34 @@ def get_camera_snapshot() -> str:
 
     b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
     return f"data:image/jpeg;base64,{b64}"
+
+
+async def mjpeg_stream():
+    """
+    Async generator for a multipart/x-mixed-replace MJPEG stream.
+
+    Yields JPEG frames from the RTSP buffer at ~20 FPS so the browser
+    can display them as a true real-time video using a plain <img> tag.
+    No JS polling —the HTTP connection stays open and new frames are pushed.
+    """
+    import asyncio
+
+    _stream.start()   # ensure capture thread is running
+    FRAME_INTERVAL = 1.0 / 20   # target 20 FPS
+
+    while True:
+        t0 = time.monotonic()
+        jpeg = _stream.get_latest_jpeg()
+        if jpeg is not None:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + jpeg
+                + b"\r\n"
+            )
+        elapsed = time.monotonic() - t0
+        sleep_s = max(0.0, FRAME_INTERVAL - elapsed)
+        await asyncio.sleep(sleep_s)
 
 
 def probe_all_paths() -> dict:

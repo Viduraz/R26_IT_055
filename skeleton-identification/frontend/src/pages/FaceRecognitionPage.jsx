@@ -5,13 +5,45 @@ import { fetchUsers, createUser as apiCreateUser } from '../services/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import './FaceScanStyles.css';
 
+// ── Web Audio Chime Sound Synthesizer ─────────────────────────────────────────
+function playChime(type = 'step') {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+
+    if (type === 'step') {
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.22);
+    } else if (type === 'complete') {
+      osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(659.25, ctx.currentTime + 0.1);
+      osc.frequency.exponentialRampToValueAtTime(783.99, ctx.currentTime + 0.22);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.38);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.38);
+    }
+  } catch {
+    // Ignore audio policy blocks
+  }
+}
+
 // ── Scan Steps Configuration ─────────────────────────────────────────────────
 const SCAN_STEPS = [
-  { id: 'center', label: 'Look Straight Ahead', subtitle: 'Keep your face centered in the oval', direction: null, framesNeeded: 8 },
-  { id: 'right', label: 'Slowly Turn Right', subtitle: 'Turn your head to the right', direction: 'right', framesNeeded: 6 },
-  { id: 'left', label: 'Slowly Turn Left', subtitle: 'Turn your head to the left', direction: 'left', framesNeeded: 6 },
-  { id: 'up', label: 'Tilt Your Head Up', subtitle: 'Slowly raise your chin upward', direction: 'up', framesNeeded: 5 },
-  { id: 'down', label: 'Tilt Your Head Down', subtitle: 'Slowly lower your chin downward', direction: 'down', framesNeeded: 5 },
+  { id: 'center', label: 'Look Straight Ahead', subtitle: 'Position your face in the center of the oval', targetPose: 'center', direction: null, framesNeeded: 8 },
+  { id: 'right', label: 'Slowly Turn Right', subtitle: 'Turn your head slowly to your right', targetPose: 'right', direction: 'right', framesNeeded: 8 },
+  { id: 'left', label: 'Slowly Turn Left', subtitle: 'Turn your head slowly to your left', targetPose: 'left', direction: 'left', framesNeeded: 8 },
+  { id: 'up', label: 'Tilt Your Head Up', subtitle: 'Raise your chin upward slightly', targetPose: 'up', direction: 'up', framesNeeded: 6 },
 ];
 const TOTAL_FRAMES_NEEDED = SCAN_STEPS.reduce((s, step) => s + step.framesNeeded, 0);
 
@@ -64,14 +96,12 @@ const Icons = {
   ),
 };
 
-// ── Direction Arrow Component ────────────────────────────────────────────────
 function DirectionArrow({ direction }) {
   if (!direction) return null;
   const arrowMap = { right: Icons.arrowRight, left: Icons.arrowLeft, up: Icons.arrowUp, down: Icons.arrowDown };
   return <div className={`direction-indicator ${direction}`}>{arrowMap[direction]}</div>;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 export default function FaceRecognitionPage() {
   const toast = useToast();
 
@@ -87,8 +117,10 @@ export default function FaceRecognitionPage() {
   const [stepFrames, setStepFrames] = useState(0);
   const [totalFrames, setTotalFrames] = useState(0);
   const [scanComplete, setScanComplete] = useState(false);
-  const [statusMsg, setStatusMsg] = useState('Position your face in the Rectangle to begin');
+  const [statusMsg, setStatusMsg] = useState('Position your face in the oval to begin');
   const [ovalState, setOvalState] = useState('idle');
+  const [livePose, setLivePose] = useState('center');
+  const [liveHeadData, setLiveHeadData] = useState({ yaw: 0, pitch: 0 });
 
   const cameraStreamRef = useRef(null);
   const enrollVideoRef = useRef(null);
@@ -113,7 +145,7 @@ export default function FaceRecognitionPage() {
           toast('Could not reach skeleton backend (port 8007). Is it running?', 'error');
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [toast]);
 
   const currentStep = SCAN_STEPS[currentStepIdx] || SCAN_STEPS[0];
   const overallProgress = Math.min((totalFrames / TOTAL_FRAMES_NEEDED) * 100, 100);
@@ -124,8 +156,9 @@ export default function FaceRecognitionPage() {
     if (nextIdx >= SCAN_STEPS.length) {
       setScanComplete(true);
       setOvalState('success');
-      toast('Face biometric scan complete! ✅', 'success');
-      setTimeout(() => stopScan(), 3000);
+      playChime('complete');
+      toast('iPhone-Style Face Biometric Scan Complete! ✅', 'success');
+      setTimeout(() => stopScan(), 3500);
       return;
     }
     currentStepIdxRef.current = nextIdx;
@@ -134,20 +167,52 @@ export default function FaceRecognitionPage() {
     setStepFrames(0);
     setOvalState('scanning');
     toast(`Step ${nextIdx + 1}/${SCAN_STEPS.length}: ${SCAN_STEPS[nextIdx].label}`, 'info');
-  }, []);
+  }, [toast]);
 
   const handleResult = useCallback((data) => {
     if (!isScanningRef.current) return;
-    if (!data.detected) { setStatusMsg('No face detected — position your face in the oval'); setOvalState('warning'); return; }
-    if (!data.features_ok) { setStatusMsg(data.status_msg || 'Adjusting... hold steady'); setOvalState('warning'); return; }
+    if (!data.detected) {
+      setStatusMsg('No face detected — position your face in the oval');
+      setOvalState('warning');
+      return;
+    }
+
+    const currentStepConfig = SCAN_STEPS[currentStepIdxRef.current];
+    if (!currentStepConfig) return;
+
+    const detectedPose = data.head_pose?.pose || 'center';
+    setLivePose(detectedPose);
+    if (data.head_pose) setLiveHeadData(data.head_pose);
+
+    const requiredPose = currentStepConfig.targetPose;
+    const isPoseMatch = (detectedPose === requiredPose);
+
+    if (!isPoseMatch) {
+      setOvalState('warning');
+      const promptMap = {
+        right: '👉 Turn head RIGHT',
+        left: '👈 Turn head LEFT',
+        up: '👆 Tilt chin UP',
+        center: '🎯 Face STRAIGHT ahead',
+      };
+      setStatusMsg(`${promptMap[requiredPose]} to continue scan`);
+      return;
+    }
+
+    // Pose matched! Collect biometric sample frame
     setOvalState('scanning');
-    setStatusMsg(SCAN_STEPS[currentStepIdxRef.current]?.label || 'Scanning...');
+    setStatusMsg(`✅ Pose Matched! Capturing ${currentStepConfig.label}...`);
+
     if (data.mode === 'enroll' && data.frames_collected != null) {
-      totalFramesRef.current = data.frames_collected;
-      setTotalFrames(data.frames_collected);
+      totalFramesRef.current += 1;
+      setTotalFrames(totalFramesRef.current);
       stepFramesRef.current += 1;
       setStepFrames(stepFramesRef.current);
-      if (stepFramesRef.current >= (SCAN_STEPS[currentStepIdxRef.current]?.framesNeeded || 6)) advanceStep();
+
+      if (stepFramesRef.current >= currentStepConfig.framesNeeded) {
+        playChime('step');
+        advanceStep();
+      }
     }
   }, [advanceStep]);
 
@@ -202,7 +267,7 @@ export default function FaceRecognitionPage() {
         await enrollVideoRef.current.play();
       }
       connect(false);
-      toast('Face scan initiated — follow the on-screen directions', 'info');
+      toast('Face ID scan initiated — turn your head as prompted', 'info');
     } catch (err) { toast(`Camera error: ${err.message}`, 'error'); setIsScanning(false); isScanningRef.current = false; }
   };
 
@@ -216,30 +281,27 @@ export default function FaceRecognitionPage() {
     disconnect(); setIsScanning(false); setOvalState('idle'); setStatusMsg('Position your face in the oval to begin');
   }, [disconnect]);
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ═══════════════════════════════════════════════════════════════════════════
   return (
     <div className="face-page">
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="face-page-header">
         <div>
-          <h1 className="text-gradient-cyan">Face Biometric Scanner</h1>
-          <div className="subtitle">Guided Multi-Angle Face Enrollment System</div>
+          <h1 className="text-gradient-cyan">Face ID Biometric Scanner</h1>
+          <div className="subtitle">iPhone-Style Multi-Angle Guided Face Enrollment</div>
         </div>
         {isScanning && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', background: 'rgba(6,182,212,0.08)', borderRadius: 12, border: '1px solid rgba(6,182,212,0.15)' }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#06b6d4', boxShadow: '0 0 10px rgba(6,182,212,0.5)', animation: 'dotPulse 1.5s ease-in-out infinite' }} />
             <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#06b6d4', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              Scan Active
+              Face ID Active
             </span>
           </div>
         )}
       </div>
 
-      {/* ── Main Grid ── */}
+      {/* Main Grid */}
       <div className="face-page-grid">
-        {/* ── Left Column ── */}
+        {/* Left Column */}
         <div className="face-left-panel">
           {/* Register Card */}
           <div className="face-card">
@@ -287,7 +349,7 @@ export default function FaceRecognitionPage() {
               {!isScanning ? (
                 <button onClick={startScan} disabled={!selectedUserId} className="face-btn face-btn-scan">
                   {Icons.face}
-                  Begin Face Scan
+                  Begin Face ID Scan
                 </button>
               ) : (
                 <button onClick={stopScan} className="face-btn face-btn-danger">✕ Cancel Scan</button>
@@ -300,9 +362,9 @@ export default function FaceRecognitionPage() {
             <div className="face-card" style={{ animation: 'fadeInUp 0.3s ease-out' }}>
               <div className="face-card-title">
                 <div className="icon-wrap emerald">{Icons.steps}</div>
-                Scan Progress
+                Guided Angle Steps
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {SCAN_STEPS.map((step, idx) => {
                   const isActive = idx === currentStepIdx;
                   const isDone = idx < currentStepIdx || scanComplete;
@@ -315,7 +377,7 @@ export default function FaceRecognitionPage() {
                         <div style={{ fontWeight: 700, color: isActive ? '#06b6d4' : isDone ? '#10b981' : '#475569' }}>{step.label}</div>
                         {isActive && (
                           <div style={{ fontSize: '0.6rem', color: '#64748b', marginTop: 2 }}>
-                            {stepFrames}/{step.framesNeeded} frames captured
+                            {stepFrames}/{step.framesNeeded} frames • Target: <span className="font-mono text-cyan-400 font-bold uppercase">{step.targetPose}</span>
                           </div>
                         )}
                       </div>
@@ -329,10 +391,24 @@ export default function FaceRecognitionPage() {
                 })}
               </div>
 
+              {/* Live HUD Pose Info */}
+              <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(15,23,42,0.6)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: '0.6rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Detected Head Orientation</div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 800, color: livePose === currentStep.targetPose ? '#10b981' : '#f59e0b' }}>
+                    {livePose.toUpperCase()} {livePose === currentStep.targetPose ? '✓ MATCH' : '• WAITING'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: '0.6rem', fontFamily: 'monospace', color: '#94a3b8' }}>
+                  <div>Yaw: {liveHeadData.yaw}</div>
+                  <div>Pitch: {liveHeadData.pitch}</div>
+                </div>
+              </div>
+
               {/* Overall progress */}
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.62rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-                  <span>Overall Progress</span>
+                  <span>Overall Face ID Progress</span>
                   <span style={{ color: '#06b6d4' }}>{Math.round(overallProgress)}%</span>
                 </div>
                 <div className="face-progress-track">
@@ -346,7 +422,7 @@ export default function FaceRecognitionPage() {
           )}
         </div>
 
-        {/* ── Right Column: Scanner ── */}
+        {/* Right Column: Scanner */}
         <div className="face-scanner-panel">
           <div className="face-scan-container">
             <video ref={enrollVideoRef} autoPlay playsInline muted className="face-scan-video" />
@@ -365,6 +441,20 @@ export default function FaceRecognitionPage() {
                 <rect width="100%" height="100%" fill="rgba(0,0,0,0.5)" mask="url(#ovalMask)"/>
               </svg>
 
+              {/* iPhone Face ID Radial Tick Indicators around oval */}
+              <div className="face-id-ticks-ring">
+                {SCAN_STEPS.map((step, idx) => {
+                  const isDone = idx < currentStepIdx || scanComplete;
+                  const isActive = idx === currentStepIdx && isScanning;
+                  return (
+                    <div
+                      key={step.id}
+                      className={`face-id-tick-segment tick-${step.id} ${isDone ? 'done' : ''} ${isActive ? 'active' : ''}`}
+                    />
+                  );
+                })}
+              </div>
+
               {/* Oval ring */}
               <div className={`face-oval-guide ${ovalState}`} />
 
@@ -382,7 +472,7 @@ export default function FaceRecognitionPage() {
                   boxShadow: isScanning && ovalState !== 'warning' ? '0 0 8px rgba(6,182,212,0.5)' : 'none',
                   animation: isScanning && ovalState !== 'warning' ? 'dotPulse 1.5s ease-in-out infinite' : 'none',
                 }} />
-                {isScanning ? (scanComplete ? 'Complete' : `Step ${currentStepIdx + 1}/${SCAN_STEPS.length}`) : 'Idle'}
+                {isScanning ? (scanComplete ? 'Complete' : `Step ${currentStepIdx + 1}/${SCAN_STEPS.length} • Target: ${currentStep.targetPose.toUpperCase()}`) : 'Idle'}
               </div>
 
               {/* Frames badge (top-right) */}
@@ -398,7 +488,7 @@ export default function FaceRecognitionPage() {
                 {isScanning && !scanComplete && (
                   <>
                     <h3>{currentStep.label}</h3>
-                    <p>{currentStep.subtitle}</p>
+                    <p>{statusMsg}</p>
                     <div className="step-dots">
                       {SCAN_STEPS.map((_, i) => (
                         <div key={i} className={`step-dot ${i === currentStepIdx ? 'active' : ''} ${i < currentStepIdx ? 'completed' : ''}`} />
@@ -414,7 +504,7 @@ export default function FaceRecognitionPage() {
                       </svg>
                     </div>
                     <h3>{statusMsg}</h3>
-                    <p>Select a user and click "Begin Face Scan"</p>
+                    <p>Select a user and click "Begin Face ID Scan"</p>
                   </>
                 )}
               </div>
@@ -424,10 +514,10 @@ export default function FaceRecognitionPage() {
                 <div className="scan-complete-overlay">
                   <div className="scan-complete-icon">{Icons.check}</div>
                   <h2 style={{ color: '#f1f5f9', fontSize: '1.25rem', fontWeight: 800, marginBottom: 8, letterSpacing: '-0.01em' }}>
-                    Face Scan Complete
+                    Face ID Biometrics Saved!
                   </h2>
-                  <p style={{ color: '#94a3b8', fontSize: '0.78rem', maxWidth: 260, textAlign: 'center', lineHeight: 1.6 }}>
-                    {totalFrames} biometric samples collected across {SCAN_STEPS.length} angles. Your face data has been securely enrolled.
+                  <p style={{ color: '#94a3b8', fontSize: '0.78rem', maxWidth: 280, textAlign: 'center', lineHeight: 1.6 }}>
+                    {totalFrames} multi-angle biometric samples aggregated across {SCAN_STEPS.length} head positions. Profile active!
                   </p>
                 </div>
               )}
@@ -446,7 +536,7 @@ export default function FaceRecognitionPage() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{statusMsg}</div>
                 <div style={{ fontSize: '0.62rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 2 }}>
-                  Step {currentStepIdx + 1} of {SCAN_STEPS.length} • {currentStep.id} angle
+                  Step {currentStepIdx + 1} of {SCAN_STEPS.length} • Required Pose: {currentStep.targetPose.toUpperCase()}
                 </div>
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>

@@ -3,6 +3,7 @@ caregiver-marketplace/backend/app/services/notification_service.py
 Send patient ID to family members via Email (SMTP) and optionally SMS (Twilio).
 """
 import os
+import asyncio
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -125,11 +126,14 @@ async def send_patient_id_email(
 
     msg.attach(MIMEText(html, "html"))
 
-    try:
+    def _send():
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.send_message(msg)
+
+    try:
+        await asyncio.to_thread(_send)
         print(f"[INFO] Patient ID email sent to {family_email}")
         return True
     except Exception as e:

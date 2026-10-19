@@ -104,6 +104,32 @@ async def update_user_status(
 
     return {"message": f"User status updated to {new_status}"}
 
+async def delete_user(
+    user_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer)
+):
+    """Admin only — permanently delete a user account."""
+    token = decode_access_token(credentials.credentials)
+    if token.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Prevent self-deletion
+    if token.get("sub") == user_id or str(token.get("user_id", "")) == user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    db = get_db()
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid user_id format")
+
+    result = db["users"].delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "User deleted successfully"}
+
+
 async def get_caregiver_profile(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     token = decode_access_token(credentials.credentials)
     if token.get("role") != "caregiver":

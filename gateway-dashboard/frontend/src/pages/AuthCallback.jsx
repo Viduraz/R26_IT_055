@@ -9,16 +9,11 @@ const AuthCallback = () => {
 
   if (token) {
     localStorage.setItem('access_token', token);
-    
+
     try {
-      const payload = parseJwt(token);
-      const role = payload?.role?.toLowerCase();
-      
-      if (role === 'admin') return <Navigate to={PATHS.ADMIN_DASHBOARD} replace />;
-      if (role === 'caregiver') return <Navigate to={PATHS.CAREGIVER_DASHBOARD} replace />;
-      
-      // Default fallback
-      return <Navigate to={PATHS.FAMILY_DASHBOARD} replace />;
+      // Just parse to ensure it's valid, then redirect to root dashboard
+      parseJwt(token);
+      return <Navigate to={PATHS.HOME} replace />;
     } catch (e) {
       console.error("JWT parse error", e);
       return <Navigate to={PATHS.HOME} replace />;

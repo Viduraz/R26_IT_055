@@ -32,8 +32,9 @@ class RegisterRequest(BaseModel):
     caregiver_license_or_staff_id: Optional[str] = None
     
     # Biometric enrollment (Caregiver only)
-    # Expected to be a list of base64 encoded image strings representing the face
+    # Expected to be lists of base64 encoded image strings representing face & skeleton posture
     face_samples: Optional[List[str]] = None
+    skeleton_samples: Optional[List[str]] = None
     
     class Config:
         populate_by_name = True

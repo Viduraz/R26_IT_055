@@ -28,12 +28,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem("access_token");
-      const isProxied = window.location.port === "8080" || window.location.port === "";
-      const authUrl = import.meta.env.VITE_AUTH_FRONTEND_URL || "http://localhost:5173";
-      const loginUrl = isProxied
-        ? "/auth/login"
-        : (authUrl.endsWith("/auth") ? `${authUrl}/login` : `${authUrl}/auth/login`);
-      window.location.href = loginUrl;
+      window.location.href = `${window.location.origin}/auth/login`;
     }
     return Promise.reject(error);
   }

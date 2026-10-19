@@ -130,6 +130,7 @@ export default function GeofenceCanvas({ backendOnline, onZoneCreated }) {
         zone_type: zoneType,
         polygon: points,
         color: ZONE_COLORS[zoneType],
+        camera_distance: 4.0,
       });
       setPoints([]);
       setZoneName("");

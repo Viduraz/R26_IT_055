@@ -6,7 +6,7 @@ python-dotenv==1.0.1
 PyJWT==2.8.0
 httpx==0.27.0
 opencv-python==4.10.0.82
-numpy==1.24.3
+numpy>=1.26.0,<2.0.0  # FIX (B-6): was 1.24.3; upgraded to match skeleton-id floor; <2.0 for torch/mediapipe compat
 mediapipe==0.10.14
 torch==2.2.2
 torchvision==0.17.2
