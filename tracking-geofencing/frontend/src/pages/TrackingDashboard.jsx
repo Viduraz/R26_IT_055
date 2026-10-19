@@ -102,6 +102,9 @@ export default function TrackingDashboard() {
     } else {
       setSessionStartTime(null);
       handleCaregiverUpdate(null);
+      if (alertPanelRef.current && typeof alertPanelRef.current.clearAlerts === "function") {
+        alertPanelRef.current.clearAlerts();
+      }
     }
   }, [handleCaregiverUpdate]);
 

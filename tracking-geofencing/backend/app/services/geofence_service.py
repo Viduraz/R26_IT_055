@@ -126,11 +126,6 @@ async def update_person_zone_status(
 
         poly = zone.get("polygon", [])
         if len(poly) >= 3 and _point_in_polygon(feet, poly, frame_w, frame_h):
-            zone_dist = zone.get("camera_distance", 4.0)
-            if zone.get("zone_type") == "restricted":
-                # Persons sitting far in front of the zone threshold should not trigger false entry
-                if is_sitting or distance_meters < zone_dist - 0.5:
-                    continue
             current_zone = zone.get("name")
             current_zone_id = zone.get("zone_id")
             current_zone_type = zone.get("zone_type")
@@ -421,12 +416,6 @@ async def check_breach(person_id: str, x: float, y: float, frame_w: float = None
             poly_coords = zone.get("polygon", [])
             if len(poly_coords) < 3:
                 continue
-
-            # Verify depth & posture for restricted zones
-            zone_dist = zone.get("camera_distance", 4.0)
-            if zone["zone_type"] == "restricted":
-                if is_sitting or distance_meters < zone_dist - 0.5:
-                    continue
 
             pt, poly = _normalize_point_and_polygon(raw_point, poly_coords, frame_w, frame_h)
             polygon = Polygon(poly)

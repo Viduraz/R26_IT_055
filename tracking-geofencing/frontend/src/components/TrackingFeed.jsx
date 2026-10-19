@@ -87,14 +87,26 @@ const playAlertSound = () => {
   } catch (e) { /* ignore audio errors */ }
 };
 
+let lastFeedSpeechText = "";
+let lastFeedSpeechTime = 0;
+
 const speakAlert = (message) => {
   try {
+    const now = Date.now();
+    if (message === lastFeedSpeechText && now - lastFeedSpeechTime < 4000) {
+      return; // Debounce identical voice alert for 4s
+    }
+    lastFeedSpeechText = message;
+    lastFeedSpeechTime = now;
+
     if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel(); // Cancel any ongoing speech
-      const utterance = new SpeechSynthesisUtterance(message);
-      utterance.rate = 0.95;
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.cancel();
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(message);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+      }, 50);
     }
   } catch (e) { /* ignore speech errors */ }
 };
@@ -286,31 +298,31 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
 
         const personDistFromCam = effectiveHeightPx > 0 ? (850 / effectiveHeightPx) : 0;
         const zoneDistFromCam = closestZone.camera_distance || 4.0;
-        const feetInPolygon = pointInPolygon([feetX, feetY], closestZone.polygon);
 
-        let effectiveDistanceMeters = 0.0;
-        let isBreaching = false;
+        const zoneYs = closestZone.polygon.map((p) => p[1]);
+        const zoneMaxY = zoneYs.length > 0 ? Math.max(...zoneYs) : 480;
+        const zoneMinY = zoneYs.length > 0 ? Math.min(...zoneYs) : 0;
 
-        if (isSitting) {
-          // Person sitting in a chair: suppress restricted area entry/breach alert
-          isBreaching = false;
-          effectiveDistanceMeters = feetInPolygon ? 0.0 : dist2DMeters;
-        } else if (feetInPolygon) {
-          if (personDistFromCam < zoneDistFromCam - 0.5) {
-            effectiveDistanceMeters = zoneDistFromCam - personDistFromCam;
-            isBreaching = false;
-          } else {
-            effectiveDistanceMeters = 0.0;
-            isBreaching = true;
-          }
-        } else {
-          if (personDistFromCam < zoneDistFromCam - 0.5) {
-            effectiveDistanceMeters = dist2DMeters + (zoneDistFromCam - personDistFromCam);
-            isBreaching = false;
-          } else {
-            effectiveDistanceMeters = dist2DMeters;
-            isBreaching = false;
-          }
+        const headX = person.bbox.x + bboxW / 2;
+        const headY = person.bbox.y + Math.min(15, bboxH * 0.15);
+        const headInPolygon = pointInPolygon([headX, headY], closestZone.polygon) || pointInPolygon([headX, person.bbox.y], closestZone.polygon);
+
+        const legsInPolygon = pointInPolygon([feetX, feetY], closestZone.polygon) || pointInPolygon([feetX, feetY - Math.min(15, bboxH * 0.15)], closestZone.polygon);
+
+        // Person in front of the zone: feet closer to camera than zone bottom or depth closer than zone depth
+        const isFeetInFront = feetY > (zoneMaxY + 6);
+        const isDepthInFront = closestZone.camera_distance ? (personDistFromCam < zoneDistFromCam - 0.5) : false;
+        const isInFrontOfZone = isFeetInFront || (isDepthInFront && feetY > (zoneMinY + zoneMaxY) / 2);
+
+        // Person has entered the restricted area when BOTH legs are inside AND head is inside the red zone
+        const isFullyInZone = legsInPolygon && headInPolygon && !isInFrontOfZone;
+        const isBreaching = isFullyInZone && closestZone.zone_type === "restricted";
+
+        let effectiveDistanceMeters = dist2DMeters;
+        if (isBreaching) {
+          effectiveDistanceMeters = 0.0;
+        } else if (isInFrontOfZone) {
+          effectiveDistanceMeters = dist2DMeters + (isDepthInFront ? Math.max(0, zoneDistFromCam - personDistFromCam) : 0);
         }
 
         const startX = feetX * scaleX;
@@ -341,8 +353,13 @@ function drawPersons(ctx, persons, scaleX, scaleY, breachedIds, identityMap, war
         ctx.fill();
 
         // Display floating distance text label
-        const statusLabel = isSitting ? " (Sitting)" : ((feetInPolygon && personDistFromCam < zoneDistFromCam - 0.5) ? " (In Front)" : "");
-        const distText = isBreaching ? "Inside" : `${effectiveDistanceMeters.toFixed(1)}m${statusLabel}`;
+        let distText = `${effectiveDistanceMeters.toFixed(1)}m`;
+        if (isBreaching) {
+          distText = "Inside";
+        } else if (isInFrontOfZone) {
+          distText = `${effectiveDistanceMeters.toFixed(1)}m (In Front)`;
+        }
+
         const midX = (startX + endX) / 2;
         const midY = (startY + endY) / 2 - 6;
 
@@ -496,6 +513,9 @@ export default function TrackingFeed({
     if (videoRef.current) videoRef.current.srcObject = null;
     setPersons([]);
     setBreachActive(false);
+    breachLoggedRef.current.clear();
+    breachStartTimes.current.clear();
+    breachedIdsRef.current = new Set();
     identityMapRef.current.clear();
     frameCountRef.current = 0;
     setCaregiver(null);
@@ -837,29 +857,27 @@ export default function TrackingFeed({
       const isSitting = person.is_sitting !== undefined ? person.is_sitting : (aspectRatio >= 0.55);
 
       restrictedZones.forEach((zone) => {
-        const res = pointToPolygonDistance([feetX, feetY], zone.polygon);
-        const effectiveHeightPx = isSitting ? Math.max(bboxH, bboxW / 0.45) : bboxH;
-        const pixelsPerMeter = effectiveHeightPx > 0 ? (effectiveHeightPx / 1.7) : 1;
-        const distanceMeters = res.distance / pixelsPerMeter;
+        const zoneYs = zone.polygon ? zone.polygon.map((p) => p[1]) : [];
+        const zoneMaxY = zoneYs.length > 0 ? Math.max(...zoneYs) : 480;
+        const zoneMinY = zoneYs.length > 0 ? Math.min(...zoneYs) : 0;
 
+        const effectiveHeightPx = isSitting ? Math.max(bboxH, bboxW / 0.45) : bboxH;
         const personDistFromCam = effectiveHeightPx > 0 ? (850 / effectiveHeightPx) : 0;
         const zoneDistFromCam = zone.camera_distance || 4.0;
+
         const feetInPolygon = pointInPolygon([feetX, feetY], zone.polygon);
+        const centerX = person.bbox.x + bboxW / 2;
+        const centerY = person.bbox.y + bboxH / 2;
+        const centerInPolygon = pointInPolygon([centerX, centerY], zone.polygon);
 
-        let isBreaching = false;
+        // 1. Person in front of the zone: DO NOT generate alert message
+        const isFeetInFront = feetY > (zoneMaxY + 6);
+        const isDepthInFront = zone.camera_distance ? (personDistFromCam < zoneDistFromCam - 0.5) : false;
+        const isInFrontOfZone = isFeetInFront || (isDepthInFront && feetY > (zoneMinY + zoneMaxY) / 2);
 
-        // If person is sitting in a chair, ignore restricted area entry alert!
-        if (!isSitting) {
-          if (feetInPolygon) {
-            if (personDistFromCam >= zoneDistFromCam - 0.5) {
-              isBreaching = true;
-            }
-          } else {
-            if (distanceMeters < 0.15 && personDistFromCam >= zoneDistFromCam - 0.5) {
-              isBreaching = true;
-            }
-          }
-        }
+        // 2. Alert only when person goes BACK into the zone and fully covers the zone
+        const isFullyInZone = feetInPolygon && !isInFrontOfZone && (centerInPolygon || pointInPolygon([feetX, feetY - bboxH * 0.25], zone.polygon));
+        const isBreaching = isFullyInZone;
 
         // Trigger breach if breaching
         if (isBreaching) {
@@ -879,29 +897,40 @@ export default function TrackingFeed({
             newBreachedIds.add(person.person_id);
             if (!breachLoggedRef.current.has(breachKey)) {
               breachLoggedRef.current.add(breachKey);
+
+              // 1. Alert chime sound immediately
+              playAlertSound();
+
+              // 2. Identify the caregiver / person name
+              const idInfo = identityMapRef.current.get(person.person_id);
+              const displayName = idInfo?.name
+                || caregiverRef.current?.name
+                || (person.name && person.is_identified ? person.name : null)
+                || `Person ${person.person_id.split(" ")[0]}`;
+
+              // 3. Voice speech alert immediately
+              speakAlert(`Warning. ${displayName} has entered the restricted area.`);
+
+              // 4. Pop up toast notification immediately
+              if (typeof onNewAlert === "function") {
+                onNewAlert({
+                  alert_id: `breach-${Date.now()}-${zone.zone_id}`,
+                  person_id: displayName,
+                  zone_id: zone.zone_id,
+                  zone_name: zone.name,
+                  breach_type: "Restricted Zone Entry",
+                  timestamp: new Date().toISOString(),
+                });
+              }
+
+              // 5. Asynchronously notify backend for MongoDB logging
               geofenceApi.checkBreach({
                 person_id: person.person_id,
                 x: feetX,
                 y: feetY,
                 frame_w: videoRef.current?.videoWidth || 640,
                 frame_h: videoRef.current?.videoHeight || 480,
-              })
-                .then((res) => {
-                  playAlertSound();
-
-                  const idInfo = identityMapRef.current.get(person.person_id);
-                  const displayName = idInfo && idInfo.name
-                    ? idInfo.name
-                    : `Person ${person.person_id.split(" ")[0]}`;
-                  speakAlert(`Warning. ${displayName} has entered the restricted area.`);
-
-                  if (res && res.data && Array.isArray(res.data.breaches) && res.data.breaches.length > 0) {
-                    if (typeof onNewAlert === "function") {
-                      res.data.breaches.forEach((b) => onNewAlert(b));
-                    }
-                  }
-                })
-                .catch(() => { });
+              }).catch(() => { });
             }
           }
         }

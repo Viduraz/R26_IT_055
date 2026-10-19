@@ -1,14 +1,26 @@
 import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { geofenceApi } from "../services/trackingApi";
 
+let lastPanelSpeechText = "";
+let lastPanelSpeechTime = 0;
+
 const speakAlert = (message) => {
   try {
+    const now = Date.now();
+    if (message === lastPanelSpeechText && now - lastPanelSpeechTime < 4000) {
+      return; // Debounce identical voice alert for 4s
+    }
+    lastPanelSpeechText = message;
+    lastPanelSpeechTime = now;
+
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(message);
-      utterance.rate = 0.95;
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(message);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+      }, 50);
     }
   } catch (e) { /* ignore */ }
 };
@@ -28,47 +40,58 @@ const AlertPanel = forwardRef(({ backendOnline, toastRef, monitoring = false, se
 
   const sessionStartTimeRef = useRef(sessionStartTime);
   useEffect(() => {
-    if (sessionStartTime && sessionStartTime !== sessionStartTimeRef.current) {
-      setAlerts([]);
-    }
     sessionStartTimeRef.current = sessionStartTime;
   }, [sessionStartTime]);
 
   // Imperative handle to inject real-time alert instantly from live feed (same millisecond as box)
   useImperativeHandle(ref, () => ({
     pushAlert: (newAlert) => {
-      if (!newAlert || !newAlert.alert_id) return;
-      if (!prevAlertIdsRef.current.has(newAlert.alert_id)) {
-        prevAlertIdsRef.current.add(newAlert.alert_id);
-        
-        // Add to state immediately
-        setAlerts((prev) => {
-          if (prev.some((a) => a.alert_id === newAlert.alert_id)) return prev;
-          return [newAlert, ...prev];
-        });
+      if (!newAlert) return;
+      const alertId = newAlert.alert_id || `alert-${Date.now()}`;
+      const alertObj = {
+        alert_id: alertId,
+        person_id: newAlert.person_id || "Caregiver",
+        zone_id: newAlert.zone_id || "restricted",
+        zone_name: newAlert.zone_name || "Restricted Area",
+        breach_type: newAlert.breach_type || "Restricted Zone Entry",
+        timestamp: newAlert.timestamp || new Date().toISOString(),
+        resolved: false,
+        ...newAlert,
+      };
 
-        // Trigger toast notification instantly
-        if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
-          toastRef.current.addToast(
-            `🚨 Breach: ${newAlert.person_id} entered ${newAlert.zone_name}`
-          );
-        }
+      prevAlertIdsRef.current.add(alertId);
+
+      // Add to state immediately so it renders in the alert box
+      setAlerts((prev) => {
+        if (prev.some((a) => a.alert_id === alertId)) return prev;
+        return [alertObj, ...prev];
+      });
+
+      // Trigger toast notification instantly
+      if (toastRef && toastRef.current && typeof toastRef.current.addToast === "function") {
+        toastRef.current.addToast(
+          `🚨 Breach: ${alertObj.person_id} entered ${alertObj.zone_name}`
+        );
       }
+    },
+    clearAlerts: () => {
+      setAlerts([]);
+      prevAlertIdsRef.current.clear();
     },
   }));
 
   const fetchAlerts = useCallback(async () => {
-    if (!backendOnline) return;
+    if (!backendOnline || !monitoringRef.current) return;
     try {
-      const sinceParam = (monitoringRef.current && sessionStartTimeRef.current) ? sessionStartTimeRef.current : null;
+      const sinceParam = sessionStartTimeRef.current || null;
       const res = await geofenceApi.getAlerts(null, sinceParam);
-      
+
       if (res.data && Array.isArray(res.data)) {
         const sessionTimeMs = sessionStartTimeRef.current ? new Date(sessionStartTimeRef.current).getTime() : 0;
-        
+
         // Numeric timestamp filtering: ensure alerts older than current session never show or trigger popups
         const validAlerts = res.data.filter((alert) => {
-          if (!sessionTimeMs || !monitoringRef.current) return true;
+          if (!sessionTimeMs) return true;
           const alertTimeMs = new Date(alert.timestamp).getTime();
           return !isNaN(alertTimeMs) && alertTimeMs >= sessionTimeMs - 2000;
         });
@@ -88,17 +111,26 @@ const AlertPanel = forwardRef(({ backendOnline, toastRef, monitoring = false, se
                   `🚨 Breach: ${alert.person_id} entered ${alert.zone_name}`
                 );
               }
-              if (!monitoringRef.current) {
-                const displayName = `Person ${alert.person_id.split(" ")[0]}`;
-                speakAlert(`Warning. ${displayName} has entered the restricted area.`);
-              }
+              const displayName = alert.identity && alert.identity !== "Unknown"
+                ? alert.identity
+                : (alert.person_id ? (alert.person_id.startsWith("P-") ? `Person ${alert.person_id.split(" ")[0]}` : alert.person_id) : "Caregiver");
+              speakAlert(`Warning. ${displayName} has entered the restricted area.`);
             }
           });
           // Merge newly seen IDs into prevAlertIdsRef
           newIds.forEach((id) => prevAlertIdsRef.current.add(id));
         }
 
-        setAlerts(validAlerts);
+        // Merge with existing session alerts without overwriting live pushed alerts
+        setAlerts((prev) => {
+          const map = new Map();
+          prev.forEach((a) => map.set(a.alert_id, a));
+          validAlerts.forEach((a) => map.set(a.alert_id, a));
+          return Array.from(map.values()).sort(
+            (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+        });
+
         failCountRef.current = 0;
         setRetryVisible(false);
       }
@@ -121,7 +153,7 @@ const AlertPanel = forwardRef(({ backendOnline, toastRef, monitoring = false, se
   }, [fetchAlerts]);
 
   useEffect(() => {
-    if (backendOnline) {
+    if (backendOnline && monitoring) {
       startPolling();
     } else {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -130,13 +162,13 @@ const AlertPanel = forwardRef(({ backendOnline, toastRef, monitoring = false, se
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [backendOnline, startPolling]);
+  }, [backendOnline, monitoring, startPolling]);
 
-  // When monitoring mode toggles on, clear state and sync IDs for clean session
+  // When monitoring mode stops or starts, clear state cleanly as requested
   useEffect(() => {
-    if (monitoring) {
-      setAlerts([]);
-    }
+    setAlerts([]);
+    prevAlertIdsRef.current.clear();
+    isInitialLoadRef.current = true;
   }, [monitoring]);
 
   const handleResolve = async (alertId) => {
