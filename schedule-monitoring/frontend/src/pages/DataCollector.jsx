@@ -265,7 +265,9 @@ export default function DataCollector() {
             samplesRef.current.push({
               t: Date.now(),
               label: currentLabelRef.current,
+              activity: currentLabelRef.current,
               features,
+              landmarks: normalizedKeypoints.map(({ x, y, score }) => [x, y, score ?? 0]),
               objects: lastObjectsRef.current.map(o => o.class),
             });
 
@@ -320,7 +322,13 @@ export default function DataCollector() {
       alert('No samples recorded yet.');
       return;
     }
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const session = {
+      schema_version: 1,
+      source: 'webcam',
+      created_at: new Date().toISOString(),
+      frames: data,
+    };
+    const blob = new Blob([JSON.stringify(session)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

@@ -37,6 +37,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from collections import Counter
 
 # ── Configuration (must match activityDetection.js) ────────────────────────
 NUM_FEATURES = 15
@@ -54,6 +55,7 @@ RF_MAX_DEPTH = 15
 RF_MIN_SAMPLES_SPLIT = 5
 RF_MIN_SAMPLES_LEAF = 2
 RF_RANDOM_STATE = 42
+MODEL_VERSION = "rf-candidate-v1"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR / 'data'
@@ -76,6 +78,9 @@ def load_data():
     y = np.load(y_path)
     
     print(f"✓ Loaded X: {X.shape}, y: {y.shape}")
+    print("Training frames per class:")
+    for label, count in sorted(Counter(y.tolist()).items()):
+        print(f"  {label}: {count}")
     return X, y
 
 # ── Train Random Forest ────────────────────────────────────────────────────
@@ -93,6 +98,7 @@ def train_rf(X, y):
         min_samples_split=RF_MIN_SAMPLES_SPLIT,
         min_samples_leaf=RF_MIN_SAMPLES_LEAF,
         random_state=RF_RANDOM_STATE,
+        class_weight='balanced',
         n_jobs=-1,  # Use all available cores
         verbose=1
     )
@@ -103,8 +109,10 @@ def train_rf(X, y):
 
 # ── Evaluate model ────────────────────────────────────────────────────────
 def evaluate_model(rf, X, y):
-    """Evaluate Random Forest on the full dataset"""
-    print("\n── Evaluating Random Forest ──")
+    """Print an in-sample diagnostic, never a production accuracy claim."""
+    print("\n── In-sample Random Forest diagnostic ──")
+    print("  WARNING: these samples were used for training; use evaluate_rf_model.py")
+    print("  for a session-separated test score.")
     y_pred = rf.predict(X)
     accuracy = accuracy_score(y, y_pred)
     
@@ -140,7 +148,8 @@ def save_stats(X):
         'mean': mean,
         'std': std,
         'num_features': len(mean),
-        'activity_names': ACTIVITY_NAMES
+        'activity_names': ACTIVITY_NAMES,
+        'model_version': MODEL_VERSION,
     }
     
     stats_path = OUTPUT_DIR / 'rf_model_stats.json'

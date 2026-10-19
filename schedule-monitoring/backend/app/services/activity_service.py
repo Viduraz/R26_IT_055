@@ -37,6 +37,7 @@ class ActivityService:
         self.norm_mean = None
         self.norm_std = None
         self.is_ready = False
+        self.model_version = "unversioned"
         self.model_path = Path(__file__).parent.parent / 'models' / 'rf_model.pkl'
         self.stats_path = Path(__file__).parent.parent / 'models' / 'rf_model_stats.json'
         
@@ -59,6 +60,7 @@ class ActivityService:
                     stats = json.load(f)
                 self.norm_mean = np.array(stats['mean'], dtype=np.float32)
                 self.norm_std = np.array(stats['std'], dtype=np.float32)
+                self.model_version = stats.get("model_version", self.model_version)
                 logger.info(f"✓ Loaded normalization stats from {self.stats_path}")
             else:
                 logger.warning(f"Stats file not found at {self.stats_path}")
@@ -120,6 +122,17 @@ class ActivityService:
         except Exception as e:
             logger.error(f"Prediction error: {e}")
             raise ValueError(f"Prediction failed: {e}")
+
+    def predict_activity_with_probabilities(self, features: List[float]):
+        """Return the prediction plus the per-class RF vote probabilities."""
+        activity, confidence = self.predict_activity(features)
+        X = np.array([features], dtype=np.float32)
+        X_norm = (X - self.norm_mean) / (self.norm_std + 1e-8)
+        probabilities = self.model.predict_proba(X_norm)[0]
+        return activity, confidence, {
+            ACTIVITY_NAMES[int(class_index)]: float(probability)
+            for class_index, probability in zip(self.model.classes_, probabilities)
+        }
     
     def predict_batch(self, features_list: List[List[float]]) -> List[Tuple[str, float]]:
         """

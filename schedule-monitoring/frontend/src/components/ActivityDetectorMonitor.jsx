@@ -332,6 +332,18 @@ export default function ActivityDetectorMonitor({
   };
 
   const handleActivityDetected = async (detectionData) => {
+    if (
+      !detectionData ||
+      detectionData.activity_name === "Unknown" ||
+      detectionData.confidence < CONFIDENCE_THRESHOLD
+    ) {
+      setCurrentActivity(detectionData || null);
+      setDebugInfo(
+        "⚠️ Activity is uncertain; it will not be logged as completed."
+      );
+      return;
+    }
+
     if (detectionData.activity_name === "Movement") {
       setCurrentActivity(null);
     } else {
@@ -348,6 +360,8 @@ export default function ActivityDetectorMonitor({
         hipHeight: detectionData.features[10]?.toFixed(3),
         torsoAlign: detectionData.features[14]?.toFixed(2),
         activity: detectionData.activity_name,
+        posture: detectionData.posture || "Unknown",
+        action: detectionData.action || "None",
         confidence: (detectionData.confidence * 100).toFixed(0),
       });
     }
@@ -403,7 +417,13 @@ export default function ActivityDetectorMonitor({
         activity_name: lockedName,
         confidence: detectionData.confidence,
         detected_at: detectionData.detected_at.toISOString(),
-        signals: detectionData.signals,
+        signals: {
+          ...detectionData.signals,
+          posture: detectionData.posture || "Unknown",
+          action: detectionData.action || "None",
+          posture_confidence: detectionData.posture_confidence || 0,
+          action_confidence: detectionData.action_confidence || 0,
+        },
       });
 
       const adaptiveData = response?.data || {};

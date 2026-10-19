@@ -1,0 +1,15 @@
+{
+  "name": "training",
+  "version": "1.0.0",
+  "description": "",
+  "main": "train_har_model.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0"
+  }
+}

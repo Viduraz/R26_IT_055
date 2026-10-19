@@ -34,6 +34,7 @@ coverage.xml
 *.bin
 !app/ml_services/trained_models/lstm_weights.pt
 !app/ml_services/trained_models/ae_weights.pt
+!schedule-monitoring/frontend/public/lstm_har_model/weights.bin
 
 # Node
 node_modules/
@@ -87,3 +88,6 @@ data/processed/
 .kiro/
 .qodo/
 .vite/
+.venv/
+.venv311/
+.venv312/

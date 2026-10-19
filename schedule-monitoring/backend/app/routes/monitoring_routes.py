@@ -105,15 +105,18 @@ async def predict_activity_rf(payload: RFPredictionPayload):
             "activity": None,
             "confidence": 0.0,
             "model_ready": False,
+            "model_version": service.model_version,
             "error": "Random Forest model not loaded. Ensure rf_model.pkl is in app/models/"
         }
     
     try:
-        activity, confidence = service.predict_activity(payload.features)
+        activity, confidence, probabilities = service.predict_activity_with_probabilities(payload.features)
         return {
             "activity": activity,
             "confidence": confidence,
-            "model_ready": True
+            "probabilities": probabilities,
+            "model_ready": True,
+            "model_version": service.model_version,
         }
     
     except ValueError as e:
@@ -121,5 +124,6 @@ async def predict_activity_rf(payload: RFPredictionPayload):
             "activity": None,
             "confidence": 0.0,
             "model_ready": True,
+            "model_version": service.model_version,
             "error": str(e)
         }

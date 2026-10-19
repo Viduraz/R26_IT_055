@@ -262,6 +262,15 @@ class MonitoringService:
         caregiver_id = event.get("caregiver_id")
         confidence  = event.get("confidence", 0.0)
 
+        if activity in {"", "unknown", "movement"} or confidence < 0.65:
+            return {
+                "logged": False,
+                "status": "unknown",
+                "reason": "Detection was not confident enough to complete a scheduled task.",
+                "activity": activity or None,
+                "confidence": confidence,
+            }
+
         ts = event.get("timestamp")
         if ts is None:
             ts = datetime.now()
