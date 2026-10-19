@@ -90,6 +90,8 @@ export default function ActivityDetectorMonitor({
   });
   const [confirmedActivity, setConfirmedActivity] = useState(null);
   const lastLogTimeRef = useRef({});
+  const pendingLogsRef = useRef(new Set());
+  const lastCountedActivityRef = useRef(null);
 
   const activityConfirmationRef = useRef({
     activityName: null,
@@ -343,6 +345,14 @@ export default function ActivityDetectorMonitor({
       detectionData.activity_name === "Unknown" ||
       detectionData.confidence < CONFIDENCE_THRESHOLD
     ) {
+      if (activityConfirmationRef.current.timeoutId) {
+        clearTimeout(activityConfirmationRef.current.timeoutId);
+      }
+      activityConfirmationRef.current.activityName = null;
+      activityConfirmationRef.current.startTime = null;
+      activityConfirmationRef.current.timeoutId = null;
+      activityConfirmationRef.current.confirmedActivities = {};
+      lastCountedActivityRef.current = null;
       setCurrentActivity(detectionData || null);
       setDebugInfo(
         "⚠️ Activity is uncertain; it will not be logged as completed."
@@ -356,7 +366,10 @@ export default function ActivityDetectorMonitor({
       setCurrentActivity(detectionData);
     }
 
-    setStats((prev) => ({ ...prev, detected: prev.detected + 1 }));
+    if (lastCountedActivityRef.current !== detectionData.activity_name) {
+      lastCountedActivityRef.current = detectionData.activity_name;
+      setStats((prev) => ({ ...prev, detected: prev.detected + 1 }));
+    }
 
     if (detectionData.features) {
       setLiveFeatures({
@@ -379,8 +392,15 @@ export default function ActivityDetectorMonitor({
     const now = Date.now();
     const lastTime = lastLogTimeRef.current[key] || 0;
     if (now - lastTime < DETECTION_DEBOUNCE) return;
+    if (pendingLogsRef.current.has(key)) return;
     if (detectionData.confidence < CONFIDENCE_THRESHOLD) return;
     if (detectionData.activity_name === "Movement") return;
+
+    if (!schedule || extractActivitiesArray(schedule).length === 0) {
+      lastLogTimeRef.current[key] = now;
+      setDebugInfo("Activity detected, but no schedule is loaded; it was not logged.");
+      return;
+    }
 
     let activityStatus = decideStatusFromWindow(detectionData.activity_name);
 
@@ -415,6 +435,7 @@ export default function ActivityDetectorMonitor({
       deadline: "...",
     };
 
+    pendingLogsRef.current.add(key);
     try {
       // schedule is guaranteed non-null here: if it were null, findScheduledActivity
       // would have returned null, activityStatus would be null, and we'd already
@@ -489,22 +510,18 @@ export default function ActivityDetectorMonitor({
       // local decideStatusFromWindow computation (set before the try block),
       // even though the backend call itself failed — so there's still a
       // real status to show here, not a placeholder.
-      setDetectionLogs((prev) => [logEntry, ...prev.slice(0, 9)]);
       lastLogTimeRef.current[key] = now;
-
-      setConfirmedActivity({
-        name: lockedName,
-        status: logEntry.status,
-        confidence: detectionData.confidence,
-        time: new Date().toLocaleTimeString(),
-      });
-
-      if (onActivityConfirmed && FINAL_STATUSES.includes(logEntry.status)) {
-        onActivityConfirmed({
-          activity_name: lockedName,
-          status: logEntry.status,
-        });
-      }
+      const serviceMessage =
+        error?.response?.data?.detail ||
+        error?.response?.data?.errMsg ||
+        error?.errMsg ||
+        error?.message ||
+        "The monitoring service is unavailable.";
+      setDebugInfo(
+        `Activity detected, but it could not be saved: ${serviceMessage}`
+      );
+    } finally {
+      pendingLogsRef.current.delete(key);
     }
   };
 

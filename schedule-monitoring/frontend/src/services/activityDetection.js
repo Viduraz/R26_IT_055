@@ -14,7 +14,7 @@ const SMOOTHING_MAJORITY = 3;
 const ASYNC_DETECT_EVERY_N_FRAMES = 3;
 
 const WALKING_VELOCITY_THRESHOLD = 0.018;
-const WALKING_LEG_ASYMMETRY_MIN = 3.5;
+const WALKING_LEG_ASYMMETRY_MIN = 8;
 const WALKING_UPRIGHT_MIN_HEIGHT = 0.45;
 
 const SLEEPING_MIN_TORSO_ALIGNMENT = 1.0;
@@ -22,9 +22,8 @@ const SLEEPING_MIN_TORSO_ALIGNMENT_WITH_BED = 0.7;
 const SLEEPING_MAX_VELOCITY = 0.04;
 const SLEEPING_HOLD_MS = 2500;
 
-// RELAXED PROXIMITY & TIMING FOR EATING/DRINKING
-const EATING_MIN_CYCLES = 1; 
-const DRINKING_GESTURE_DURATION = 2000;
+const OBJECT_CONFIDENCE_THRESHOLD = 0.5;
+const EATING_GESTURE_WINDOW_MS = 10000;
 
 const RF_API_ENDPOINT = `/api/monitoring/predict-rf`;
 
@@ -38,17 +37,23 @@ let isInitializing = false;
 let videoElement = null;
 let onActivityCallback = null;
 let frameCounter = 0;
+let lastUnknownEmittedAt = 0;
+let ipCameraImage = null;
+let detectionCanvas = null;
+
+const IP_CAMERA_STREAM_URL = "/api/monitoring/camera/stream";
+
+export function getIPCameraStreamUrl() {
+  return IP_CAMERA_STREAM_URL;
+}
 
 let poseHistory = [];
 let activityHistory = [];
 let stableActivity = null;
 
 let handMotionHistory = [];
-let eatingCycleCount = 0;
-let lastEatingCycleTime = 0;
-let drinkingGestureStartTime = 0;
-let drinkingGestureActive = false;
-let lastDrinkingGestureTime = 0;
+let handNearMouthState = false;
+let handNearMouthSince = 0;
 let sleepingCandidateSince = 0;
 
 const actionMemory = {
@@ -148,7 +153,14 @@ function extractThresholdFeatures(keypoints) {
   const leftAnkle = getPoint(keypoints, MP_IDX.leftAnkle);
   const rightAnkle = getPoint(keypoints, MP_IDX.rightAnkle);
 
-  if (!nose || !leftShoulder || !rightShoulder || !leftHip || !rightHip) return null;
+  const requiredPoints = [
+    nose, leftShoulder, rightShoulder, leftHip, rightHip,
+    leftKnee, rightKnee, leftAnkle, rightAnkle,
+  ];
+  if (requiredPoints.some((point) => !point || (point.score ?? 1) < 0.3)) return null;
+  if ([leftAnkle, rightAnkle].some((point) => (point.score ?? 1) < ANKLE_CONFIDENCE_THRESHOLD)) {
+    return null;
+  }
 
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) || 0.2;
   const shoulderMidX = (leftShoulder.x + rightShoulder.x) / 2;
@@ -199,10 +211,10 @@ function extractThresholdFeatures(keypoints) {
 }
 
 function updateObjectMemory(detectedObjects, currentTime) {
-  if (!detectedObjects || detectedObjects.length === 0) return;
+  if (!detectedObjects) return;
 
   const foodClasses = ['bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza',
-    'donut', 'cake', 'apple', 'banana', 'orange', 'plate', 'dining table', 'food', 'cup'];
+    'donut', 'cake', 'apple', 'banana', 'orange', 'plate'];
   const cupClasses = ['cup', 'bottle', 'wine glass', 'glass'];
 
   for (const obj of detectedObjects) {
@@ -255,36 +267,46 @@ function detectSleepingPosture(features, objects = []) {
 
 function detectEatingPattern(normHandToMouth, normElbowToMouth, velocity, objects, isChewing = false) {
   const objectMem = getObjectMemoryStatus();
-  const hasFoodOrBowl = (objects && objects.some(obj => [
+  const hasMealObject = (objects && objects.some(obj => [
     'bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza', 'donut', 'cake',
-    'apple', 'banana', 'orange', 'plate', 'dining table', 'food', 'cup'
+    'apple', 'banana', 'orange', 'plate'
   ].includes(obj.class))) || objectMem.hasFood;
 
   const now = Date.now();
-  // Expanded dynamic proximity thresholds
-  const isHandNearMouth = normHandToMouth < 1.8 || normElbowToMouth < 1.4;
-  const isMovingSlowly = velocity < 0.15;
+  // Elbow proximity alone is too weak: it caused ordinary gestures and poses
+  // to be labeled as eating. Track actual wrist approaches as transitions,
+  // not as one positive sample per video frame.
+  const isHandNearMouth = normHandToMouth < 1.35 && normElbowToMouth < 2.0;
+  const isMovingSlowly = velocity < 0.12;
 
-  if (isHandNearMouth) {
-    handMotionHistory.push({ timestamp: now, isNear: true });
+  if (isHandNearMouth !== handNearMouthState) {
+    handMotionHistory.push({ timestamp: now, isNear: isHandNearMouth });
+    handNearMouthState = isHandNearMouth;
+    handNearMouthSince = isHandNearMouth ? now : 0;
   }
 
-  if (handMotionHistory.length > 20) handMotionHistory.shift();
-
-  const recentNearCount = handMotionHistory.filter(h => now - h.timestamp < 3000).length;
-  const isGestureActive = recentNearCount >= 2;
-
-  if (isGestureActive) {
-    lastEatingCycleTime = now;
-  }
-
-  const isEating = (isGestureActive || isChewing || (now - lastEatingCycleTime < 2500)) && isMovingSlowly;
-  const confidenceBoost = hasFoodOrBowl ? 0.18 : 0.05;
+  handMotionHistory = handMotionHistory.filter(
+    (event) => now - event.timestamp < EATING_GESTURE_WINDOW_MS
+  );
+  const recentApproaches = handMotionHistory.filter((event) => event.isNear).length;
+  const repeatedHandToMouthGesture = isHandNearMouth && recentApproaches >= 3;
+  const mealObjectGesture = hasMealObject && isHandNearMouth;
+  const chewingGesture = isChewing && isMovingSlowly &&
+    (hasMealObject || repeatedHandToMouthGesture);
+  const isEating = isMovingSlowly && (
+    mealObjectGesture || repeatedHandToMouthGesture || chewingGesture
+  );
+  const confidence = hasMealObject ? 0.88 : isChewing ? 0.78 : 0.68;
 
   return {
     isEating,
-    confidenceBoost,
-    signals: { normHandToMouth: normHandToMouth.toFixed(2), is_chewing: isChewing, food_detected: hasFoodOrBowl }
+    confidence,
+    signals: {
+      normHandToMouth: normHandToMouth.toFixed(2),
+      is_chewing: isChewing,
+      meal_object_detected: hasMealObject,
+      repeated_hand_gesture: repeatedHandToMouthGesture,
+    }
   };
 }
 
@@ -294,31 +316,19 @@ function detectDrinkingPattern(normHandToMouth, normElbowToMouth, velocity, obje
     ['cup', 'bottle', 'wine glass', 'glass'].includes(obj.class)
   )) || objectMem.hasCup;
 
-  const now = Date.now();
-  const isHandNearMouth = normHandToMouth < 1.6 || normElbowToMouth < 1.3;
-  const isMovingSlowly = velocity < 0.15;
+  const isHandNearMouth = normHandToMouth < 1.3 && normElbowToMouth < 2.0;
+  const isMovingSlowly = velocity < 0.12;
+  const handHeldAtMouth = handNearMouthSince > 0 && Date.now() - handNearMouthSince >= 700;
 
-  if (!drinkingGestureActive && isHandNearMouth && isMovingSlowly) {
-    drinkingGestureActive = true;
-    drinkingGestureStartTime = now;
-    return { isDrinking: true, signals: { status: 'in_progress', cup: hasCup } };
-  }
-
-  if (drinkingGestureActive && isHandNearMouth) {
-    return { isDrinking: true, signals: { status: 'holding', cup: hasCup } };
-  }
-
-  if (drinkingGestureActive && !isHandNearMouth) {
-    drinkingGestureActive = false;
-    lastDrinkingGestureTime = now;
-    return { isDrinking: true, signals: { status: 'releasing', cup: hasCup } };
-  }
-
-  if (now - lastDrinkingGestureTime < DRINKING_GESTURE_DURATION) {
-    return { isDrinking: true, signals: { status: 'cooldown', cup: hasCup } };
-  }
-
-  return { isDrinking: false, signals: { status: 'idle', cup: hasCup } };
+  return {
+    isDrinking: hasCup && isHandNearMouth && handHeldAtMouth && isMovingSlowly,
+    signals: {
+      cup: hasCup,
+      hand_near_mouth: isHandNearMouth,
+      hand_held_at_mouth: handHeldAtMouth,
+      moving_slowly: isMovingSlowly,
+    },
+  };
 }
 
 function classifyActivity(features, poseSequence, objects = [], isChewing = false) {
@@ -331,6 +341,10 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     torsoAlignment, anklesConfidentFlag, normElbowToMouth
   ] = features;
 
+  if (!features.slice(0, 15).every(Number.isFinite)) {
+    return { activity: 'Unknown', confidence: 0, signals: { rule: 'invalid_pose_features' } };
+  }
+
   // 1. SLEEPING GATE
   const sleepingResult = detectSleepingPosture(features, objects);
   if (sleepingResult) return sleepingResult;
@@ -340,17 +354,17 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
   if (eatingPattern.isEating) {
     return {
       activity: 'Eating',
-      confidence: Math.min(0.78 + eatingPattern.confidenceBoost, 0.95),
+      confidence: eatingPattern.confidence,
       signals: { rule: 'eating_pattern', details: eatingPattern.signals }
     };
   }
 
   // 3. DRINKING PATTERN
   const drinkingPattern = detectDrinkingPattern(normHandToMouth, normElbowToMouth, velocity, objects);
-  if (drinkingPattern.isDrinking && drinkingPattern.signals.status !== 'idle') {
+  if (drinkingPattern.isDrinking) {
     return {
       activity: 'Drinking',
-      confidence: drinkingPattern.signals.cup ? 0.90 : 0.80,
+      confidence: 0.88,
       signals: { rule: 'drinking_pattern', details: drinkingPattern.signals }
     };
   }
@@ -368,16 +382,20 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // 5. SITTING / REST (UNTOUCHED LOGIC)
-  const isSittingPosture = (leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.08;
-  const hasChair = objects && objects.some(obj => obj.class === 'chair');
+  // 5. Sitting or resting requires a stable, bent-leg posture.
+  const hasChair = objects.some((object) => object.class === 'chair');
+  const isSittingPosture =
+    velocity < 0.055 &&
+    torsoAlignment < 0.8 &&
+    ((leftLegAngle < 125 && rightLegAngle < 125) ||
+      (hasChair && (leftLegAngle < 150 || rightLegAngle < 150)));
 
   if (isSittingPosture) {
     return {
       activity: 'Sitting / rest',
       confidence: hasChair ? 0.91 : 0.82,
       signals: {
-        rule: hasChair ? 'sitting_posture_with_chair_priority_override' : 'sitting_posture_priority_override',
+        rule: hasChair ? 'sitting_posture_with_chair' : 'sitting_posture',
         sitting_posture: true,
         chair_detected: hasChair,
         leg_angle_left: leftLegAngle.toFixed(1),
@@ -386,12 +404,43 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // 6. DEFAULT FALLBACK
-  return {
-    activity: 'Sitting / rest',
-    confidence: 0.55,
-    signals: { rule: 'default_fallback_sitting' }
-  };
+  return { activity: 'Unknown', confidence: 0, signals: { rule: 'no_supported_activity' } };
+}
+
+async function initializeModels() {
+  await tf.setBackend('webgl');
+  await tf.ready();
+
+  detector = await poseDetection.createDetector(
+    poseDetection.SupportedModels.BlazePose,
+    {
+      runtime: 'mediapipe',
+      modelType: 'full',
+      enableSmoothing: true,
+      solutionPath: `${import.meta.env.BASE_URL}mediapipe_pose`,
+    }
+  );
+
+  const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+  faceDetector = await faceLandmarksDetection.createDetector(faceModel, { runtime: 'tfjs', refineLandmarks: false });
+  objectDetector = await cocoSsd.load();
+}
+
+function resetDetectionHistory() {
+  frameCounter = 0;
+  lastUnknownEmittedAt = 0;
+  lastDetectedObjects = [];
+  mouthHistory = [];
+  poseHistory = [];
+  activityHistory = [];
+  stableActivity = null;
+  handMotionHistory = [];
+  handNearMouthState = false;
+  handNearMouthSince = 0;
+  sleepingCandidateSince = 0;
+  actionMemory.lastCupSeen = 0;
+  actionMemory.lastFoodSeen = 0;
+  actionMemory.lastBedSeen = 0;
 }
 
 export async function initializePoseDetection(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
@@ -413,22 +462,11 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
     video.srcObject = stream;
     await video.play();
 
-    await tf.setBackend('webgl');
-    await tf.ready();
-
-    detector = await poseDetection.createDetector(
-      poseDetection.SupportedModels.BlazePose,
-      {
-        runtime: 'mediapipe',
-        modelType: 'full',
-        enableSmoothing: true,
-        solutionPath: `${import.meta.env.BASE_URL}mediapipe_pose`,
-      }
-    );
-
-    const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
-    faceDetector = await faceLandmarksDetection.createDetector(faceModel, { runtime: 'tfjs', refineLandmarks: false });
-    objectDetector = await cocoSsd.load();
+    ipCameraImage?.removeAttribute('src');
+    ipCameraImage = null;
+    detectionCanvas = canvas;
+    resetDetectionHistory();
+    await initializeModels();
 
     isRunning = true;
     isInitializing = false;
@@ -442,12 +480,62 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
   }
 }
 
-async function detectPoseLoop() {
-  if (!isRunning || !detector || !videoElement) return;
+export async function initializePoseDetectionWithIPCamera(video, canvas, expectedRef, onActivityDetected, onAlignmentChange) {
+  if (isInitializing || isRunning) return { detector };
+  isInitializing = true;
 
   try {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    videoElement = video;
+    ipCameraImage = image;
+    detectionCanvas = canvas;
+    onActivityCallback = onActivityDetected;
+
+    await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('Timed out waiting for the IP camera stream.')), 15000);
+      image.onload = () => {
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      image.onerror = () => {
+        window.clearTimeout(timeout);
+        reject(new Error('Could not load the IP camera stream. Check the camera and backend.'));
+      };
+      image.src = getIPCameraStreamUrl();
+    });
+
+    resetDetectionHistory();
+    await initializeModels();
+
+    isRunning = true;
+    isInitializing = false;
+    detectPoseLoop();
+    return { detector };
+  } catch (error) {
+    isInitializing = false;
+    ipCameraImage?.removeAttribute('src');
+    ipCameraImage = null;
+    console.error('Failed to initialize IP camera pose detection:', error);
+    throw error;
+  }
+}
+
+async function detectPoseLoop() {
+  const input = ipCameraImage || videoElement;
+  if (!isRunning || !detector || !input) return;
+
+  try {
+    if (ipCameraImage && detectionCanvas) {
+      const context = detectionCanvas.getContext('2d');
+      if (context) {
+        detectionCanvas.width = ipCameraImage.naturalWidth || 640;
+        detectionCanvas.height = ipCameraImage.naturalHeight || 480;
+        context.drawImage(ipCameraImage, 0, 0, detectionCanvas.width, detectionCanvas.height);
+      }
+    }
     frameCounter++;
-    const poses = await detector.estimatePoses(videoElement);
+    const poses = await detector.estimatePoses(input);
 
     let objects = lastDetectedObjects;
     let faces = [];
@@ -455,10 +543,13 @@ async function detectPoseLoop() {
     // Run heavier models asynchronously every N frames to avoid blocking pose execution
     if (frameCounter % ASYNC_DETECT_EVERY_N_FRAMES === 0) {
       if (faceDetector) {
-        faces = await faceDetector.estimateFaces(videoElement).catch(() => []);
+        faces = await faceDetector.estimateFaces(input).catch(() => []);
       }
       if (objectDetector) {
-        objects = await objectDetector.detect(videoElement).catch(() => []);
+        const detections = await objectDetector.detect(input).catch(() => []);
+        objects = detections.filter(
+          (object) => object.score >= OBJECT_CONFIDENCE_THRESHOLD
+        );
         lastDetectedObjects = objects;
         updateObjectMemory(objects, Date.now());
       }
@@ -466,8 +557,8 @@ async function detectPoseLoop() {
 
     if (poses && poses.length > 0) {
       const pose = poses[0];
-      const width = videoElement.videoWidth || videoElement.naturalWidth || 640;
-      const height = videoElement.videoHeight || videoElement.naturalHeight || 480;
+      const width = input.videoWidth || input.naturalWidth || 640;
+      const height = input.videoHeight || input.naturalHeight || 480;
       const normalizedKeypoints = pose.keypoints.map(p => ({
         ...p,
         x: p.x / width,
@@ -488,11 +579,16 @@ async function detectPoseLoop() {
       }
 
       if (mouthHistory.length > 8) {
-        let diffs = 0;
-        for (let i = 1; i < mouthHistory.length; i++) {
-          diffs += Math.abs(mouthHistory[i] - mouthHistory[i - 1]);
+        const recentMouth = mouthHistory.slice(-12);
+        let totalVariation = 0;
+        for (let i = 1; i < recentMouth.length; i++) {
+          totalVariation += Math.abs(recentMouth[i] - recentMouth[i - 1]);
         }
-        isChewing = (diffs / mouthHistory.length) > 0.004;
+        const mouthRange = Math.max(...recentMouth) - Math.min(...recentMouth);
+        isChewing =
+          recentMouth.length >= 10 &&
+          mouthRange > 0.035 &&
+          totalVariation / (recentMouth.length - 1) > 0.006;
       }
 
       if (thresholdFeatures) {
@@ -503,11 +599,12 @@ async function detectPoseLoop() {
 
         if (activityResult) {
           const smoothedActivity = smoothPredictions(activityResult, activityHistory);
-          activityHistory.push(activityResult);
-          if (activityHistory.length > SMOOTHING_WINDOW) activityHistory.shift();
-
-          if (onActivityCallback) {
-            onActivityCallback({
+          if (smoothedActivity.activity === 'Unknown') {
+            emitUnknownIfDue();
+          } else {
+            activityHistory.push(activityResult);
+            if (activityHistory.length > SMOOTHING_WINDOW) activityHistory.shift();
+            notifyActivity({
               activity_name: smoothedActivity.activity,
               confidence: smoothedActivity.confidence,
               detected_at: new Date(),
@@ -516,7 +613,16 @@ async function detectPoseLoop() {
             });
           }
         }
+      } else {
+        poseHistory = [];
+        handMotionHistory = [];
+        handNearMouthState = false;
+        handNearMouthSince = 0;
+        sleepingCandidateSince = 0;
+        emitUnknownIfDue();
       }
+    } else {
+      emitUnknownIfDue();
     }
   } catch (error) {
     console.error('Error in detection loop:', error);
@@ -527,7 +633,44 @@ async function detectPoseLoop() {
   }
 }
 
+function notifyActivity(detection) {
+  if (!onActivityCallback) return;
+  try {
+    const callbackResult = onActivityCallback(detection);
+    if (callbackResult && typeof callbackResult.catch === 'function') {
+      callbackResult.catch((error) => console.error('Activity callback failed:', error));
+    }
+  } catch (error) {
+    console.error('Activity callback failed:', error);
+  }
+}
+
+function emitUnknownIfDue() {
+  const now = Date.now();
+  if (now - lastUnknownEmittedAt < 1000) return;
+  lastUnknownEmittedAt = now;
+  activityHistory = [];
+  stableActivity = { activity: 'Unknown', confidence: 0, signals: { rule: 'no_reliable_person_pose' } };
+  poseHistory = [];
+  handMotionHistory = [];
+  handNearMouthState = false;
+  handNearMouthSince = 0;
+  sleepingCandidateSince = 0;
+  notifyActivity({
+    activity_name: 'Unknown',
+    confidence: 0,
+    detected_at: new Date(now),
+    signals: { rule: 'no_reliable_person_pose' },
+  });
+}
+
 function smoothPredictions(activityResult, history) {
+  if (activityResult.activity === 'Unknown') {
+    history.length = 0;
+    stableActivity = activityResult;
+    return activityResult;
+  }
+
   if (!stableActivity) {
     stableActivity = activityResult;
     return activityResult;
@@ -570,8 +713,13 @@ export function stopPoseDetection() {
     videoElement.srcObject = null;
   }
 
-  // Stop IP cam frame pump if active
-  _stopIPCamFramePump();
+  if (ipCameraImage) {
+    ipCameraImage.onload = null;
+    ipCameraImage.onerror = null;
+    ipCameraImage.removeAttribute('src');
+    ipCameraImage = null;
+  }
+  detectionCanvas = null;
 
   detector = null;
   faceDetector = null;
