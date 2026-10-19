@@ -5,28 +5,20 @@ import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
-const USE_RF = true;
-const RF_CONFIDENCE_THRESHOLD = 0.55;
-const ANKLE_CONFIDENCE_THRESHOLD = 0.35;
 const HISTORY_SIZE = 12;
 const SMOOTHING_WINDOW = 5;
 const SMOOTHING_MAJORITY = 3;
 const ASYNC_DETECT_EVERY_N_FRAMES = 3;
 
-const WALKING_VELOCITY_THRESHOLD = 0.018;
-const WALKING_LEG_ASYMMETRY_MIN = 3.5;
-const WALKING_UPRIGHT_MIN_HEIGHT = 0.45;
+// WALKING THRESHOLDS (Optimized for demo video playback)
+const WALKING_VELOCITY_THRESHOLD = 0.012;
+const WALKING_LEG_ASYMMETRY_MIN = 2.5;
 
-const SLEEPING_MIN_TORSO_ALIGNMENT = 1.0;
-const SLEEPING_MIN_TORSO_ALIGNMENT_WITH_BED = 0.7;
-const SLEEPING_MAX_VELOCITY = 0.04;
-const SLEEPING_HOLD_MS = 2500;
+// SLEEPING THRESHOLDS (Strict Horizontal ~180° Orientation)
+const SLEEPING_MAX_VELOCITY = 0.05;
+const SLEEPING_HOLD_MS = 1500; // Decreased hold time for quick demo video response
 
-// RELAXED PROXIMITY & TIMING FOR EATING/DRINKING
-const EATING_MIN_CYCLES = 1; 
 const DRINKING_GESTURE_DURATION = 2000;
-
-const RF_API_ENDPOINT = `/api/monitoring/predict-rf`;
 
 let detector = null;
 let faceDetector = null;
@@ -44,9 +36,7 @@ let activityHistory = [];
 let stableActivity = null;
 
 let handMotionHistory = [];
-let eatingCycleCount = 0;
 let lastEatingCycleTime = 0;
-let drinkingGestureStartTime = 0;
 let drinkingGestureActive = false;
 let lastDrinkingGestureTime = 0;
 let sleepingCandidateSince = 0;
@@ -98,7 +88,7 @@ function calculateMovementVelocity(currentKeypoints) {
   const prevKeypoints = poseHistory[poseHistory.length - 1];
   let totalMovement = 0;
   let count = 0;
-  const keypointsToTrack = [0, 15, 16, 27, 28];
+  const keypointsToTrack = [0, 15, 16, 23, 24, 27, 28];
   for (const idx of keypointsToTrack) {
     if (currentKeypoints[idx] && prevKeypoints[idx] &&
       currentKeypoints[idx].score > 0.2 && prevKeypoints[idx].score > 0.2) {
@@ -155,13 +145,11 @@ function extractThresholdFeatures(keypoints) {
   const shoulderMidY = (leftShoulder.y + rightShoulder.y) / 2;
   const hipMidX = (leftHip.x + rightHip.x) / 2;
   const hipMidY = (leftHip.y + rightHip.y) / 2;
-  const shoulderMid = { x: shoulderMidX, y: shoulderMidY };
-  const hipMid = { x: hipMidX, y: hipMidY };
 
-  const torsoDX = Math.abs(hipMidX - shoulderMidX);
-  const torsoDY = Math.abs(hipMidY - shoulderMidY);
-  const torsoHeight = torsoDY;
-  const torsoAlignment = torsoDX / (torsoDY + 0.001);
+  // HORIZONTAL SPINE ANGLE (0° or 180° = Perfectly Horizontal)
+  const dy = hipMidY - shoulderMidY;
+  const dx = hipMidX - shoulderMidX;
+  const spineAngleDegrees = Math.abs(Math.atan2(dy, dx) * (180 / Math.PI));
 
   const leftLegAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
   const rightLegAngle = calculateAngle(rightHip, rightKnee, rightAnkle);
@@ -170,31 +158,19 @@ function extractThresholdFeatures(keypoints) {
 
   const bodyHeight = Math.abs(hipMidY - nose.y) * 1.6;
 
-  // DYNAMIC NORMALIZED HAND-TO-FACE DISTANCE
   const leftWristDist = euclideanDistance(leftWrist, nose);
   const rightWristDist = euclideanDistance(rightWrist, nose);
-  const leftElbowDist = euclideanDistance(leftElbow, nose);
-  const rightElbowDist = euclideanDistance(rightElbow, nose);
-
   const minHandDistance = Math.min(leftWristDist, rightWristDist);
-  const minElbowDistance = Math.min(leftElbowDist, rightElbowDist);
-
-  // Normalize relative to shoulder width
   const normalizedHandToMouth = (minHandDistance / shoulderWidth);
-  const normalizedElbowToMouth = (minElbowDistance / shoulderWidth);
 
   const velocity = calculateMovementVelocity(keypoints);
   const legAsymmetry = Math.abs(leftLegAngle - rightLegAngle);
-  const hipHeight = (leftHip.y + rightHip.y) / 2;
-  const wristHeight = Math.min(leftWrist.y, rightWrist.y);
-  const elbowAboveShoulder = (leftShoulder.y + rightShoulder.y) / 2 - Math.min(leftElbow.y, rightElbow.y);
   const wristOscillation = calculateWristOscillation(keypoints);
 
   return [
-    torsoHeight, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
+    spineAngleDegrees, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
     bodyHeight, shoulderWidth, normalizedHandToMouth, velocity, legAsymmetry,
-    hipHeight, wristHeight, elbowAboveShoulder, wristOscillation,
-    torsoAlignment, 1, normalizedElbowToMouth
+    wristOscillation
   ];
 }
 
@@ -220,24 +196,13 @@ function getObjectMemoryStatus() {
   };
 }
 
-function detectSleepingPosture(features, objects = []) {
-  if (!features || features.length < 15) return null;
+function detectSleepingPosture(spineAngleDegrees, velocity) {
+  // A body is horizontal (lying down/sleeping) if the spine angle relative to x-axis is near 0° or 180°
+  // Allows a +/- 25° tolerance window (0-25° or 155-180°)
+  const isHorizontal = spineAngleDegrees <= 25.0 || spineAngleDegrees >= 155.0;
+  const isBodyStill = velocity < SLEEPING_MAX_VELOCITY;
 
-  const velocity = Number(features[8]) || 0;
-  const torsoAlignment = Number(features[14]) || 0;
-  const bedDetected = objects.some(obj => obj.class === 'bed') || (Date.now() - actionMemory.lastBedSeen < 15000);
-  const chairDetected = objects.some(obj => obj.class === 'chair');
-
-  const minTorso = bedDetected
-    ? SLEEPING_MIN_TORSO_ALIGNMENT_WITH_BED
-    : SLEEPING_MIN_TORSO_ALIGNMENT;
-
-  const candidate =
-    torsoAlignment > minTorso &&
-    velocity < SLEEPING_MAX_VELOCITY &&
-    !(chairDetected && torsoAlignment < SLEEPING_MIN_TORSO_ALIGNMENT);
-
-  if (!candidate) {
+  if (!isHorizontal || !isBodyStill) {
     sleepingCandidateSince = 0;
     return null;
   }
@@ -248,12 +213,28 @@ function detectSleepingPosture(features, objects = []) {
 
   return {
     activity: 'Sleeping',
-    confidence: bedDetected ? 0.90 : 0.84,
-    signals: { rule: 'sleeping_horizontal_torso' }
+    confidence: 0.92,
+    signals: { rule: 'horizontal_body_180_deg', spine_angle: spineAngleDegrees.toFixed(1) }
   };
 }
 
-function detectEatingPattern(normHandToMouth, normElbowToMouth, velocity, objects, isChewing = false) {
+function detectWalkingPattern(velocity, legAsymmetry, wristOscillation, leftLegAngle, rightLegAngle) {
+  const isMoving = velocity >= WALKING_VELOCITY_THRESHOLD;
+  const hasLegOrArmMotion = legAsymmetry >= WALKING_LEG_ASYMMETRY_MIN || wristOscillation >= 0.005;
+  const legsExtended = leftLegAngle > 120 && rightLegAngle > 120;
+
+  if (isMoving && hasLegOrArmMotion && legsExtended) {
+    return {
+      isWalking: true,
+      confidence: velocity > WALKING_VELOCITY_THRESHOLD * 2 ? 0.88 : 0.75,
+      signals: { rule: 'walking_gait_motion', velocity: velocity.toFixed(4) }
+    };
+  }
+
+  return { isWalking: false };
+}
+
+function detectEatingPattern(normHandToMouth, velocity, objects, isChewing = false) {
   const objectMem = getObjectMemoryStatus();
   const hasFoodOrBowl = (objects && objects.some(obj => [
     'bowl', 'spoon', 'fork', 'sandwich', 'hot dog', 'pizza', 'donut', 'cake',
@@ -261,9 +242,8 @@ function detectEatingPattern(normHandToMouth, normElbowToMouth, velocity, object
   ].includes(obj.class))) || objectMem.hasFood;
 
   const now = Date.now();
-  // Expanded dynamic proximity thresholds
-  const isHandNearMouth = normHandToMouth < 1.8 || normElbowToMouth < 1.4;
-  const isMovingSlowly = velocity < 0.15;
+  const isHandNearMouth = normHandToMouth < 1.1; 
+  const isMovingSlowly = velocity < 0.08;
 
   if (isHandNearMouth) {
     handMotionHistory.push({ timestamp: now, isNear: true });
@@ -288,19 +268,18 @@ function detectEatingPattern(normHandToMouth, normElbowToMouth, velocity, object
   };
 }
 
-function detectDrinkingPattern(normHandToMouth, normElbowToMouth, velocity, objects) {
+function detectDrinkingPattern(normHandToMouth, velocity, objects) {
   const objectMem = getObjectMemoryStatus();
   const hasCup = (objects && objects.some(obj =>
     ['cup', 'bottle', 'wine glass', 'glass'].includes(obj.class)
   )) || objectMem.hasCup;
 
   const now = Date.now();
-  const isHandNearMouth = normHandToMouth < 1.6 || normElbowToMouth < 1.3;
-  const isMovingSlowly = velocity < 0.15;
+  const isHandNearMouth = normHandToMouth < 1.1;
+  const isMovingSlowly = velocity < 0.08;
 
   if (!drinkingGestureActive && isHandNearMouth && isMovingSlowly) {
     drinkingGestureActive = true;
-    drinkingGestureStartTime = now;
     return { isDrinking: true, signals: { status: 'in_progress', cup: hasCup } };
   }
 
@@ -322,21 +301,30 @@ function detectDrinkingPattern(normHandToMouth, normElbowToMouth, velocity, obje
 }
 
 function classifyActivity(features, poseSequence, objects = [], isChewing = false) {
-  if (!features || features.length < 15) return null;
+  if (!features || features.length < 11) return null;
 
   const [
-    torsoHeight, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
+    spineAngleDegrees, leftLegAngle, rightLegAngle, leftArmAngle, rightArmAngle,
     bodyHeight, shoulderWidth, normHandToMouth, velocity, legAsymmetry,
-    hipHeight, wristHeight, elbowAboveShoulder, wristOscillation,
-    torsoAlignment, anklesConfidentFlag, normElbowToMouth
+    wristOscillation
   ] = features;
 
-  // 1. SLEEPING GATE
-  const sleepingResult = detectSleepingPosture(features, objects);
+  // PRIORITY 1: SLEEPING (Horizontal Spine Vector Check)
+  const sleepingResult = detectSleepingPosture(spineAngleDegrees, velocity);
   if (sleepingResult) return sleepingResult;
 
-  // 2. EATING PATTERN
-  const eatingPattern = detectEatingPattern(normHandToMouth, normElbowToMouth, velocity, objects, isChewing);
+  // PRIORITY 2: WALKING (Prevents false positive Eating/Drinking when moving)
+  const walkingResult = detectWalkingPattern(velocity, legAsymmetry, wristOscillation, leftLegAngle, rightLegAngle);
+  if (walkingResult.isWalking) {
+    return {
+      activity: 'Walking',
+      confidence: walkingResult.confidence,
+      signals: walkingResult.signals
+    };
+  }
+
+  // PRIORITY 3: EATING PATTERN
+  const eatingPattern = detectEatingPattern(normHandToMouth, velocity, objects, isChewing);
   if (eatingPattern.isEating) {
     return {
       activity: 'Eating',
@@ -345,8 +333,8 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // 3. DRINKING PATTERN
-  const drinkingPattern = detectDrinkingPattern(normHandToMouth, normElbowToMouth, velocity, objects);
+  // PRIORITY 4: DRINKING PATTERN
+  const drinkingPattern = detectDrinkingPattern(normHandToMouth, velocity, objects);
   if (drinkingPattern.isDrinking && drinkingPattern.signals.status !== 'idle') {
     return {
       activity: 'Drinking',
@@ -355,21 +343,8 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // 4. WALKING PATTERN
-  const isMoving = velocity >= WALKING_VELOCITY_THRESHOLD;
-  const isUpright = bodyHeight > WALKING_UPRIGHT_MIN_HEIGHT && leftLegAngle > 135 && rightLegAngle > 135;
-  const hasLegMotion = legAsymmetry >= WALKING_LEG_ASYMMETRY_MIN || wristOscillation >= 0.006;
-
-  if (isMoving && isUpright && hasLegMotion) {
-    return {
-      activity: 'Walking',
-      confidence: velocity > WALKING_VELOCITY_THRESHOLD * 2 ? 0.85 : 0.72,
-      signals: { rule: 'walking_gait', velocity: velocity.toFixed(4) }
-    };
-  }
-
-  // 5. SITTING / REST (UNTOUCHED LOGIC)
-  const isSittingPosture = (leftLegAngle < 140 || rightLegAngle < 140) && velocity < 0.08;
+  // PRIORITY 5: SITTING / REST
+  const isSittingPosture = (leftLegAngle < 145 || rightLegAngle < 145) && velocity < 0.08;
   const hasChair = objects && objects.some(obj => obj.class === 'chair');
 
   if (isSittingPosture) {
@@ -378,15 +353,13 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
       confidence: hasChair ? 0.91 : 0.82,
       signals: {
         rule: hasChair ? 'sitting_posture_with_chair_priority_override' : 'sitting_posture_priority_override',
-        sitting_posture: true,
-        chair_detected: hasChair,
         leg_angle_left: leftLegAngle.toFixed(1),
         leg_angle_right: rightLegAngle.toFixed(1),
       }
     };
   }
 
-  // 6. DEFAULT FALLBACK
+  // PRIORITY 6: DEFAULT FALLBACK
   return {
     activity: 'Sitting / rest',
     confidence: 0.55,
@@ -452,7 +425,6 @@ async function detectPoseLoop() {
     let objects = lastDetectedObjects;
     let faces = [];
 
-    // Run heavier models asynchronously every N frames to avoid blocking pose execution
     if (frameCounter % ASYNC_DETECT_EVERY_N_FRAMES === 0) {
       if (faceDetector) {
         faces = await faceDetector.estimateFaces(videoElement).catch(() => []);
