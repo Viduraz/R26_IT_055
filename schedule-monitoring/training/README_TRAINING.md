@@ -35,10 +35,16 @@ meaningfully beat pure thresholds if your recordings are reasonably clean.
 ```bash
 mkdir har-training && cd har-training
 npm init -y
-npm install @tensorflow/tfjs-node
+npm install @tensorflow/tfjs
 mkdir data
 # copy your har_session_*.json files into ./data
 ```
+
+The trainer uses the portable TensorFlow.js package and does not require
+native TensorFlow bindings. It reads all JSON files, keeps the final
+occurrence of each timestamp, sorts the unique frames chronologically, and
+then builds windows from that sequence. Legacy fixture files without
+precomputed 15-feature vectors are skipped.
 
 Copy `train_har_model.js` into this folder, then:
 
@@ -55,6 +61,9 @@ Watch the console output:
 
 Output lands in `./output/`: `model.json`, weight `.bin` file(s), and
 `norm_stats.json`.
+
+The generated candidate is not enabled automatically. Keep `USE_LSTM = false`
+in `activityDetection.js` until live validation is complete.
 
 ## Step 3 — Integrate (10 minutes)
 

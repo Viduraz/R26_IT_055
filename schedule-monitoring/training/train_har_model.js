@@ -3,8 +3,8 @@
  *
  * Trains the LSTM-HAR model that activityDetection.js is already wired to
  * load (see LSTM_MODEL_PATH, LSTM_STATS_PATH, LSTM_SEQ_LEN, LSTM_ACTIVITY_NAMES
- * in that file). Output matches that contract exactly — flip USE_LSTM = true
- * in activityDetection.js when done, no other code changes needed.
+ * in that file). Output matches the browser model contract. Keep USE_LSTM
+ * disabled until the candidate is tested live against representative footage.
  *
  * ── Setup ───────────────────────────────────────────────────────────────────
  *   mkdir har-training && cd har-training
@@ -26,7 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const tf = require('@tensorflow/tfjs-node');
+const tf = require('@tensorflow/tfjs');
 
 // ── Must match activityDetection.js exactly ─────────────────────────────────
 const SEQ_LEN = 30;
@@ -43,7 +43,39 @@ const DATA_DIR = path.join(__dirname, 'data');
 const OUTPUT_DIR = path.join(__dirname, 'output');
 const WINDOW_STRIDE = 5; // overlap windows — more training examples per session
 
-// ── 1. Load all session files ───────────────────────────────────────────────
+async function saveModel(model, outputDir) {
+  const modelTopology = JSON.parse(model.toJSON());
+  const weightSpecs = [];
+  const weightBuffers = [];
+  let totalBytes = 0;
+
+  for (const weight of model.weights) {
+    const values = weight.val.dataSync();
+    const buffer = Buffer.from(values.buffer, values.byteOffset, values.byteLength);
+    weightSpecs.push({
+      name: weight.originalName,
+      shape: weight.shape,
+      dtype: weight.dtype,
+    });
+    weightBuffers.push(buffer);
+    totalBytes += buffer.length;
+  }
+
+  const weights = Buffer.concat(weightBuffers, totalBytes);
+  fs.writeFileSync(path.join(outputDir, 'weights.bin'), weights);
+  fs.writeFileSync(
+    path.join(outputDir, 'model.json'),
+    JSON.stringify({
+      format: 'layers-model',
+      generatedBy: 'TensorFlow.js',
+      convertedBy: null,
+      modelTopology,
+      weightsManifest: [{ paths: ['weights.bin'], weights: weightSpecs }],
+    }, null, 2)
+  );
+}
+
+// ── 1. Load and deduplicate all exported frames ──────────────────────────────
 function loadSessions() {
   if (!fs.existsSync(DATA_DIR)) {
     throw new Error(`Missing ./data directory. Put har_session_*.json files there.`);
@@ -54,11 +86,62 @@ function loadSessions() {
   }
   console.log(`Found ${files.length} session file(s):`, files);
 
-  const sessions = files.map(f => {
+  // Exports made while recording are cumulative snapshots. Files are read in
+  // lexical order and the last frame for a timestamp wins, so the final
+  // snapshot supplies the authoritative copy of each frame.
+  const framesByTimestamp = new Map();
+  let rawFrameCount = 0;
+  let skippedFrameCount = 0;
+  const frameCounts = Object.fromEntries(ACTIVITY_NAMES.map(label => [label, 0]));
+
+  for (const f of files.sort()) {
     const raw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
-    return raw.sort((a, b) => a.t - b.t); // ensure chronological order
-  });
-  return sessions;
+    const frames = Array.isArray(raw) ? raw : raw.frames;
+    if (!Array.isArray(frames)) {
+      throw new Error(`${f} must contain a frames array`);
+    }
+    rawFrameCount += frames.length;
+
+    for (const frame of frames) {
+      const timestamp = frame.t ?? frame.timestamp;
+      if (timestamp === undefined || timestamp === null) {
+        throw new Error(`${f} contains a frame without t or timestamp`);
+      }
+      if (!Array.isArray(frame.features) || frame.features.length !== NUM_FEATURES) {
+        skippedFrameCount++;
+        continue;
+      }
+      const label = frame.label || frame.activity;
+      if (ACTIVITY_NAMES.includes(label)) frameCounts[label]++;
+      framesByTimestamp.set(String(timestamp), {
+        ...frame,
+        label,
+        timestamp: Number(timestamp),
+      });
+    }
+  }
+
+  const frames = [...framesByTimestamp.values()]
+    .sort((a, b) => a.timestamp - b.timestamp);
+  console.log(
+    `Deduplicated ${rawFrameCount} raw frames to ${frames.length} unique timestamps`
+  );
+  console.log('Training frames per class:', frameCounts);
+  if (skippedFrameCount > 0) {
+    console.warn(
+      `Skipped ${skippedFrameCount} frame(s) without exactly ${NUM_FEATURES} ` +
+      'precomputed features'
+    );
+  }
+  if (frames.length === 0) {
+    throw new Error('No frames with precomputed 15-feature vectors were found');
+  }
+  return {
+    sessions: [frames],
+    rawFrameCount,
+    uniqueFrameCount: frames.length,
+    frameCounts,
+  };
 }
 
 // ── 2. Build fixed-length windows, never crossing a label boundary ─────────
@@ -93,6 +176,7 @@ function buildWindows(sessions) {
 
   console.log('\nWindow counts per activity (before balancing):');
   console.table(labelCounts);
+  console.log('Training frames per class (window count):', labelCounts);
 
   return windows;
 }
@@ -187,8 +271,8 @@ function buildModel() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  const sessions = loadSessions();
-  let windows = buildWindows(sessions);
+  const loaded = loadSessions();
+  let windows = buildWindows(loaded.sessions);
 
   if (windows.length < 50) {
     console.warn(
@@ -236,20 +320,28 @@ async function main() {
   });
 
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
-  await model.save(`file://${OUTPUT_DIR}`);
+  await saveModel(model, OUTPUT_DIR);
   fs.writeFileSync(
     path.join(OUTPUT_DIR, 'norm_stats.json'),
-    JSON.stringify({ mean, std }, null, 2)
+    JSON.stringify({
+      mean,
+      std,
+      num_features: NUM_FEATURES,
+      sequence_length: SEQ_LEN,
+      activity_names: ACTIVITY_NAMES,
+      raw_frame_count: loaded.rawFrameCount,
+      unique_frame_count: loaded.uniqueFrameCount,
+    }, null, 2)
   );
 
   console.log(`\n✓ Saved model + norm_stats.json to ${OUTPUT_DIR}`);
   console.log(`\nNext steps:`);
-  console.log(`  1. Copy ${OUTPUT_DIR}/model.json, ${OUTPUT_DIR}/*.bin, and`);
+  console.log(`  1. Copy ${OUTPUT_DIR}/model.json, ${OUTPUT_DIR}/weights.bin, and`);
   console.log(`     ${OUTPUT_DIR}/norm_stats.json into your React app's`);
   console.log(`     public/lstm_har_model/ directory.`);
-  console.log(`  2. In activityDetection.js, set: const USE_LSTM = true;`);
-  console.log(`  3. Test live — watch val_acc above; if it's well below train`);
-  console.log(`     accuracy, you likely need more/more-varied recorded data.`);
+  console.log(`  2. Keep USE_LSTM = false until live validation is complete.`);
+  console.log(`  3. The validation score is not session-separated generalization`);
+  console.log(`     because the source exports are cumulative.`);
 
   trainXs.dispose(); trainYs.dispose(); valXs.dispose(); valYs.dispose();
 }

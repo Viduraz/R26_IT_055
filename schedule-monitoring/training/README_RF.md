@@ -37,7 +37,7 @@ The Random Forest model is an alternative to LSTM that provides:
 
 ### Expected Output
 
-Each `har_session_*.json` file contains:
+Each RF-compatible `har_session_*.json` file contains:
 
 ```json
 {
@@ -51,6 +51,12 @@ Each `har_session_*.json` file contains:
   ]
 }
 ```
+
+The current `DataCollector.jsx` exports the LSTM format: 15 precomputed
+features plus 17 MoveNet keypoints. Those exports are valid for
+`train_har_model.js`, but they are intentionally skipped by the RF
+preprocessor, which requires 33 BlazePose landmarks so it can recompute the
+RF feature contract. Do not train an RF model from the LSTM exports.
 
 ## Step 2: Preprocess Data
 
@@ -92,6 +98,23 @@ python preprocess_rf_data.py
 cd /path/to/R26_IT_055/schedule-monitoring/training
 python train_rf_model.py
 ```
+
+`train_rf_model.py` creates a candidate model. Its in-sample metrics are not a
+production accuracy claim. Before deploying a candidate, run the
+session-separated evaluator:
+
+```bash
+python evaluate_rf_model.py
+```
+
+The evaluator refuses to report a test score until there are at least two
+independent sessions for every activity. It holds out one complete session per
+activity, so frames from one recording cannot leak into both training and test
+sets.
+
+Files exported as cumulative snapshots of the same recording are not
+independent sessions. Keep them for provenance, but collect at least two
+separate recording runs per activity before relying on the evaluator.
 
 ### Configuration
 

@@ -148,6 +148,10 @@ class MockCollection:
         if results and self._projection and "_id" not in self._projection:
             return {k: v for k, v in results[0].items() if k != "_id"}
         return results[0] if results else None
+
+    def count_documents(self, query=None):
+        """Return the number of documents matching a MongoDB-style query."""
+        return sum(1 for document in self.data if self._matches(document, query or {}))
     
     def find_one_and_update(self, query, update, return_document=False):
         """Mock find_one_and_update"""
