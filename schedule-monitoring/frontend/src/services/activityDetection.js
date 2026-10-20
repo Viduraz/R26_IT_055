@@ -197,8 +197,6 @@ function getObjectMemoryStatus() {
 }
 
 function detectSleepingPosture(spineAngleDegrees, velocity) {
-  // A body is horizontal (lying down/sleeping) if the spine angle relative to x-axis is near 0° or 180°
-  // Allows a +/- 25° tolerance window (0-25° or 155-180°)
   const isHorizontal = spineAngleDegrees <= 25.0 || spineAngleDegrees >= 155.0;
   const isBodyStill = velocity < SLEEPING_MAX_VELOCITY;
 
@@ -309,11 +307,11 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     wristOscillation
   ] = features;
 
-  // PRIORITY 1: SLEEPING (Horizontal Spine Vector Check)
+  // PRIORITY 1: SLEEPING
   const sleepingResult = detectSleepingPosture(spineAngleDegrees, velocity);
   if (sleepingResult) return sleepingResult;
 
-  // PRIORITY 2: WALKING (Prevents false positive Eating/Drinking when moving)
+  // PRIORITY 2: WALKING
   const walkingResult = detectWalkingPattern(velocity, legAsymmetry, wristOscillation, leftLegAngle, rightLegAngle);
   if (walkingResult.isWalking) {
     return {
@@ -323,7 +321,7 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // PRIORITY 3: EATING PATTERN
+  // PRIORITY 3: EATING
   const eatingPattern = detectEatingPattern(normHandToMouth, velocity, objects, isChewing);
   if (eatingPattern.isEating) {
     return {
@@ -333,7 +331,7 @@ function classifyActivity(features, poseSequence, objects = [], isChewing = fals
     };
   }
 
-  // PRIORITY 4: DRINKING PATTERN
+  // PRIORITY 4: DRINKING
   const drinkingPattern = detectDrinkingPattern(normHandToMouth, velocity, objects);
   if (drinkingPattern.isDrinking && drinkingPattern.signals.status !== 'idle') {
     return {
@@ -411,6 +409,65 @@ export async function initializePoseDetection(video, canvas, expectedRef, onActi
   } catch (error) {
     isInitializing = false;
     console.error('Failed to initialize pose detection:', error);
+    throw error;
+  }
+}
+
+// IP Camera stream helper function
+export function getIPCameraStreamUrl(ipAddress, port = '8080', streamPath = '/video') {
+  if (!ipAddress) return '';
+  const cleanIp = ipAddress.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return `http://${cleanIp}:${port}${streamPath}`;
+}
+
+// IP Camera detection initialization helper
+export async function initializePoseDetectionWithIPCamera(video, streamUrl, onActivityDetected) {
+  if (isInitializing || isRunning) return { detector };
+  isInitializing = true;
+
+  try {
+    if (video.srcObject) {
+      video.srcObject.getTracks().forEach(track => track.stop());
+      video.srcObject = null;
+    }
+
+    videoElement = video;
+    onActivityCallback = onActivityDetected;
+    videoElement.src = streamUrl;
+    videoElement.crossOrigin = 'anonymous';
+
+    await new Promise((resolve, reject) => {
+      videoElement.onloadeddata = () => resolve();
+      videoElement.onerror = (e) => reject(e);
+    });
+
+    await video.play();
+
+    await tf.setBackend('webgl');
+    await tf.ready();
+
+    detector = await poseDetection.createDetector(
+      poseDetection.SupportedModels.BlazePose,
+      {
+        runtime: 'mediapipe',
+        modelType: 'full',
+        enableSmoothing: true,
+        solutionPath: `${import.meta.env.BASE_URL}mediapipe_pose`,
+      }
+    );
+
+    const faceModel = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+    faceDetector = await faceLandmarksDetection.createDetector(faceModel, { runtime: 'tfjs', refineLandmarks: false });
+    objectDetector = await cocoSsd.load();
+
+    isRunning = true;
+    isInitializing = false;
+    frameCounter = 0;
+    detectPoseLoop();
+    return { detector };
+  } catch (error) {
+    isInitializing = false;
+    console.error('Failed to initialize IP camera pose detection:', error);
     throw error;
   }
 }
