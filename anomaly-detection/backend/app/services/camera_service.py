@@ -171,8 +171,10 @@ class _CameraStream:
                         print("[camera] Empty frame — stream may have dropped, reconnecting…")
                         break
 
-                    # Encode to JPEG at 50% quality — smallest reasonable payload for low latency
-                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    # Encode to JPEG at 85% quality — these frames also feed MediaPipe;
+                    # lower quality adds compression noise that shows up as landmark
+                    # jitter (false motion energy → missed inactivity, false aggression)
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     jpeg = buf.tobytes()
 
                     with self._lock:

@@ -25,6 +25,11 @@ AGGRESSION_BODY_VELOCITY:    float = 0.04   # body centre velocity > this
 AGGRESSION_ENERGY_HIGH:      float = 0.06   # total pose energy > this = high motion
 AGGRESSION_PERSIST_FRAMES:   int   = 5      # must occur for 5 frames (~1 sec) to ignore quick jerks
 
+# ── Analysis rate ─────────────────────────────────────────────────────────────
+# All per-frame velocity/energy thresholds and the 30-frame LSTM/AE windows
+# assume ~5 analysed frames/sec. Faster input is throttled to this interval.
+ANALYSIS_INTERVAL_SEC: float = 0.2
+
 # ── Sequence Buffer ───────────────────────────────────────────────────────────
 SEQUENCE_WINDOW:  int = 30    # frames per analysis window
 SEQUENCE_STRIDE:  int = 5     # slide window by this many frames

@@ -13,6 +13,7 @@ Phase 2 Changes:
     - Auto-recovery logging on any step failure
 """
 import os
+import time
 from datetime import datetime, timezone
 from shared.backend.config.database import get_db
 
@@ -26,6 +27,7 @@ from app.ml_services.inference.prediction_smoother import PredictionSmoother
 from app.ml_services.models.lstm_model          import predict as lstm_predict
 from app.ml_services.models.autoencoder_model   import reconstruction_error
 from app.services.alert_service                 import log_alert
+from app.ml_services.utils.thresholds           import ANALYSIS_INTERVAL_SEC
 
 # Per-person smoother registry (created on demand)
 _smoothers: dict[str, PredictionSmoother] = {}
@@ -34,6 +36,21 @@ def _get_smoother(person_id: str) -> PredictionSmoother:
     if person_id not in _smoothers:
         _smoothers[person_id] = PredictionSmoother()
     return _smoothers[person_id]
+
+# Per-person throttle state: { person_id → (last_analysis_monotonic, last_event) }
+# Rule thresholds, the inactivity timer and the LSTM/AE 30-frame windows were all
+# tuned at ~5 analysed frames/sec. Clients may send faster (the dashboard polls
+# every 80 ms), so frames arriving sooner than ANALYSIS_INTERVAL_SEC are not
+# analysed — the last result is returned instead.
+_last_analysis: dict[str, tuple[float, dict]] = {}
+
+
+def reset_person(person_id: str) -> None:
+    """Clear all per-person temporal state (call when a stream session ends)."""
+    from app.ml_services.inference.sequence_buffer import flush
+    flush(person_id)
+    _smoothers.pop(person_id, None)
+    _last_analysis.pop(person_id, None)
 
 def _no_person_response(person_id: str, ts: str, reason: str = "") -> dict:
     return {
@@ -64,6 +81,15 @@ class AnomalyService:
         if not payload.live_frame or len(payload.live_frame) < 100:
             return _no_person_response(person_id, ts, "empty_or_too_short_frame")
 
+        # ── Step 1b: Hold analysis at a fixed rate ────────────────────────────
+        now = time.monotonic()
+        last = _last_analysis.get(person_id)
+        if last and now - last[0] < ANALYSIS_INTERVAL_SEC:
+            cached = dict(last[1])
+            cached["timestamp"] = ts
+            cached["throttled"] = True
+            return cached
+
         # ── Step 2: Pose Extraction ───────────────────────────────────────────
         try:
             pose_data = extract_pose(payload.live_frame)
@@ -72,7 +98,9 @@ class AnomalyService:
             return _no_person_response(person_id, ts, f"pose_extraction_error: {type(e).__name__}")
 
         if not pose_data["valid"]:
-            return _no_person_response(person_id, ts, "no_pose_detected")
+            event = _no_person_response(person_id, ts, "no_pose_detected")
+            _last_analysis[person_id] = (now, event)
+            return event
 
         raw_lms  = pose_data["raw"]
         bbox     = pose_data["bbox"]
@@ -154,6 +182,7 @@ class AnomalyService:
             except Exception as e:
                 print(f"[WARN] log_alert failed for {person_id}: {repr(e)}")
 
+        _last_analysis[person_id] = (now, event)
         return event
 
     async def fetch_logs(self) -> list:

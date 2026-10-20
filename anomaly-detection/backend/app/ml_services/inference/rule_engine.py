@@ -26,17 +26,15 @@ from app.ml_services.utils.thresholds import (
 # Feature vector indices (must match feature_engineer.py output order)
 _IDX_TORSO_ANGLE    = 8    # normalized by /90
 _IDX_ASPECT_RATIO   = 14   # normalized by /3
-_IDX_BODY_CY        = 13
+_IDX_BODY_CY        = 12   # body centre y (13 is head height)
 _IDX_HEAD_DROP      = 21
 _IDX_BODY_VELOCITY  = 18
 _IDX_WRIST_L_VEL    = 19
 _IDX_WRIST_R_VEL    = 20
 _IDX_POSE_ENERGY    = 22
 _IDX_NOSE_Y         = 24   # raw nose y position
-_IDX_HIP_Y          = 37   # hip_cy raw value
+_IDX_HIP_Y          = 38   # hip_cy raw value
 
-# Approximate polling rate for inactivity timer
-FRAMES_PER_SEC = 5   # we poll ~every 0.2 seconds (POLL_MS = 200ms on frontend)
 
 
 def check_fall(features: np.ndarray, person_id: str) -> dict | None:
@@ -94,8 +92,8 @@ def check_inactivity(features: np.ndarray, person_id: str) -> dict | None:
     pose_energy = features[_IDX_POSE_ENERGY]
 
     if pose_energy < INACTIVITY_ENERGY_THRESHOLD:
-        count = buf.increment_counter(person_id, "inactivity_frames")
-        seconds = count / FRAMES_PER_SEC
+        # Wall-clock timer: independent of how fast frames arrive
+        seconds = buf.elapsed_since_start(person_id, "inactivity_since")
 
         if seconds >= INACTIVITY_CRITICAL_SEC:
             return {
@@ -131,7 +129,7 @@ def check_inactivity(features: np.ndarray, person_id: str) -> dict | None:
                 },
             }
     else:
-        buf.reset_counter(person_id, "inactivity_frames")
+        buf.reset_counter(person_id, "inactivity_since")
 
     return None
 

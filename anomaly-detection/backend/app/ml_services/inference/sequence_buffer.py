@@ -73,6 +73,17 @@ def reset_counter(person_id: str, key: str):
             buf[key] = 0
 
 
+def elapsed_since_start(person_id: str, key: str) -> float:
+    """Start a named wall-clock timer if not running; return seconds elapsed."""
+    import time
+    now = time.monotonic()
+    with _lock:
+        buf = _get_or_create(person_id)
+        if not buf.get(key):
+            buf[key] = now
+        return now - buf[key]
+
+
 def get_counter(person_id: str, key: str) -> int:
     with _lock:
         buf = _buffers.get(person_id)

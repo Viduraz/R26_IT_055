@@ -159,8 +159,8 @@ async def websocket_process(websocket: WebSocket, token: str = ""):
     finally:
         if person_id:
             try:
-                from app.ml_services.inference.sequence_buffer import flush
-                flush(person_id)
+                from app.services.anomaly_service import reset_person
+                reset_person(person_id)
             except Exception:
                 pass
             print(f"[websocket] session ended for {person_id} | "

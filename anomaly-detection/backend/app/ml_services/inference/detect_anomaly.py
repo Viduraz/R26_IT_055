@@ -56,16 +56,16 @@ def decide(
             return event
 
     # ── Case 2: Rule engine fired ─────────────────────────────────────────────
-    if rule_result["event"] != "normal_activity":
-        # Phase 4: Dynamic Autoencoder Override for Inactivity
-        if rule_result["event"] == "prolonged_inactivity" and ae_used:
-            if ae_error < AE_THRESHOLD * 1.5: 
-                # AE recognizes this static pose as "normal" (e.g. reading a book). Override!
-                rule_result["event"] = "normal_activity"
-        
-        # Re-check in case it was overridden
-        if rule_result["event"] != "normal_activity":
-            conf = rule_result["confidence"]
+    # Phase 4: Dynamic Autoencoder Override for Inactivity — AE recognises this
+    # static pose as normal (e.g. reading a book). Only the high-severity alert
+    # is suppressed; critical (long) inactivity is never overridden.
+    rule_overridden = (
+        rule_result["event"] == "prolonged_inactivity"
+        and rule_result["severity"] != "critical"
+        and ae_used and ae_error < AE_THRESHOLD * 1.5
+    )
+    if rule_result["event"] != "normal_activity" and not rule_overridden:
+        conf = rule_result["confidence"]
         if ae_used and ae_error >= AE_THRESHOLD:
             conf = min(conf + 0.07, 0.99)
         anomaly_type = rule_result["event"]
@@ -84,7 +84,7 @@ def decide(
         return event
 
     # ── Case 3: Autoencoder sees something unusual but rules don't fire ───────
-    if ae_used and ae_error >= AE_THRESHOLD * 2:
+    if not rule_overridden and ae_used and ae_error >= AE_THRESHOLD * 2:
         anomaly_type = "unusual_movement"
         event = {
             "anomaly_type": anomaly_type,
