@@ -215,6 +215,7 @@ export default function DataCollector() {
         await tf.setBackend('webgl');
         await tf.ready();
 
+         // ── movenet detector ───────────────────────────────────────────────
         detectorRef.current = await poseDetection.createDetector(
           poseDetection.SupportedModels.MoveNet,
           {
@@ -236,6 +237,7 @@ export default function DataCollector() {
       }
     }
 
+    // ANIMATION LOOP: estimate pose, extract features, record samples, draw overlay.
     async function loop() {
       if (cancelled) return;
       try {
@@ -255,7 +257,7 @@ export default function DataCollector() {
           const normalizedKeypoints = poses[0].keypoints.map(p => ({
             ...p, x: p.x / width, y: p.y / height
           }));
-
+// 15 SCALE GEOMATRIC FEATURES EXTRACTION (angles, distances, velocities, etc.) + 1 FEATURE FOR OBJECT DETECTION CONTEXT
           const features = extractPoseFeatures(normalizedKeypoints, poseHistoryRef.current);
 
           poseHistoryRef.current.push(normalizedKeypoints);
